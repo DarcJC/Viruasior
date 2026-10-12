@@ -12,6 +12,8 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.aspectRatio
@@ -43,6 +45,8 @@ import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
 import pro.darc.viruaisor.display.DisplayBackendRegistry
 import pro.darc.viruaisor.display.InputBackendRegistry
+import pro.darc.viruaisor.root.RootAccess
+import pro.darc.viruaisor.root.RootRuntime
 import pro.darc.viruaisor.ui.theme.ViruaisorTheme
 import pro.darc.viruaisor.vm.AvfSupport
 import pro.darc.viruaisor.vm.VmRuntime
@@ -61,12 +65,16 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         lifecycleScope.launch { VmRuntime.initialize(this@MainActivity) }
+        RootRuntime.request(onlyIfIdle = true)
         handleDebugIntent(intent)
         setContent {
             ViruaisorTheme {
                 val state by VmRuntime.state.collectAsState()
+                val rootAccess by RootRuntime.state.collectAsState()
                 VmScreen(
                     state = state,
+                    rootAccess = rootAccess,
+                    onRequestRoot = { RootRuntime.request() },
                     onChooseBundle = { bundlePicker.launch(BUNDLE_MIME_TYPES) },
                     onStart = {
                         ContextCompat.startForegroundService(
@@ -133,6 +141,8 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun VmScreen(
     state: VmUiState,
+    rootAccess: RootAccess,
+    onRequestRoot: () -> Unit,
     onChooseBundle: () -> Unit,
     onStart: () -> Unit,
     onStop: () -> Unit,
@@ -151,10 +161,12 @@ private fun VmScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
+                .verticalScroll(rememberScrollState())
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Text("Viruaisor", style = MaterialTheme.typography.headlineMedium)
+            RootCard(rootAccess, onRequestRoot)
             AvfCard(state.support)
             VmSurface(
                 modifier = Modifier
@@ -170,6 +182,40 @@ private fun VmScreen(
                 }
                 Button(onClick = onStart, enabled = state.canStart) { Text("Start") }
                 OutlinedButton(onClick = onStop, enabled = state.canStop) { Text("Stop") }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RootCard(access: RootAccess, onRequestRoot: () -> Unit) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text("Root / KernelSU", style = MaterialTheme.typography.titleMedium)
+            Text(
+                when (access) {
+                    RootAccess.Idle -> "尚未申请 Root"
+                    RootAccess.Requesting -> "正在请求 Root，请在 KernelSU 中允许 Viruaisor…"
+                    is RootAccess.Granted -> "已获得 Root（UID 0） · ${access.implementation}"
+                    is RootAccess.Denied -> access.reason
+                    is RootAccess.Unavailable -> access.reason
+                },
+                color = if (access is RootAccess.Denied || access is RootAccess.Unavailable) {
+                    MaterialTheme.colorScheme.error
+                } else {
+                    MaterialTheme.colorScheme.onSurface
+                },
+            )
+            if (access is RootAccess.Granted) {
+                Text("SELinux: ${access.selinuxMode} · su: ${access.suPath}", style = MaterialTheme.typography.bodySmall)
+                Text(access.identity, style = MaterialTheme.typography.bodySmall)
+            }
+            Text(
+                "此步骤仅验证 Root，不会修改 SELinux 或授予 AVF 权限。",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            OutlinedButton(onClick = onRequestRoot, enabled = access !is RootAccess.Requesting) {
+                Text(if (access is RootAccess.Idle) "申请 Root 权限" else "重新检测 Root")
             }
         }
     }
