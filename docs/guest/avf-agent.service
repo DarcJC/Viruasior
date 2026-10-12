@@ -1,0 +1,13 @@
+[Unit]
+Description=Viruaisor AVF control agent
+After=systemd-vsock.service
+Before=shutdown.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/avf-agent --port 4050
+Restart=on-failure
+RestartSec=1s
+
+[Install]
+WantedBy=multi-user.target

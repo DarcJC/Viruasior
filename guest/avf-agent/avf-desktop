@@ -1,0 +1,43 @@
+#!/bin/sh
+set -eu
+
+user=droid
+uid=1000
+runtime_dir=/run/user/$uid
+session_unit=avf-desktop-session.service
+
+start_desktop() {
+    install -d -m 0700 -o "$user" -g users "$runtime_dir"
+    cat > /home/$user/weston.env <<'EOF'
+MESA_LOADER_DRIVER_OVERRIDE=zink
+LIBGL_ALWAYS_SOFTWARE=1
+VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json
+EOF
+    chown "$user":users /home/$user/weston.env
+
+    if ! systemctl is-active --quiet "$session_unit"; then
+        systemd-run --quiet --unit=avf-desktop-session \
+            --uid=$uid -p PAMName=login -p TTYPath=/dev/tty1 sleep infinity
+    fi
+    count=0
+    while [ ! -S "$runtime_dir/bus" ] && [ "$count" -lt 50 ]; do
+        sleep 0.1
+        count=$((count + 1))
+    done
+    runuser -u "$user" -- env XDG_RUNTIME_DIR="$runtime_dir" \
+        systemctl --user start weston.service
+}
+
+stop_desktop() {
+    if [ -S "$runtime_dir/bus" ]; then
+        runuser -u "$user" -- env XDG_RUNTIME_DIR="$runtime_dir" \
+            systemctl --user stop weston.service || true
+    fi
+    systemctl stop "$session_unit" 2>/dev/null || true
+}
+
+case "${1:-}" in
+    start) start_desktop ;;
+    stop) stop_desktop ;;
+    *) echo "usage: $0 {start|stop}" >&2; exit 2 ;;
+esac

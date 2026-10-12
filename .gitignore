@@ -1,0 +1,51 @@
+# Gradle, Kotlin and Android build output (all modules)
+.gradle/
+.kotlin/
+build/
+.externalNativeBuild/
+.cxx/
+captures/
+*.apk
+*.aab
+*.dex
+*.o
+
+# Machine-local SDK and IDE configuration
+local.properties
+.idea/
+*.iml
+
+# Generated native binaries; keep their sources and build scripts
+/app/src/main/jniLibs/**/libviruaisor_native.so
+/guest/avf-agent/avf-agent
+
+# Local Pi task logs, research cache, device dumps and VM images
+# Shared .pi agents/workflows are not ignored.
+/.pi/device-debug/
+/.pi/fusion/
+/.pi/research-cache/
+/.pi/tasks/
+/.pi/research-fetch.py
+/.pi/research-urls.txt
+
+# Local credentials and signing configuration
+*.jks
+*.keystore
+keystore.properties
+.env
+.env.*
+!.env.example
+
+# Python utility caches and virtual environments
+__pycache__/
+*.py[cod]
+.venv/
+
+# OS/editor temporary files and logs
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.swp
+*.swo
+*~
+*.log

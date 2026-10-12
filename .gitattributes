@@ -1,0 +1,5 @@
+# Normalize text for Android/Linux guest scripts, even on Windows checkouts.
+* text=auto eol=lf
+
+# Keep the Windows Gradle launcher in its native line-ending format.
+*.bat text eol=crlf

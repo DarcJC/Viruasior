@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Viruaisor</string>
+    <string name="vm_notification_channel">Virtual machine</string>
+</resources>

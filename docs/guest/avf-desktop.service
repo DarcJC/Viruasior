@@ -1,0 +1,15 @@
+[Unit]
+Description=Weston desktop requested by the Viruaisor host
+After=systemd-user-sessions.service
+ConditionPathExists=/etc/systemd/user/weston.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStartPre=/sbin/modprobe virtio_gpu
+ExecStart=/usr/local/sbin/avf-desktop start
+ExecStop=/usr/local/sbin/avf-desktop stop
+TimeoutStartSec=30
+TimeoutStopSec=15
+
+# Intentionally no [Install] section: this unit must never be enabled or started by a target.
