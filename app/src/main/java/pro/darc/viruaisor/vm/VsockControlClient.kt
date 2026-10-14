@@ -22,9 +22,9 @@ class VsockControlClient(private val engine: AvfVmEngine) {
 
     fun shutdown(port: Long) = send(port, SHUTDOWN)
 
-    fun startDesktop(port: Long) = send(port, START_DESKTOP)
+    fun startDesktop(port: Long, profile: VmGpuProfile) = send(port, GuestDesktopProtocol.start(profile))
 
-    fun stopDesktop(port: Long) = send(port, STOP_DESKTOP)
+    fun stopDesktop(port: Long, profile: VmGpuProfile) = send(port, GuestDesktopProtocol.stop(profile))
 
     private fun send(port: Long, command: String) {
         val descriptor = engine.connectVsock(port)
@@ -51,7 +51,11 @@ class VsockControlClient(private val engine: AvfVmEngine) {
     private companion object {
         const val READY = "READY"
         const val SHUTDOWN = "SHUTDOWN"
-        const val START_DESKTOP = "START_DESKTOP"
-        const val STOP_DESKTOP = "STOP_DESKTOP"
     }
+}
+
+internal object GuestDesktopProtocol {
+    fun start(profile: VmGpuProfile): String = "START_DESKTOP ${profile.avfBackend}"
+
+    fun stop(profile: VmGpuProfile): String = "STOP_DESKTOP ${profile.avfBackend}"
 }

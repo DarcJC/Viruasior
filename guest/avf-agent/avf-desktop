@@ -2,21 +2,81 @@
 set -eu
 
 user=droid
-uid=1000
-runtime_dir=/run/user/$uid
+id_command=${VIRUAISOR_ID:-id}
+getent_command=${VIRUAISOR_GETENT:-getent}
+usermod_command=${VIRUAISOR_USERMOD:-usermod}
+chown_command=${VIRUAISOR_CHOWN:-chown}
+systemctl_command=${VIRUAISOR_SYSTEMCTL:-systemctl}
+systemd_run_command=${VIRUAISOR_SYSTEMD_RUN:-systemd-run}
+runuser_command=${VIRUAISOR_RUNUSER:-runuser}
+uid=$($id_command -u "$user")
+runtime_dir=${VIRUAISOR_RUNTIME_DIR:-/run/user/$uid}
+weston_env=${VIRUAISOR_WESTON_ENV:-/home/$user/weston.env}
+gfxstream_icd=${VIRUAISOR_GFXSTREAM_ICD:-/usr/share/vulkan/icd.d/gfxstream_vk_icd.json}
+render_node=${VIRUAISOR_RENDER_NODE:-/dev/dri/renderD128}
 session_unit=avf-desktop-session.service
 
-start_desktop() {
-    install -d -m 0700 -o "$user" -g users "$runtime_dir"
-    cat > /home/$user/weston.env <<'EOF'
+has_render_group() {
+    $id_command -nG "$user" | tr ' ' '\n' | grep -Fxq render
+}
+
+prepare_gfxstream() {
+    $getent_command group render >/dev/null || {
+        echo "gfxstream requires the guest render group" >&2
+        return 1
+    }
+    [ -r "$gfxstream_icd" ] || {
+        echo "gfxstream ICD is missing: $gfxstream_icd" >&2
+        return 1
+    }
+    if ! has_render_group; then
+        $usermod_command -a -G render "$user"
+    fi
+    has_render_group || {
+        echo "$user did not acquire render group membership" >&2
+        return 1
+    }
+    $runuser_command -u "$user" -- test -r "$render_node" -a -w "$render_node" || {
+        echo "$user cannot read and write $render_node" >&2
+        return 1
+    }
+}
+
+write_environment() {
+    profile=$1
+    case "$profile" in
+        2d)
+            cat > "$weston_env" <<'EOF'
 MESA_LOADER_DRIVER_OVERRIDE=zink
 LIBGL_ALWAYS_SOFTWARE=1
 VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json
 EOF
-    chown "$user":users /home/$user/weston.env
+            ;;
+        gfxstream)
+            prepare_gfxstream
+            cat > "$weston_env" <<EOF
+MESA_LOADER_DRIVER_OVERRIDE=zink
+VK_DRIVER_FILES=$gfxstream_icd
+VK_ICD_FILENAMES=$gfxstream_icd
+EOF
+            ;;
+        *)
+            echo "unsupported GPU profile: $profile" >&2
+            return 2
+            ;;
+    esac
+    $chown_command "$user":users "$weston_env"
+}
 
-    if ! systemctl is-active --quiet "$session_unit"; then
-        systemd-run --quiet --unit=avf-desktop-session \
+start_desktop() {
+    profile=$1
+    write_environment "$profile"
+    mkdir -p "$runtime_dir"
+    chmod 0700 "$runtime_dir"
+    $chown_command "$user":users "$runtime_dir"
+
+    if ! $systemctl_command is-active --quiet "$session_unit"; then
+        $systemd_run_command --quiet --unit=avf-desktop-session \
             --uid=$uid -p PAMName=login -p TTYPath=/dev/tty1 sleep infinity
     fi
     count=0
@@ -24,20 +84,20 @@ EOF
         sleep 0.1
         count=$((count + 1))
     done
-    runuser -u "$user" -- env XDG_RUNTIME_DIR="$runtime_dir" \
+    $runuser_command -u "$user" -- env XDG_RUNTIME_DIR="$runtime_dir" \
         systemctl --user start weston.service
 }
 
 stop_desktop() {
     if [ -S "$runtime_dir/bus" ]; then
-        runuser -u "$user" -- env XDG_RUNTIME_DIR="$runtime_dir" \
+        $runuser_command -u "$user" -- env XDG_RUNTIME_DIR="$runtime_dir" \
             systemctl --user stop weston.service || true
     fi
-    systemctl stop "$session_unit" 2>/dev/null || true
+    $systemctl_command stop "$session_unit" 2>/dev/null || true
 }
 
 case "${1:-}" in
-    start) start_desktop ;;
+    start) start_desktop "${2:-}" ;;
     stop) stop_desktop ;;
-    *) echo "usage: $0 {start|stop}" >&2; exit 2 ;;
+    *) echo "usage: $0 {start PROFILE|stop}" >&2; exit 2 ;;
 esac

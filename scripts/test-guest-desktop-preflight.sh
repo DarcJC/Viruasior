@@ -5,7 +5,7 @@ repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 fixture=$(mktemp -d)
 trap 'rm -rf "$fixture"' EXIT
 
-mapfile -t preflights < <(awk '/^ExecStartPre=/ { sub(/^ExecStartPre=/, ""); print }' "$repo/docs/guest/avf-desktop.service")
+mapfile -t preflights < <(awk '/^ExecStartPre=/ { sub(/^ExecStartPre=/, ""); print }' "$repo/docs/guest/avf-desktop@.service")
 [[ ${#preflights[@]} -eq 1 ]] || { echo 'FAIL: expected exactly one GPU preflight' >&2; exit 1; }
 # Only replace the platform paths; execute the actual command, including its shell/quoting.
 preflight=${preflights[0]//\/sys\/module/$fixture/modules}

@@ -67,7 +67,10 @@ listens on the configured host-vsock port and uses one UTF-8 line per connection
 - On receiving `SHUTDOWN\n`, invoke `systemctl poweroff` (or the equivalent orderly shutdown).
 
 The Android app accepts either AVF's standard `IGuestAgent` registration or the line protocol
-above. Stop first calls the standard agent's `shutdownAsync()` when registered, otherwise sends
+above. For the raw-vsock desktop path, it sends `START_DESKTOP 2d`/`STOP_DESKTOP 2d` or
+`START_DESKTOP gfxstream`/`STOP_DESKTOP gfxstream` from the parsed manifest enum. Guest agents may
+accept legacy argument-free desktop commands only as `2d`; arbitrary profile text must not reach
+systemd. Stop first calls the standard agent's `shutdownAsync()` when registered, otherwise sends
 `SHUTDOWN` over the configured raw vsock port. Both paths use AVF's hard stop only if graceful
 shutdown cannot be requested or the guest has not exited after 10 seconds.
 

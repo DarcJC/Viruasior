@@ -226,7 +226,7 @@ class VmService : Service() {
         if (!desktopRequested || desktopStarted) return
         if (VmRuntime.state.value.status !is VmStatus.GuestAgentReady) return
         val selectedBundle = bundle ?: return
-        runCatching { controlClient.startDesktop(selectedBundle.vsockPort) }
+        runCatching { controlClient.startDesktop(selectedBundle.vsockPort, selectedBundle.gpuProfile) }
             .onSuccess {
                 desktopStarted = true
                 VmRuntime.setStatus(VmStatus.GuestAgentReady, "Guest agent ready; desktop requested")
@@ -242,7 +242,7 @@ class VmService : Service() {
     private fun stopDesktopIfStarted() {
         if (!desktopStarted) return
         val selectedBundle = bundle ?: return
-        runCatching { controlClient.stopDesktop(selectedBundle.vsockPort) }
+        runCatching { controlClient.stopDesktop(selectedBundle.vsockPort, selectedBundle.gpuProfile) }
         desktopStarted = false
     }
 

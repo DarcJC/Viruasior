@@ -11,6 +11,8 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include "desktop_protocol.h"
+
 #define DEFAULT_PORT 4050U
 #define BACKLOG 8
 #define MAX_COMMAND 256
@@ -62,15 +64,13 @@ static void handle_client(int fd) {
     if (count <= 0) return; /* A readiness-only connection. */
     command[count] = '\0';
     trim(command);
+    struct desktop_operation desktop;
 
     if (strcmp(command, "SHUTDOWN") == 0) {
         reply(fd, "OK\n");
         (void)systemctl("poweroff", NULL);
-    } else if (strcmp(command, "START_DESKTOP") == 0) {
-        if (systemctl("start", "avf-desktop.service") == 0) reply(fd, "OK\n");
-        else reply(fd, "ERROR systemctl\n");
-    } else if (strcmp(command, "STOP_DESKTOP") == 0) {
-        if (systemctl("stop", "avf-desktop.service") == 0) reply(fd, "OK\n");
+    } else if (parse_desktop_operation(command, &desktop)) {
+        if (systemctl(desktop.verb, desktop.unit) == 0) reply(fd, "OK\n");
         else reply(fd, "ERROR systemctl\n");
     } else if (strncmp(command, "RESIZE ", 7) == 0) {
         /* Display plumbing is outside the headless MVP. Keep the protocol stable. */
