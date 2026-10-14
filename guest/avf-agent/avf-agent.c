@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/wait.h>
 #include <sys/types.h>
 #include <unistd.h>
 
@@ -24,18 +25,26 @@ static void stop_server(int signal_number) {
     running = 0;
 }
 
-static int systemctl(const char *verb, const char *unit) {
+static int systemctl(const char *verb, const char *unit, bool no_block) {
     pid_t child = fork();
     if (child < 0) return -1;
     if (child == 0) {
         if (unit != NULL) {
-            execlp("systemctl", "systemctl", "--no-block", verb, unit, (char *)NULL);
+            if (no_block) {
+                execlp("systemctl", "systemctl", "--no-block", verb, unit, (char *)NULL);
+            } else {
+                execlp("systemctl", "systemctl", verb, unit, (char *)NULL);
+            }
         } else {
             execlp("systemctl", "systemctl", "--no-block", verb, (char *)NULL);
         }
         _exit(127);
     }
-    return 0;
+    int status;
+    while (waitpid(child, &status, 0) < 0) {
+        if (errno != EINTR) return -1;
+    }
+    return WIFEXITED(status) && WEXITSTATUS(status) == 0 ? 0 : -1;
 }
 
 static void reply(int fd, const char *line) {
@@ -68,9 +77,9 @@ static void handle_client(int fd) {
 
     if (strcmp(command, "SHUTDOWN") == 0) {
         reply(fd, "OK\n");
-        (void)systemctl("poweroff", NULL);
+        (void)systemctl("poweroff", NULL, true);
     } else if (parse_desktop_operation(command, &desktop)) {
-        if (systemctl(desktop.verb, desktop.unit) == 0) reply(fd, "OK\n");
+        if (systemctl(desktop.verb, desktop.unit, desktop.no_block) == 0) reply(fd, "OK\n");
         else reply(fd, "ERROR systemctl\n");
     } else if (strncmp(command, "RESIZE ", 7) == 0) {
         /* Display plumbing is outside the headless MVP. Keep the protocol stable. */
@@ -102,7 +111,7 @@ int main(int argc, char **argv) {
     sigaction(SIGTERM, &stop_action, NULL);
     sigaction(SIGINT, &stop_action, NULL);
     signal(SIGPIPE, SIG_IGN);
-    signal(SIGCHLD, SIG_IGN);
+    /* Every child is reaped synchronously by systemctl(); SIG_IGN would make waitpid fail. */
 
     int server = socket(AF_VSOCK, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (server < 0) {

@@ -16,6 +16,18 @@ function inspectGfxstreamVulkan(text) {
     if (!/(?:^|,)vulkan=true(?:,|$)/.test(gpu)) {
         return {ok:false, reason:'The actual crosvm arguments do not request vulkan=true',gpu};
     }
+    if (!/(?:^|,)surfaceless=true(?:,|$)/.test(gpu)) {
+        return {ok:false, reason:'The actual crosvm arguments do not request surfaceless=true',gpu};
+    }
+    if (!/(?:^|,)egl=true(?:,|$)/.test(gpu) || !/(?:^|,)gles=true(?:,|$)/.test(gpu)) {
+        return {ok:false, reason:'The actual crosvm arguments do not keep the compatible GL compositor path',gpu};
+    }
+    if (/(?:^|,)glx=true(?:,|$)/.test(gpu)) {
+        return {ok:false, reason:'The actual crosvm arguments unexpectedly enable GLX',gpu};
+    }
+    if (!/(?:^|,)context-types=gfxstream-gles:gfxstream-vulkan:gfxstream-composer(?:,|$)/.test(gpu)) {
+        return {ok:false, reason:'The actual crosvm arguments do not select the compatible gfxstream GLES/Vulkan/composer capsets',gpu};
+    }
     const flags = lines.filter(line => /GFXSTREAM\s*:.*\bVulkan: (?:enabled|disabled)\b/.test(line));
     if (flags.length !== 1 || !/\bVulkan: enabled\b/.test(flags[0])) {
         return {ok:false, reason:'gfxstream Vulkan is disabled, missing or ambiguous',gpu};

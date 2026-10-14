@@ -71,6 +71,8 @@ export VIRUAISOR_RENDER_NODE="$fixture/renderD128"
 
 helper="$repo/guest/avf-agent/avf-desktop"
 
+grep -Fxq 'TimeoutStartSec=5' "$repo/docs/guest/avf-desktop@.service"
+
 "$helper" start 2d
 cat > "$fixture/expected-2d" <<'EOF'
 MESA_LOADER_DRIVER_OVERRIDE=zink

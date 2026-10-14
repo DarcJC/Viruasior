@@ -8,10 +8,25 @@ import pro.darc.viruaisor.vm.VmGpuConfiguration
 import pro.darc.viruaisor.vm.VmGpuProfile
 
 class VmGpuConfigurationTest {
-    @Test fun gfxstreamExplicitlyRequestsVulkanRatherThanRelyingOnTheFalseDefault() {
+    @Test fun gfxstreamKeepsTheCompatibleGlCompositorAndRequestsVulkanCapsets() {
         val calls = mutableListOf<Pair<String, Any>>()
         VmGpuConfiguration.apply(VmGpuProfile.GFXSTREAM) { method, value -> calls += method to value }
-        assertEquals(listOf("setBackend" to "gfxstream", "setRendererUseVulkan" to true), calls)
+
+        assertEquals(
+            listOf(
+                "setBackend" to "gfxstream",
+                "setRendererUseEgl" to true,
+                "setRendererUseGles" to true,
+                "setRendererUseGlx" to false,
+                "setRendererUseSurfaceless" to true,
+                "setRendererUseVulkan" to true,
+            ),
+            calls.filterNot { it.first == "setContextTypes" },
+        )
+        assertEquals(
+            listOf("gfxstream-gles", "gfxstream-vulkan", "gfxstream-composer"),
+            (calls.single { it.first == "setContextTypes" }.second as Array<*>).toList(),
+        )
     }
 
     @Test fun softwareBaselineDoesNotEnableTheVulkanRenderer() {

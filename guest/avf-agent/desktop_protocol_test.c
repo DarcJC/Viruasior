@@ -4,20 +4,21 @@
 #include <stddef.h>
 #include <string.h>
 
-static void expect_mapping(const char *command, const char *verb, const char *unit) {
+static void expect_mapping(const char *command, const char *verb, const char *unit, bool no_block) {
     struct desktop_operation operation;
     assert(parse_desktop_operation(command, &operation));
     assert(strcmp(operation.verb, verb) == 0);
     assert(strcmp(operation.unit, unit) == 0);
+    assert(operation.no_block == no_block);
 }
 
 int main(void) {
-    expect_mapping("START_DESKTOP 2d", "start", "avf-desktop@2d.service");
-    expect_mapping("START_DESKTOP gfxstream", "start", "avf-desktop@gfxstream.service");
-    expect_mapping("STOP_DESKTOP 2d", "stop", "avf-desktop@2d.service");
-    expect_mapping("STOP_DESKTOP gfxstream", "stop", "avf-desktop@gfxstream.service");
-    expect_mapping("START_DESKTOP", "start", "avf-desktop@2d.service");
-    expect_mapping("STOP_DESKTOP", "stop", "avf-desktop@2d.service");
+    expect_mapping("START_DESKTOP 2d", "start", "avf-desktop@2d.service", false);
+    expect_mapping("START_DESKTOP gfxstream", "start", "avf-desktop@gfxstream.service", false);
+    expect_mapping("STOP_DESKTOP 2d", "stop", "avf-desktop@2d.service", false);
+    expect_mapping("STOP_DESKTOP gfxstream", "stop", "avf-desktop@gfxstream.service", false);
+    expect_mapping("START_DESKTOP", "start", "avf-desktop@2d.service", false);
+    expect_mapping("STOP_DESKTOP", "stop", "avf-desktop@2d.service", false);
 
     const char *invalid[] = {
         "START_DESKTOP virgl",

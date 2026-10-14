@@ -11,7 +11,8 @@ RemainAfterExit=yes
 ExecStartPre=/bin/sh -ec 'test -d /sys/module/virtio_gpu || exec /sbin/modprobe virtio_gpu'
 ExecStart=/usr/local/sbin/avf-desktop start %i
 ExecStop=/usr/local/sbin/avf-desktop stop
-TimeoutStartSec=30
+# A stuck gfxstream/Zink initialization must fail before it can destabilize the host VM.
+TimeoutStartSec=5
 TimeoutStopSec=15
 
 # Intentionally no [Install] section: this unit must never be enabled or started by a target.

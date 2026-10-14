@@ -147,6 +147,15 @@ class VmService : Service() {
         readinessJob?.cancel()
         VmRuntime.setStatus(VmStatus.Stopping, "Requesting guest shutdown over vsock")
         updateNotification("VM stopping")
+        val desktopStopCompleted = runCatching {
+            VmStopSequence.stopDesktopIfStarted(desktopStarted) {
+                requireNotNull(selectedBundle) { "The active bundle metadata is unavailable." }
+                controlClient.stopDesktop(selectedBundle.vsockPort, selectedBundle.gpuProfile)
+            }
+        }.onFailure { error ->
+            Log.w(TAG, "desktop stop before shutdown failed", error)
+        }.getOrDefault(false)
+        if (desktopStopCompleted) desktopStarted = false
         val standardAgentSent = engine.requestGuestAgentShutdown()
         val rawVsockSent = !standardAgentSent && runCatching {
             requireNotNull(selectedBundle) { "The active bundle metadata is unavailable." }
@@ -355,5 +364,13 @@ class VmService : Service() {
             Intent(context, VmService::class.java)
                 .setAction(ACTION_DEBUG_CONSOLE)
                 .putExtra(EXTRA_TEXT, text)
+    }
+}
+
+internal object VmStopSequence {
+    fun stopDesktopIfStarted(desktopStarted: Boolean, stopDesktop: () -> Unit): Boolean {
+        if (!desktopStarted) return false
+        stopDesktop()
+        return true
     }
 }

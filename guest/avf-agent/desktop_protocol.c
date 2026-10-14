@@ -7,15 +7,16 @@ struct desktop_mapping {
     const char *command;
     const char *verb;
     const char *unit;
+    bool no_block;
 };
 
 static const struct desktop_mapping mappings[] = {
-    {"START_DESKTOP", "start", "avf-desktop@2d.service"},
-    {"START_DESKTOP 2d", "start", "avf-desktop@2d.service"},
-    {"START_DESKTOP gfxstream", "start", "avf-desktop@gfxstream.service"},
-    {"STOP_DESKTOP", "stop", "avf-desktop@2d.service"},
-    {"STOP_DESKTOP 2d", "stop", "avf-desktop@2d.service"},
-    {"STOP_DESKTOP gfxstream", "stop", "avf-desktop@gfxstream.service"},
+    {"START_DESKTOP", "start", "avf-desktop@2d.service", false},
+    {"START_DESKTOP 2d", "start", "avf-desktop@2d.service", false},
+    {"START_DESKTOP gfxstream", "start", "avf-desktop@gfxstream.service", false},
+    {"STOP_DESKTOP", "stop", "avf-desktop@2d.service", false},
+    {"STOP_DESKTOP 2d", "stop", "avf-desktop@2d.service", false},
+    {"STOP_DESKTOP gfxstream", "stop", "avf-desktop@gfxstream.service", false},
 };
 
 bool parse_desktop_operation(const char *command, struct desktop_operation *operation) {
@@ -24,6 +25,7 @@ bool parse_desktop_operation(const char *command, struct desktop_operation *oper
         if (strcmp(command, mappings[index].command) == 0) {
             operation->verb = mappings[index].verb;
             operation->unit = mappings[index].unit;
+            operation->no_block = mappings[index].no_block;
             return true;
         }
     }

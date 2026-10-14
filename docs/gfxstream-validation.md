@@ -16,18 +16,42 @@ Pixman/Lavapipe/llvmpipe are diagnostic baselines, not substitutes for GPU accel
 5. **Cleanup and policy**: stop through the ordinary app; require crosvm/helper/display child
    removal and unchanged SELinux/hidden-API snapshots.
 
-## Current result (incomplete, not GPU acceleration success)
+## Current result (2026-10-15, not GPU acceleration success)
 
 | Gate | Evidence / verdict |
 | --- | --- |
-| Effective host flags | gfxstream + `vulkan=true` and native `Vulkan: enabled` confirmed; initialization also logs GL/ColorBuffer errors, so this is only a **configuration pass**. |
-| Guest driver/access | Mesa gfxstream ICD and render node exist; temporary non-root render-group query once enumerated Mali/ARM successfully. Later queries in the same VM segfaulted. |
-| Workload | **Not passed**: Zink/EGL initialization timed out or segfaulted; direct Vulkan probe segfaulted at instance creation before any buffer/command work. |
-| Visible frames | **Not passed**: backend-only baseline was 0/400; Vulkan-enabled boot had no Surface while locked. |
-| Shutdown | VM/helper/layer no longer present and policy unchanged, but **normal stop failed**: host `v_gpu` thread SIGSEGV during shutdown. |
+| Effective host flags | **Configuration pass only**: gfxstream explicitly enables EGL/GLES, surfaceless operation, Vulkan, and `gfxstream-gles:gfxstream-vulkan:gfxstream-composer`. The compatible GL compositor avoids the immediate BGRA8 abort seen with the Vulkan-only compositor. |
+| Guest driver/access | **Passed**: `droid` is persistently in `render`; non-root render-node access and the gfxstream ICD selection are verified. The software-forcing Lavapipe override is absent from the gfxstream profile. |
+| Workload | **Not passed**: a cold direct Vulkan resource probe reached submit/wait but returned the unchanged sentinel buffer; Zink/Weston still stalls at `eglInitialize`. No shader or verified GPU write completed. |
+| Visible frames | **Not passed**: the Android Surface attaches, but no non-black guest frame has been demonstrated. |
+| Stability | **Fail-closed only**: a five-second guest unit deadline now terminates the stuck compositor before its prior spontaneous host crash. The VM remains alive after that rejection. Orderly VM poweroff still makes the host `v_gpu` thread SIGSEGV after `vcpu requested shutdown`; this is outside the app/guest repair boundary. |
 
-A fresh-session native control is in progress; no persistent guest render-group/ICD override,
-package installation, image replacement or Android policy change has been made by these probes.
+The deployed guest changes are limited to the project agent, desktop helper/template, render-group
+membership, and Weston profile environment. SELinux remains enforcing; hidden-API settings are
+unchanged. No package or Android policy change was made. The stage-two rollback directory is
+`/data/local/tmp/viruaisor-gpu-stage2-backup-20261015-011000/`.
+
+### Stage-two host boundary
+
+The explicit three-context configuration follows the capset split used by AOSP's crosvm/gfxstream
+integration while retaining GLES for this device's host compositor. AOSP's AVF Terminal reference
+also enables gfxstream Vulkan and surfaceless operation, but its enabling change explicitly notes
+that the path still failed after roughly ten seconds. On this device, using only
+`gfxstream-vulkan:gfxstream-composer` selects `GuestVulkanOnly` and aborts because the Mali host
+cannot create the BGRA8 display color buffer. Keeping the GLES context avoids that boot-time abort,
+but does not repair guest Zink initialization or host Vulkan teardown.
+
+The guest agent now waits for the real `systemctl` exit result and the app consumes the initial
+`READY` greeting before accepting `OK`. `avf-desktop@.service` has a five-second start timeout, so
+a compositor that never becomes ready returns `ERROR systemctl` and is killed rather than being
+reported as started. The final device run remained alive beyond the previous seven-second crash
+window after this rejection. A later orderly poweroff completed guest systemd shutdown and then
+reproduced the same host `v_gpu` `SIGSEGV` in `pthread_key_clean_all`; resources disappeared and
+policy stayed unchanged, but the stop is correctly retained as a failure rather than reclassified.
+
+Relevant upstream references: [AOSP AVF Terminal gfxstream configuration](https://android.googlesource.com/platform/packages/modules/Virtualization/%2B/caea82495188da85509997a549edd83faa76450e%5E%21/),
+[Cuttlefish crosvm context selection](https://android.googlesource.com/device/google/cuttlefish/+/refs/heads/master/host/libs/vm_manager/crosvm_manager.cpp), and
+[gfxstream renderer feature parsing](https://android.googlesource.com/platform/hardware/google/gfxstream/+/refs/heads/main/host/virtio-gpu-gfxstream-renderer.cpp).
 
 ## Device baseline: backend-only switch
 
