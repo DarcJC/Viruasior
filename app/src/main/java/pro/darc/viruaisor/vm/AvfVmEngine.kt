@@ -186,7 +186,9 @@ class AvfVmEngine(
         val gpuBuilder = loadClass("$CUSTOM_CONFIG\$GpuConfig\$Builder")
             .getConstructor()
             .newInstance()
-        invoke(gpuBuilder, "setBackend", bundle.gpuProfile.avfBackend)
+        VmGpuConfiguration.apply(bundle.gpuProfile) { method, value ->
+            invoke(gpuBuilder, method, value)
+        }
         val gpuConfig = invoke(gpuBuilder, "build")
             ?: error("Could not build the AVF GPU configuration.")
         invoke(customBuilder, "setGpuConfig", gpuConfig)

@@ -9,7 +9,10 @@ keeps VM lifecycle ownership in `VmService`, and controls guest services over vs
 - A single VM bundle is imported into app-private `filesDir/vms/default/` storage.
 - Guests boot headlessly to `multi-user.target`; desktop services start only on an explicit
   `START_DESKTOP` request after the Android Surface is ready.
-- The default graphics profile is crosvm `2d`; `gfxstream` is optional.
+- GPU virtualization through `gfxstream` is the graphics development target. The current default
+  is crosvm `2d`, retained as a diagnostic baseline; software-rendered output is not proof of GPU
+  acceleration. See [gfxstream validation](docs/gfxstream-validation.md) for separate host, guest,
+  GPU-execution and presentation checks.
 - The app requests root through KernelSU-compatible `su` on first launch. The Root card shows
   authorization status and provides a retry after enabling Viruaisor in KernelSU's Superuser list.
   A grant is verified by a root child reporting UID 0, not merely by finding an installed `su`.
@@ -95,11 +98,40 @@ hardcoding. A root grant is a prerequisite for future privileged integration, **
 that the AVF/Direct Surface SELinux gates have been resolved. No policy injection, system settings,
 or permission grants are performed by this authorization flow.
 
+After authorization, **补齐本应用 AVF 权限** explicitly grants only missing
+`MANAGE_VIRTUAL_MACHINE` and `USE_CUSTOM_VIRTUAL_MACHINE` permissions to this app and current
+Android user. The ordinary app verifies the result and refreshes AVF availability. Existing grants
+are preserved; attempted new grants are journaled before mutation. **撤销配置新增权限** rolls back
+only that journal after the VM is stopped (Android may terminate the app during revocation).
+See [the permission setup design](docs/root-permissions.md) for scope, audit, and verification.
+
 For authorization diagnostics:
 
 ```sh
 adb logcat -s ViruaisorRoot
 ```
+
+## Experimental Root Direct Surface
+
+After the one-shot AVF permission setup, the **实验 Root Direct Surface（仅显示桥接）** button
+opts into a short-lived libsu root helper for AVF display service lookup and Surface attach/detach
+only. VM lifecycle, bundle files, vsock and input continue to run in the ordinary application.
+The helper authenticates the full application UID for every RPC, accepts no arbitrary commands or
+service names, retains platform Binders privately, and is released with the Surface/VM/UI. No root
+daemon or general-purpose cached shell is kept; stuck display operations kill the disposable helper.
+
+This is a **single-VM experiment**, not a production ownership-isolated display API. Android 17's
+internal `waitDisplayService()` has no VM identity argument; the helper refuses zero or multiple
+crosvm processes, but cannot prove global-display ownership or eliminate process races. Stop
+Terminal/other AVF VMs before testing. See [the security and lifetime design](docs/root-display-broker.md)
+and [libsu source research](docs/root-display-broker-research.md).
+
+No SELinux or hidden-API settings are changed by the display helper. KernelSU's existing `ksu`
+policy is itself broad/domain-permissive: global **Enforcing** does not imply a least-privileged root
+child. Success must be verified separately as service access, Surface attachment, and **visible guest
+frames**. The reproducible single-VM check is `scripts/test-root-direct-surface.sh`. Unlock the
+phone first and keep this app in the foreground: the test refuses off/locked or unverified screen
+states before starting a VM, and never wakes/unlocks the device or changes its screen timeout.
 
 ## Conservative root policy
 

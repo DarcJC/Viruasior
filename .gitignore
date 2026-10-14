@@ -22,6 +22,7 @@ local.properties
 # Local Pi task logs, research cache, device dumps and VM images
 # Shared .pi agents/workflows are not ignored.
 /.pi/device-debug/
+/.pi/delegate/
 /.pi/fusion/
 /.pi/research-cache/
 /.pi/tasks/

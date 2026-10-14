@@ -5,6 +5,7 @@ import android.os.Parcel
 import android.util.Log
 import android.view.MotionEvent
 import android.view.Surface
+import android.view.SurfaceControl
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
@@ -12,9 +13,16 @@ import java.util.concurrent.Executors
  * Display seam between Android UI ownership and the platform-specific VM presentation path.
  * Implementations own all Surface attachment details; VM lifecycle code does not know about them.
  */
+data class DisplayTarget(
+    val surface: Surface,
+    val parent: SurfaceControl?,
+    val bufferWidth: Int,
+    val bufferHeight: Int,
+)
+
 interface DisplayBackend {
     val name: String
-    fun attach(surface: Surface, onAttached: () -> Unit)
+    fun attach(target: DisplayTarget, onAttached: () -> Unit)
     fun detach(surface: Surface)
 }
 
@@ -55,7 +63,8 @@ class DirectAvfSurfaceBackend(
     private var generation = 0L
     private var displayBinder: IBinder? = null
 
-    override fun attach(surface: Surface, onAttached: () -> Unit) {
+    override fun attach(target: DisplayTarget, onAttached: () -> Unit) {
+        val surface = target.surface
         val requestedGeneration = synchronized(lock) {
             this.surface = surface
             displayBinder = null
@@ -203,8 +212,8 @@ class StreamSurfaceBackend : DisplayBackend {
     override val name: String = "Stream fallback"
     @Volatile private var attachedSurface: Surface? = null
 
-    override fun attach(surface: Surface, onAttached: () -> Unit) {
-        attachedSurface = surface
+    override fun attach(target: DisplayTarget, onAttached: () -> Unit) {
+        attachedSurface = target.surface
         onAttached()
     }
 

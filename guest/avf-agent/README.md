@@ -14,8 +14,22 @@ self-contained aarch64 binary used by the device test image. The agent service r
 
 `avf-desktop.service` has no `[Install]` section and therefore cannot be enabled by a target. The VM
 kernel command line blacklists `drm` and `virtio_gpu` during automatic module discovery. Only an
-explicit `START_DESKTOP` command starts this unit; its `ExecStartPre` loads `virtio_gpu`, and then
-it starts the existing Weston user unit. Do not install a shell-profile or udev desktop trigger.
+explicit `START_DESKTOP` command starts this unit; its `ExecStartPre` loads `virtio_gpu` only when
+`/sys/module/virtio_gpu` is absent, and then it starts the existing Weston user unit. A built-in or
+already-loaded driver must not be blocked by `modprobe` failing due to missing module files. If the
+driver is absent and loading fails, startup still fails rather than hiding the missing GPU.
+Module blacklisting does not disable a driver compiled into the kernel; Weston remains explicitly
+gated either way. Do not install a shell-profile or udev desktop trigger.
+
+Run the preflight regression from the repository root (Bash; no root or VM needed):
+
+```sh
+bash scripts/test-guest-desktop-preflight.sh
+```
+
+The four cases execute the unit's actual `ExecStartPre` command with fixture module/loader paths.
+They cover an already-available driver with missing module files, avoiding redundant loads,
+loading an absent driver, and propagating a real load failure. This is not a Weston/rendering test.
 
 Each accepted connection begins with `READY`. The daemon handles `SHUTDOWN`, `START_DESKTOP`, and
 `STOP_DESKTOP`. `RESIZE` is reserved and reports `display-unavailable` in this headless version.

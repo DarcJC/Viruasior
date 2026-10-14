@@ -29,22 +29,30 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
+import pro.darc.viruaisor.display.DisplayBackend
 import pro.darc.viruaisor.display.DisplayBackendRegistry
+import pro.darc.viruaisor.display.DisplayTarget
+import pro.darc.viruaisor.display.RootAvfSurfaceBackend
 import pro.darc.viruaisor.display.InputBackendRegistry
+import pro.darc.viruaisor.root.AvfPermissionRuntime
+import pro.darc.viruaisor.root.AvfPermissionSetup
 import pro.darc.viruaisor.root.RootAccess
 import pro.darc.viruaisor.root.RootRuntime
 import pro.darc.viruaisor.ui.theme.ViruaisorTheme
@@ -55,6 +63,7 @@ import pro.darc.viruaisor.vm.VmStatus
 import pro.darc.viruaisor.vm.VmUiState
 
 class MainActivity : ComponentActivity() {
+    private var useRootDisplay by mutableStateOf(false)
     private val bundlePicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
             ContextCompat.startForegroundService(this, VmService.importIntent(this, uri))
@@ -63,6 +72,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        useRootDisplay = savedInstanceState?.getBoolean("rootDisplay", false) ?: false
         enableEdgeToEdge()
         lifecycleScope.launch { VmRuntime.initialize(this@MainActivity) }
         RootRuntime.request(onlyIfIdle = true)
@@ -71,10 +81,16 @@ class MainActivity : ComponentActivity() {
             ViruaisorTheme {
                 val state by VmRuntime.state.collectAsState()
                 val rootAccess by RootRuntime.state.collectAsState()
+                val permissionSetup by AvfPermissionRuntime.state.collectAsState()
                 VmScreen(
                     state = state,
                     rootAccess = rootAccess,
+                    permissionSetup = permissionSetup,
+                    useRootDisplay = useRootDisplay,
+                    onToggleRootDisplay = { useRootDisplay = !useRootDisplay },
                     onRequestRoot = { RootRuntime.request() },
+                    onGrantAvf = { AvfPermissionRuntime.grantMissing(this) },
+                    onRevokeAvf = { AvfPermissionRuntime.revokeAdded(this) },
                     onChooseBundle = { bundlePicker.launch(BUNDLE_MIME_TYPES) },
                     onStart = {
                         ContextCompat.startForegroundService(
@@ -105,6 +121,11 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putBoolean("rootDisplay", useRootDisplay)
+        super.onSaveInstanceState(outState)
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
@@ -117,6 +138,8 @@ class MainActivity : ComponentActivity() {
         when (intent.action) {
             ACTION_DEBUG_START -> ContextCompat.startForegroundService(this, VmService.startIntent(this))
             ACTION_DEBUG_STOP -> ContextCompat.startForegroundService(this, VmService.stopIntent(this))
+            ACTION_DEBUG_GRANT_AVF -> AvfPermissionRuntime.grantMissing(this)
+            ACTION_DEBUG_ROOT_DISPLAY -> useRootDisplay = true
             ACTION_DEBUG_CONSOLE -> {
                 val encoded = intent.getStringExtra(EXTRA_TEXT_BASE64).orEmpty()
                 val text = String(Base64.decode(encoded, Base64.DEFAULT), Charsets.UTF_8)
@@ -129,6 +152,8 @@ class MainActivity : ComponentActivity() {
         const val ACTION_DEBUG_START = "pro.darc.viruaisor.action.DEBUG_START"
         const val ACTION_DEBUG_STOP = "pro.darc.viruaisor.action.DEBUG_STOP"
         const val ACTION_DEBUG_CONSOLE = "pro.darc.viruaisor.action.DEBUG_CONSOLE"
+        const val ACTION_DEBUG_GRANT_AVF = "pro.darc.viruaisor.action.DEBUG_GRANT_AVF"
+        const val ACTION_DEBUG_ROOT_DISPLAY = "pro.darc.viruaisor.action.DEBUG_ROOT_DISPLAY"
         const val EXTRA_TEXT_BASE64 = "textBase64"
         val BUNDLE_MIME_TYPES = arrayOf(
             "application/zip",
@@ -142,7 +167,12 @@ class MainActivity : ComponentActivity() {
 private fun VmScreen(
     state: VmUiState,
     rootAccess: RootAccess,
+    permissionSetup: AvfPermissionSetup,
+    useRootDisplay: Boolean,
+    onToggleRootDisplay: () -> Unit,
     onRequestRoot: () -> Unit,
+    onGrantAvf: () -> Unit,
+    onRevokeAvf: () -> Unit,
     onChooseBundle: () -> Unit,
     onStart: () -> Unit,
     onStop: () -> Unit,
@@ -150,6 +180,23 @@ private fun VmScreen(
     onSurfaceGone: () -> Unit,
 ) {
     var surfaceReady by remember { mutableStateOf(false) }
+    val view = LocalView.current
+    DisposableEffect(view, state.isActive) {
+        val previous = view.keepScreenOn
+        view.keepScreenOn = state.isActive
+        onDispose { view.keepScreenOn = previous }
+    }
+    val context = LocalContext.current
+    val rootBackend = remember { RootAvfSurfaceBackend(context) }
+    val rootDisplayStatus by rootBackend.status.collectAsState()
+    DisposableEffect(rootBackend) { onDispose { rootBackend.close() } }
+    LaunchedEffect(useRootDisplay, state.status, rootAccess) {
+        val running = state.status is VmStatus.Running || state.status is VmStatus.GuestAgentReady
+        rootBackend.setRunning(useRootDisplay && rootAccess is RootAccess.Granted && running)
+    }
+    LaunchedEffect(useRootDisplay, rootDisplayStatus) {
+        if (useRootDisplay && !rootDisplayStatus.startsWith("Root Direct Surface attached")) surfaceReady = false
+    }
     LaunchedEffect(surfaceReady, state.status) {
         val running = state.status is VmStatus.Running || state.status is VmStatus.GuestAgentReady
         if (surfaceReady && running) onSurfaceReady()
@@ -167,14 +214,25 @@ private fun VmScreen(
         ) {
             Text("Viruaisor", style = MaterialTheme.typography.headlineMedium)
             RootCard(rootAccess, onRequestRoot)
+            AvfPermissionCard(permissionSetup, rootAccess is RootAccess.Granted, state.isActive, onGrantAvf, onRevokeAvf)
             AvfCard(state.support)
-            VmSurface(
-                modifier = Modifier
-                    .heightIn(max = 360.dp)
-                    .aspectRatio(DISPLAY_ASPECT_RATIO)
-                    .fillMaxWidth(),
-                onReadyChanged = { surfaceReady = it },
-            )
+            OutlinedButton(onClick = onToggleRootDisplay, enabled = rootAccess is RootAccess.Granted) {
+                Text(if (useRootDisplay) "关闭 Root 显示桥接" else "实验 Root Direct Surface（仅显示桥接）")
+            }
+            if (useRootDisplay) {
+                Text("实验仅限单 VM；内部显示接口没有 VM 所有权参数。", style = MaterialTheme.typography.bodySmall)
+                Text(rootDisplayStatus, style = MaterialTheme.typography.bodySmall)
+            }
+            key(useRootDisplay) {
+                VmSurface(
+                    modifier = Modifier
+                        .heightIn(max = 360.dp)
+                        .aspectRatio(DISPLAY_ASPECT_RATIO)
+                        .fillMaxWidth(),
+                    backend = if (useRootDisplay) rootBackend else DisplayBackendRegistry.active,
+                    onReadyChanged = { surfaceReady = it },
+                )
+            }
             StatusCard(state)
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 OutlinedButton(onClick = onChooseBundle, enabled = state.canImport) {
@@ -222,6 +280,38 @@ private fun RootCard(access: RootAccess, onRequestRoot: () -> Unit) {
 }
 
 @Composable
+private fun AvfPermissionCard(
+    setup: AvfPermissionSetup,
+    rootGranted: Boolean,
+    vmActive: Boolean,
+    onGrant: () -> Unit,
+    onRevoke: () -> Unit,
+) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text("AVF 最小权限配置", style = MaterialTheme.typography.titleMedium)
+            Text("仅给本应用补齐 MANAGE_VIRTUAL_MACHINE 和 USE_CUSTOM_VIRTUAL_MACHINE；保留已有授权，不修改系统策略。", style = MaterialTheme.typography.bodySmall)
+            when (setup) {
+                AvfPermissionSetup.Idle -> Unit
+                AvfPermissionSetup.Working -> Text("正在配置并从普通应用进程验证…")
+                is AvfPermissionSetup.Failed -> Text(setup.reason, color = MaterialTheme.colorScheme.error)
+                is AvfPermissionSetup.Complete -> setup.changes.forEach { change ->
+                    Text("${change.permission.name}: ${if (change.isGranted) "已授权" else "未授权"}" +
+                        (if (change.wasGranted) "（保留已有授权）" else "") +
+                        (change.error?.let { " · $it" } ?: ""), style = MaterialTheme.typography.bodySmall)
+                }
+            }
+            OutlinedButton(onClick = onGrant, enabled = rootGranted && setup !is AvfPermissionSetup.Working && !vmActive) {
+                Text("补齐本应用 AVF 权限")
+            }
+            OutlinedButton(onClick = onRevoke, enabled = rootGranted && setup !is AvfPermissionSetup.Working && !vmActive) {
+                Text("撤销配置新增权限（可能重启应用）")
+            }
+        }
+    }
+}
+
+@Composable
 private fun AvfCard(support: AvfSupport) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -263,10 +353,10 @@ private fun StatusCard(state: VmUiState) {
 @Composable
 private fun VmSurface(
     modifier: Modifier = Modifier,
+    backend: DisplayBackend,
     onReadyChanged: (Boolean) -> Unit,
 ) {
     val context = LocalContext.current
-    val backend = DisplayBackendRegistry.active
     AndroidView(
         modifier = modifier.background(Color.Black),
         factory = {
@@ -289,21 +379,29 @@ private fun VmSurface(
                     }
                 }
                 holder.addCallback(object : SurfaceHolder.Callback {
-                    override fun surfaceCreated(holder: SurfaceHolder) {
-                        backend.attach(holder.surface) { post { onReadyChanged(true) } }
-                    }
+                    override fun surfaceCreated(holder: SurfaceHolder) = Unit
                     override fun surfaceChanged(
                         holder: SurfaceHolder,
                         format: Int,
                         width: Int,
                         height: Int,
-                    ) = Unit
+                    ) {
+                        // The callback supplies fixed-buffer dimensions, not on-screen view size.
+                        onReadyChanged(false)
+                        backend.attach(DisplayTarget(holder.surface, surfaceControl, width, height)) {
+                            post { onReadyChanged(true) }
+                        }
+                    }
                     override fun surfaceDestroyed(holder: SurfaceHolder) {
                         onReadyChanged(false)
                         backend.detach(holder.surface)
                     }
                 })
             }
+        },
+        onRelease = { view ->
+            onReadyChanged(false)
+            backend.detach(view.holder.surface)
         },
     )
 }

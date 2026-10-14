@@ -43,14 +43,21 @@ must be at the ZIP root. Paths in the manifest are relative to that root.
 `initrd` and `rootfsPartition` are optional. Without `rootfsPartition`, `rootfs` is attached as a
 whole writable disk. `cpuTopology` may be `match_host` or `one_cpu`. `gpuProfile` may be `2d`
 (the default) or `gfxstream`; the latter is an optional profile rather than an application
-requirement. The optional `display` object defaults to 1280x720, 240 dpi, and 60 Hz.
+requirement. The gfxstream profile explicitly requests AVF's Vulkan renderer, since selecting
+its backend alone leaves Vulkan disabled on API 37. It also needs a matching guest gfxstream
+Vulkan ICD: the existing helper's forced Lavapipe environment is a software baseline, not GPU
+acceleration. See [gfxstream validation](gfxstream-validation.md). The optional `display` object
+defaults to 1280x720, 240 dpi, and 60 Hz.
 
 The importer replaces any supplied `systemd.unit` argument with
 `systemd.unit=multi-user.target` and adds `systemd.mask=display-manager.service` and
 `systemd.mask=graphical.target`. Creating a virtual display/GPU does not start Weston. Guest images
 must not use shell profiles, udev rules, or boot units to start Weston. Viruaisor adds
-`modprobe.blacklist=drm,virtio_gpu` so headless systemd startup does not probe DRM/KMS; the explicit
-desktop unit loads `virtio_gpu` immediately before Weston. The desktop starts only after the
+`modprobe.blacklist=drm,virtio_gpu` to suppress automatic module loading during headless startup;
+it cannot disable drivers built into the kernel. The explicit desktop unit loads `virtio_gpu`
+immediately before Weston only if `/sys/module/virtio_gpu` is absent. This avoids a false startup
+failure on kernels whose driver is already available but whose module files are not installed.
+An absent driver that cannot be loaded still fails startup. The desktop starts only after the
 Android Surface is ready and the app sends `START_DESKTOP` over vsock.
 
 The root filesystem must contain `avf-agent.service`, enabled for `multi-user.target`. Its daemon

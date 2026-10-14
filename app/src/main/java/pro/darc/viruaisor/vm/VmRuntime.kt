@@ -31,6 +31,15 @@ object VmRuntime {
         }
     }
 
+    suspend fun refreshSupport(context: Context) {
+        initializationMutex.withLock {
+            val support = withContext(Dispatchers.IO) {
+                AvfCapability.check(context.applicationContext)
+            }
+            mutableState.value = mutableState.value.copy(support = support)
+        }
+    }
+
     internal fun setImporting() = update {
         it.copy(status = VmStatus.Importing, detail = "Importing bundle into filesDir/vms/default …")
     }

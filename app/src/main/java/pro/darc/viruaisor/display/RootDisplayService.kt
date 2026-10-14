@@ -1,0 +1,167 @@
+package pro.darc.viruaisor.display
+
+import android.content.Intent
+import android.os.Binder
+import android.os.IBinder
+import android.os.Parcel
+import android.os.Process
+import android.util.Log
+import android.view.SurfaceControl
+import com.topjohnwu.superuser.ipc.RootService
+import java.io.File
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+
+/** Non-daemon helper: ONLY display attach/detach; no shell, files, grants, input, or VM lifecycle RPC. */
+class RootDisplayService : RootService() {
+    private lateinit var authorization: RootDisplayAuthorization
+    private val connector = Android17AvfDisplayConnector()
+    private val lock = Any()
+    private var display: IBinder? = null
+    private var ownedSurface: RootOwnedSurface? = null
+    private var sessionToken: IBinder? = null
+    private var sessionDeath: IBinder.DeathRecipient? = null
+    private val watchdog = Executors.newSingleThreadScheduledExecutor { task ->
+        Thread(task, "viruaisor-root-display-watchdog").apply { isDaemon = true }
+    }
+
+    override fun onCreate() {
+        check(Process.myUid() == 0) { "Display helper must be a root child" }
+        check(packageName == "pro.darc.viruaisor") { "Unexpected root display package" }
+        authorization = RootDisplayAuthorization(applicationInfo.uid)
+        Log.i(TAG, "Helper started: uid=${Process.myUid()} pid=${Process.myPid()} allowedUid=${applicationInfo.uid} context=${securityContext()}")
+    }
+
+    override fun onBind(intent: Intent): IBinder = object : Binder() {
+        override fun onTransact(code: Int, data: Parcel, reply: Parcel?, flags: Int): Boolean {
+            // Authenticate BEFORE deserializing caller data or clearing Binder identity.
+            authorization.enforce(getCallingUid(), code)
+            require(flags and IBinder.FLAG_ONEWAY == 0 && reply != null) { "Synchronous display RPC required" }
+            if (code == RootDisplayAuthorization.INTERFACE_TRANSACTION) {
+                reply.writeString(RootDisplayAuthorization.DESCRIPTOR)
+                return true
+            }
+            data.enforceInterface(RootDisplayAuthorization.DESCRIPTOR)
+            val token = requireNotNull(data.readStrongBinder()) { "Missing display session token" }
+            val parent = if (code == RootDisplayAuthorization.ATTACH) {
+                requireNotNull(data.readTypedObject(SurfaceControl.CREATOR)) { "Missing SurfaceView parent" }
+            } else null
+            var parentTransferred = false
+            try {
+                val width = if (parent != null) data.readInt() else 0
+                val height = if (parent != null) data.readInt() else 0
+                data.enforceNoDataAvail()
+                val identity = clearCallingIdentity()
+                try {
+                    boundedOperation {
+                        synchronized(lock) {
+                            if (parent != null) {
+                                require(parent.isValid) { "Invalid SurfaceView parent" }
+                                RootDisplaySize.validate(width, height)
+                                requireSingleCrosvm()
+                                removeSurface()
+                                val death = IBinder.DeathRecipient {
+                                    runCatching {
+                                        boundedOperation {
+                                            synchronized(lock) {
+                                                if (sessionToken == token) removeSurface()
+                                            }
+                                        }
+                                    }.onFailure { Log.w(TAG, "Dead display session cleanup failed", it) }
+                                }
+                                token.linkToDeath(death, 0)
+                                var pending: RootOwnedSurface? = null
+                                var requestedDisplay: IBinder? = null
+                                try {
+                                    val owned = RootOwnedSurface.create(parent, width, height)
+                                    pending = owned
+                                    parentTransferred = true
+                                    val binder = connector.waitForDisplayService()
+                                    check(token.isBinderAlive) { "Display session died during startup" }
+                                    requestedDisplay = binder
+                                    connector.setSurface(binder, owned.surface)
+                                    check(token.isBinderAlive) { "Display session died during attachment" }
+                                    owned.show()
+                                    display = binder
+                                    ownedSurface = owned
+                                    sessionToken = token
+                                    sessionDeath = death
+                                    pending = null
+                                } catch (error: Throwable) {
+                                    runCatching { token.unlinkToDeath(death, 0) }
+                                    runCatching {
+                                        pending?.close { requestedDisplay?.let { connector.removeSurface(it) } }
+                                    }.onFailure { if (it !== error) error.addSuppressed(it) }
+                                    throw error
+                                }
+                                Log.i(TAG, "Root-owned BLAST Surface attached: ${width}x$height ownerPid=${Process.myPid()}")
+                            } else if (sessionToken == token) {
+                                // An old UI instance must not remove a newer instance's attachment.
+                                removeSurface()
+                            }
+                        }
+                    }
+                } finally {
+                    restoreCallingIdentity(identity)
+                }
+                reply.writeNoException()
+                // Diagnostic only: bootstrap is restricted by libsu, not authenticated by this text.
+                reply.writeString("uid=${Process.myUid()} pid=${Process.myPid()} context=${securityContext()} queue=root-owned")
+                return true
+            } finally {
+                if (!parentTransferred) parent?.release()
+            }
+        }
+    }
+
+    override fun onDestroy() {
+        runCatching { boundedOperation { synchronized(lock) { removeSurface() } } }
+            .onFailure { Log.w(TAG, "Display cleanup failed", it) }
+        watchdog.shutdownNow()
+        Log.i(TAG, "Helper destroyed; normal libsu root process exits when its last service is gone")
+    }
+
+    private fun requireSingleCrosvm() {
+        // waitDisplayService has NO VM ownership argument. Fail closed on competing VMs instead
+        // of pretending UID authentication also authenticates the global display resource.
+        val crosvm = CrosvmProcessGuard().requireSingle()
+        Log.i(TAG, "Single-VM lab guard: crosvm pid=${crosvm.name}; internal display ownership remains unverifiable")
+    }
+
+    private fun removeSurface() {
+        val binder = display
+        val owned = ownedSurface
+        val token = sessionToken
+        val death = sessionDeath
+        display = null
+        ownedSurface = null
+        sessionToken = null
+        sessionDeath = null
+        if (token != null && death != null) runCatching { token.unlinkToDeath(death, 0) }
+        if (owned != null) owned.close {
+            if (binder != null) connector.removeSurface(binder)
+        }
+    }
+
+    private fun boundedOperation(action: () -> Unit) {
+        // Binder calls cannot be safely interrupted. Kill ONLY this disposable helper on a hang.
+        val timeout = watchdog.schedule({
+            Log.e(TAG, "Display operation exceeded ${OPERATION_TIMEOUT_SECONDS}s; exiting helper")
+            Process.killProcess(Process.myPid())
+        }, OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+        try {
+            action()
+        } finally {
+            timeout.cancel(false)
+        }
+    }
+
+    private fun securityContext(): String = runCatching {
+        File("/proc/self/attr/current").readText().trim().trimEnd('\u0000')
+    }.getOrDefault("unknown")
+
+    private companion object {
+        const val TAG = "ViruaisorRootDisplay"
+        const val OPERATION_TIMEOUT_SECONDS = 15L
+    }
+}
