@@ -1,0 +1,48 @@
+#include <assert.h>
+#include "overlay_policy.h"
+
+int main(void) {
+    assert(overlay_token_valid("0123456789abcdef0123456789abcdef"));
+    assert(!overlay_token_valid("../0123456789abcdef0123456789abc"));
+    assert(!overlay_token_valid("0123456789abcdef0123456789abcdef00"));
+    assert(!overlay_token_valid("0123456789abcdef0123456789abcdeF"));
+    assert(!overlay_token_valid(NULL));
+    assert(!overlay_token_valid(""));
+    assert(overlay_identity_valid(10278, 10278, "pro.darc.viruaisor:venus_vm", 0));
+    assert(!overlay_identity_valid(10278, 1010278, "pro.darc.viruaisor:venus_vm", 0));
+    assert(!overlay_identity_valid(0, 0, "pro.darc.viruaisor:venus_vm", 0));
+    assert(!overlay_identity_valid(10278, 10278, "pro.darc.viruaisor", 0));
+    assert(!overlay_identity_valid(10278, 10278, "pro.darc.viruaisor:venus_vm", 1));
+    assert(!overlay_identity_valid(10278, 10278, NULL, 0));
+    assert(!overlay_identity_valid(20000, 20000, "pro.darc.viruaisor:venus_vm", 0));
+    assert(overlay_identity_valid(1010278, 1010278, "pro.darc.viruaisor:venus_vm", 0));
+    assert(overlay_namespace_valid(33, 11, 22, 44, 1));
+    assert(!overlay_namespace_valid(11, 11, 22, 44, 1));
+    assert(!overlay_namespace_valid(22, 11, 22, 44, 1));
+    assert(!overlay_namespace_valid(44, 11, 22, 44, 1));
+    assert(!overlay_namespace_valid(33, 11, 22, 44, 2));
+    assert(!overlay_namespace_valid(0, 11, 22, 44, 1));
+    assert(!overlay_namespace_valid(33, 0, 22, 44, 1));
+    assert(!overlay_namespace_valid(33, 11, 0, 44, 1));
+    assert(!overlay_namespace_valid(33, 11, 22, 0, 1));
+    assert(!overlay_namespace_valid(33, 11, 22, 44, UINT32_MAX));
+    assert(overlay_stock_identity_valid(10278, 10278, "crosvm_viruaisor-stock-overlay-probe", 0));
+    assert(!overlay_stock_identity_valid(10278, 0, "crosvm_viruaisor-stock-overlay-probe", 0));
+    assert(!overlay_stock_identity_valid(10278, 10278, "crosvm_default", 0));
+    assert(!overlay_stock_identity_valid(10278, 10278, "crosvm_viruaisor-stock-overlay-probe", 1));
+    assert(overlay_process_caps_valid(false, 0));
+    assert(!overlay_process_caps_valid(false, UINT64_C(0x800000)));
+    assert(overlay_process_caps_valid(true, UINT64_C(0x800000)));
+    assert(!overlay_process_caps_valid(true, 0));
+    assert(!overlay_process_caps_valid(true, UINT64_C(0x800001)));
+    assert(!overlay_process_caps_valid(true, UINT64_MAX));
+    assert(overlay_stock_domain_valid("u:r:untrusted_app_all_virtmgr_crosvm:s0:c22,c257,c512,c768", false));
+    assert(!overlay_stock_domain_valid("u:r:untrusted_app_all_virtmgr_crosvm_evil:s0", false));
+    assert(!overlay_stock_domain_valid("u:r:ksu:s0", false));
+    assert(!overlay_stock_domain_valid(NULL, false));
+    assert(overlay_stock_domain_valid("u:r:untrusted_app_all_virtualizationmanager:s0:c22,c257,c512,c768", true));
+    assert(!overlay_stock_domain_valid("u:r:untrusted_app_all_virtualizationmanager_evil:s0", true));
+    assert(!overlay_stock_domain_valid("u:r:untrusted_app_all_virtmgr_crosvm:s0", true));
+    assert(!overlay_stock_domain_valid(NULL, true));
+    return 0;
+}

@@ -33,6 +33,9 @@ android {
     buildFeatures {
         compose = true
     }
+    packaging {
+        jniLibs.useLegacyPackaging = true // Extract the bounded native Venus worker into the executable library directory.
+    }
 }
 
 dependencies {

@@ -1,0 +1,9 @@
+renderer_work=@RENDERER_WORK@
+libdir=${renderer_work}/build-android/src
+includedir=${renderer_work}/virglrenderer/src
+
+Name: virglrenderer
+Description: Pinned Android Venus-only static renderer (no DRM/GBM)
+Version: 1.3.0
+Libs: -L${libdir} -lvirglrenderer -lvirgl -L${libdir}/mesa -lmesa -ldl -lm -llog
+Cflags: -I${includedir}

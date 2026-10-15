@@ -61,6 +61,7 @@ import pro.darc.viruaisor.vm.VmRuntime
 import pro.darc.viruaisor.vm.VmService
 import pro.darc.viruaisor.vm.VmStatus
 import pro.darc.viruaisor.vm.VmUiState
+import pro.darc.viruaisor.gpu.VenusHostRuntime
 
 class MainActivity : ComponentActivity() {
     private var useRootDisplay by mutableStateOf(false)
@@ -187,6 +188,8 @@ private fun VmScreen(
         onDispose { view.keepScreenOn = previous }
     }
     val context = LocalContext.current
+    val venusHost by VenusHostRuntime.state.collectAsState()
+    val venusAvf by VenusHostRuntime.avfState.collectAsState()
     val rootBackend = remember { RootAvfSurfaceBackend(context) }
     val rootDisplayStatus by rootBackend.status.collectAsState()
     DisposableEffect(rootBackend) { onDispose { rootBackend.close() } }
@@ -213,6 +216,19 @@ private fun VmScreen(
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Text("Viruaisor", style = MaterialTheme.typography.headlineMedium)
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("Venus 宿主验证", style = MaterialTheme.typography.titleMedium)
+                    Text(venusHost.message, style = MaterialTheme.typography.bodySmall)
+                    OutlinedButton(onClick = { VenusHostRuntime.start(context) }, enabled = !state.isActive && !venusHost.running && !venusAvf.running) {
+                        Text("验证 Venus GPU 计算")
+                    }
+                    Text(venusAvf.message, style = MaterialTheme.typography.bodySmall)
+                    OutlinedButton(onClick = { VenusHostRuntime.startAvfProbe(context) }, enabled = !state.isActive && venusHost.verified && !venusHost.running && !venusAvf.running) {
+                        Text("检查 AVF Venus 后端")
+                    }
+                }
+            }
             RootCard(rootAccess, onRequestRoot)
             AvfPermissionCard(permissionSetup, rootAccess is RootAccess.Granted, state.isActive, onGrantAvf, onRevokeAvf)
             AvfCard(state.support)
@@ -235,10 +251,10 @@ private fun VmScreen(
             }
             StatusCard(state)
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                OutlinedButton(onClick = onChooseBundle, enabled = state.canImport) {
+                OutlinedButton(onClick = onChooseBundle, enabled = state.canImport && !venusHost.running && !venusAvf.running) {
                     Text(if (state.bundle == null) "Choose VM bundle" else "Replace VM bundle")
                 }
-                Button(onClick = onStart, enabled = state.canStart) { Text("Start") }
+                Button(onClick = onStart, enabled = state.canStart && !venusHost.running && !venusAvf.running) { Text("Start") }
                 OutlinedButton(onClick = onStop, enabled = state.canStop) { Text("Stop") }
             }
         }

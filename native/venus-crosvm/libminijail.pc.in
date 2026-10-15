@@ -1,0 +1,9 @@
+prefix=@TARGET_PREFIX@
+libdir=${prefix}/lib
+includedir=@MINIJAIL_SOURCE@
+
+Name: libminijail
+Description: Read-only device AVF library, headers pinned to Android 17
+Version: 0.2.3
+Libs: -L${libdir} -lminijail
+Cflags: -I${includedir}

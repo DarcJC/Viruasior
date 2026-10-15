@@ -56,6 +56,14 @@ This creates `app/src/main/jniLibs/arm64-v8a/libviruaisor_native.so`. Gradle pac
 **does not run the native build script automatically**. On Windows, run the script in WSL against
 this checkout, then run Gradle from Windows.
 
+### Experimental Venus host validation
+
+The normal app includes a bounded, non-root Venus compute validator and a separate
+diskless AVF backend check. Build its generated worker before packaging using the
+[Android Venus build instructions](native/venus-host/README.md). Host validation
+does not mean AVF guest GPU acceleration is available; see the
+[device results and remaining system-backend boundary](docs/venus-host-validation.md).
+
 ### Android application
 
 ```sh

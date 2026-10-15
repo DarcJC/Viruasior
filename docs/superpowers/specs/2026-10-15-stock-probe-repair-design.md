@@ -56,3 +56,19 @@ The no-overlay baseline requires no mount rollback. Overlay rollback uses only t
 existing authenticated lease; normal APK reinstall can restore the previous signed
 build without changing app data. Retained console files are diagnostic artifacts in
 this app only, not persistent execution hooks.
+
+## Completed evidence, 14:07
+
+The no-overlay baseline confirms stock virtmgr AND stock crosvm carry CAP_SYS_NICE;
+the overlay copy deliberately lacks filecaps and remains crosvm caps0. Console proves
+the no-rootfs panic/reset cause. Exact role-based capability/domain checks, bounded
+output drain, panic0 fixture, native-first cleanup and synchronous disposable exit
+are tested. The prior delayed exit was observed with cgroup.freeze=1; no freeze policy
+was changed. App-only fixed failure injection preserves the root API and confirms
+native rollback before control deletion. Final normal execution plus external audit
+passes; see the experiment report. 82 Android unit tests and native regressions pass.
+
+The local Cargo/NDK build baseline now links a real AArch64 crosvm containing Venus
+renderer code. It has not been deployed and is not yet a qualified AVF/Venus candidate.
+Stock descendant death/timeout, candidate provenance/loader/control and guest GPU
+mapping/readback remain distinct downstream gates.

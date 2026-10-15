@@ -30,6 +30,19 @@
                 android:value="Runs a user-selected Linux VM through Android Virtualization Framework" />
         </service>
 
+        <service
+            android:name=".gpu.VenusOverlayProbeService"
+            android:process=":venus_vm"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Bounded user-approved app-private GPU overlay isolation validation" />
+        </service>
+        <receiver
+            android:name=".gpu.VenusOverlayOutsideReceiver"
+            android:exported="false" />
+
         <activity
             android:name=".MainActivity"
             android:exported="true"
