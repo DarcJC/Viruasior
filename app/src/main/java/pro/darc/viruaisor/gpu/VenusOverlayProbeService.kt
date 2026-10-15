@@ -17,7 +17,7 @@ import java.util.concurrent.CompletableFuture
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
-/** Disposable same-UID namespace worker; AVF only after the pinned stock lease is ready. */
+/** Disposable same-UID namespace worker; AVF only after the pinned runtime lease is ready. */
 class VenusOverlayProbeService : Service() {
     private var started = false
     private val watchdog = Executors.newSingleThreadScheduledExecutor()
@@ -32,8 +32,13 @@ class VenusOverlayProbeService : Service() {
         started = true
         val mode = intent?.getStringExtra("mode") ?: "normal"
         val injectErrorAfterVm = intent?.getBooleanExtra("inject_error_after_vm", false) == true
-        if (intent?.action != ACTION || mode != "stock-baseline" && !RootOverlayAuthorization.validRequest("0".repeat(32), mode) ||
-            injectErrorAfterVm && mode != "stock-exec") {
+        val fault = intent?.getStringExtra("stock_fault") ?: "none"
+        val venusGpu = intent?.getBooleanExtra("venus_gpu", false) == true
+        val skipCacheSync = intent?.getBooleanExtra("skip_cache_sync", false) == true
+        if (intent?.action != ACTION || mode !in setOf("stock-baseline", "stock-recover") && !RootOverlayAuthorization.validRequest("0".repeat(32), mode) ||
+            injectErrorAfterVm && mode != "stock-exec" || !StockProbeConfig.validFault(fault) ||
+            fault != "none" && mode != "stock-exec" || venusGpu && mode != "venus-exec" ||
+            skipCacheSync && (mode != "venus-exec" || !venusGpu)) {
             stopSelf(); return START_NOT_STICKY
         }
         // Independent of Binder/native cleanup: app exit destroys its disposable namespace.
@@ -41,11 +46,12 @@ class VenusOverlayProbeService : Service() {
             Log.e(TAG, "APP_WATCHDOG_EXIT pid=${Process.myPid()}")
             Process.killProcess(Process.myPid())
         }, 45, TimeUnit.SECONDS)
-        Thread({ if (mode == "stock-baseline") runBaseline() else runProbe(mode, injectErrorAfterVm) }, "venus-overlay-app-observer").start()
+        Thread({ if (mode in setOf("stock-baseline", "stock-recover")) runBaseline(mode == "stock-recover") else runProbe(mode, injectErrorAfterVm, fault, venusGpu, skipCacheSync) }, "venus-overlay-app-observer").start()
         return START_NOT_STICKY
     }
-    private fun runBaseline() {
+    private fun runBaseline(recover: Boolean) {
         try {
+            if (recover) { Log.i(TAG, StockAvfOverlayProbe.recover(this)); return }
             Log.i(TAG, "STOCK_BASELINE_BEGIN uid=${Process.myUid()} pid=${Process.myPid()} overlay=false rootRpc=false")
             val capabilities = android.system.Os.getxattr("/apex/com.android.virt/bin/virtmgr", "security.capability")
             Log.i(TAG, "STOCK_VIRTMGR_FILECAP_RAW=${capabilities.joinToString("") { "%02x".format(it.toInt() and 255) }}")
@@ -56,8 +62,8 @@ class VenusOverlayProbeService : Service() {
             DisposableProbeExit.finish({ stopForeground(STOP_FOREGROUND_REMOVE) }, { stopSelf() }, { Process.killProcess(Process.myPid()) })
         }
     }
-    private fun runProbe(mode: String, injectErrorAfterVm: Boolean) {
-        val stock = mode == "stock-exec"
+    private fun runProbe(mode: String, injectErrorAfterVm: Boolean, fault: String, venusGpu: Boolean, skipCacheSync: Boolean) {
+        val stock = mode == "stock-exec" || mode == "venus-exec"
         val token = UUID.randomUUID().toString().replace("-", "")
         val lab = File(filesDir, "venus-overlay-lab").apply { mkdirs() }
         val report = File(filesDir, "venus-overlay-last.log")
@@ -75,13 +81,14 @@ class VenusOverlayProbeService : Service() {
             target.writeText("ORIGINAL:$token\n"); control.writeText("0")
             record("original_view=${target.readText().trim()}")
             val ready = CompletableFuture<String>()
+            val executed = CompletableFuture<String>()
             val callback = object : Binder() {
                 override fun onTransact(code: Int, data: Parcel, reply: Parcel?, flags: Int): Boolean {
-                    if (getCallingUid() != 0 || code != 1) throw SecurityException("Root callback only")
+                    if (getCallingUid() != 0 || code !in 1..2) throw SecurityException("Root callback only")
                     data.enforceInterface(RootOverlayAuthorization.DESCRIPTOR)
                     val status = requireNotNull(data.readString()).take(2048)
                     data.enforceNoDataAvail()
-                    ready.complete(status)
+                    if (code == 1) ready.complete(status) else executed.complete(status)
                     return true
                 }
             }
@@ -100,7 +107,7 @@ class VenusOverlayProbeService : Service() {
             check(status.contains("root_outside=ORIGINAL:$token")) { "Root control view changed" }
             record("inside_view=${target.readText().trim()}")
             check(target.readText() == "${if (stock) "ORIGINAL" else "OVERLAY"}:$token\n") { "Unexpected ordinary-app sentinel view" }
-            if (stock) check(status.contains("kind=stock-copy-byte-identical") && status.contains("root_stock_original=true"))
+            if (stock) check(status.contains("kind=${if (mode == "venus-exec") "venus-candidate-byte-identical" else "stock-copy-byte-identical"}") && status.contains("root_stock_original=true"))
             sendBroadcast(Intent(this, VenusOverlayOutsideReceiver::class.java).putExtra("token", token))
             val outsideDeadline = android.os.SystemClock.elapsedRealtime() + 3000
             while (!outside.isFile && android.os.SystemClock.elapsedRealtime() < outsideDeadline) Thread.sleep(25)
@@ -111,13 +118,19 @@ class VenusOverlayProbeService : Service() {
                 record("CLIENT_DEATH_INJECTED; native pidfd must revoke lease")
                 Process.killProcess(Process.myPid()); return
             }
-            if (stock) record(StockAvfOverlayProbe.run(this))
+            if (stock) record(StockAvfOverlayProbe.run(this, venus = venusGpu, skipCacheSync = skipCacheSync, token = token) {
+                record(executed.get(5, TimeUnit.SECONDS))
+                when (fault) {
+                    "owner-death" -> { record("STOCK_OWNER_DEATH_INJECTED VM_RUNNING=true"); Process.killProcess(Process.myPid()); Thread.sleep(25000) }
+                    "lease-timeout" -> { record("STOCK_LEASE_TIMEOUT_INJECTED VM_RUNNING=true"); Thread.sleep(25000) }
+                }
+            })
             // Fixed app-only fault in this unexported service. The root capability stays STOCK_EXEC.
             if (injectErrorAfterVm) {
                 record("INJECTED_APP_ERROR_AFTER_VM=true; VM already stopped/deleted")
                 error("Intentional stock probe app-side failure")
             }
-            if (mode == "normal" || stock) control.writeText("1")
+            if (mode == "normal" || stock) OverlayLeaseControl.release(control)
             val completed = result.get(12, TimeUnit.SECONDS)
             outcome = completed
             record(completed)
@@ -127,14 +140,14 @@ class VenusOverlayProbeService : Service() {
                 check(completed.startsWith("native_exit=0") && completed.contains("ROLLBACK=PASS"))
                 check(target.readText() == "ORIGINAL:$token\n")
                 if (stock) check(completed.contains("STOCK_EXEC_OBSERVED") && completed.contains("VIRTMGR_OBSERVED")) { "AVF did not execute the actual covered inode" }
-                record("OVERLAY_${if (stock) "STOCK_EXEC" else if (mode == "normal") "PROBE" else "TIMEOUT"}_VERIFIED=true")
+                record("OVERLAY_${if (mode == "venus-exec") "VENUS_CANDIDATE_EXEC" else if (stock) "STOCK_EXEC" else if (mode == "normal") "PROBE" else "TIMEOUT"}_VERIFIED=true")
             }
         } catch (error: Throwable) {
             record("OVERLAY_PROBE_VERIFIED=false error=${error.javaClass.simpleName}: ${error.message}")
         } finally {
             try {
                 val cleaned = OverlayLeaseCleanup.finish(
-                    release = { if (mountReady && (mode == "normal" || stock) && control.exists()) control.writeText("1") },
+                    release = { if (mountReady && (mode == "normal" || stock) && control.exists()) OverlayLeaseControl.release(control) },
                     awaitRollback = {
                         val result = nativeResult
                         if (result == null) true else {

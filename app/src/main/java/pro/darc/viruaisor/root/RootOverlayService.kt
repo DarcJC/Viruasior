@@ -52,7 +52,8 @@ class RootOverlayService : RootService() {
     private fun probe(caller: Int, token: String, mode: String, callback: IBinder): String {
         val executable = File(applicationInfo.nativeLibraryDir, "libvenus_overlay_probe.so")
         check(executable.isFile && executable.canExecute())
-        val stock = mode == "stock-exec"
+        val candidate = mode == "venus-exec"
+        val stock = mode == "stock-exec" || candidate
         val source = if (stock) readArtifact(File(RootOverlayArtifactPolicy.CROSVM_PATH)) else null
         if (source != null) {
             RootOverlayArtifactPolicy.enforce(source.hash, readArtifact(File(RootOverlayArtifactPolicy.VIRTMGR_PATH)).hash)
@@ -60,8 +61,17 @@ class RootOverlayService : RootService() {
         }
         val arguments = mutableListOf(executable.path, caller.toString(), applicationInfo.uid.toString(), token, mode)
         source?.let { arguments.add(it.stat.st_dev.toString()); arguments.add(it.stat.st_ino.toString()) }
+        val input = if (candidate) File(applicationInfo.nativeLibraryDir, RootOverlayArtifactPolicy.CANDIDATE_LIBRARY) else File(RootOverlayArtifactPolicy.CROSVM_PATH)
+        if (candidate) {
+            val directory = Os.lstat(applicationInfo.nativeLibraryDir)
+            check(directory.st_uid == 1000 && directory.st_mode and 0x12 == 0)
+            val artifact = readArtifact(input)
+            RootOverlayArtifactPolicy.enforceCandidate(artifact.hash, artifact.stat.st_size, artifact.stat.st_uid, artifact.stat.st_mode)
+            Log.i(TAG, "CANDIDATE_PINNED sha256=${artifact.hash} size=${artifact.stat.st_size}")
+            arguments.addAll(listOf(artifact.stat.st_dev.toString(), artifact.stat.st_ino.toString(), artifact.stat.st_size.toString()))
+        }
         val builder = ProcessBuilder(arguments).redirectErrorStream(true)
-        if (stock) builder.redirectInput(File(RootOverlayArtifactPolicy.CROSVM_PATH))
+        if (stock) builder.redirectInput(input)
         val process = builder.start()
         child = process
         val output = StringBuilder()
@@ -70,7 +80,7 @@ class RootOverlayService : RootService() {
                 val limited = line.take(1024)
                 synchronized(output) { if (output.length < 16 * 1024) output.appendLine(limited) }
                 Log.i(TAG, limited)
-                if (limited.startsWith("MOUNT_READY")) {
+                if (limited.startsWith("MOUNT_READY") || limited.startsWith("STOCK_EXEC_OBSERVED")) {
                     val outside = File(filesDir, "venus-overlay-lab/$token.target").readText().trim()
                     val originalStock = if (source != null) {
                         val current = readArtifact(File(RootOverlayArtifactPolicy.CROSVM_PATH))
@@ -82,7 +92,7 @@ class RootOverlayService : RootService() {
                     try {
                         parcel.writeInterfaceToken(RootOverlayAuthorization.DESCRIPTOR)
                         parcel.writeString(status)
-                        callback.transact(1, parcel, null, IBinder.FLAG_ONEWAY)
+                        callback.transact(if (limited.startsWith("MOUNT_READY")) 1 else 2, parcel, null, IBinder.FLAG_ONEWAY)
                     } catch (error: Exception) {
                         Log.i(TAG, "Owner callback gone; native pidfd/lease still owns rollback: $error")
                     } finally { parcel.recycle() }

@@ -9,10 +9,11 @@ keeps VM lifecycle ownership in `VmService`, and controls guest services over vs
 - A single VM bundle is imported into app-private `filesDir/vms/default/` storage.
 - Guests boot headlessly to `multi-user.target`; desktop services start only on an explicit
   `START_DESKTOP` request after the Android Surface is ready.
-- GPU virtualization through `gfxstream` is the graphics development target. The current default
-  is crosvm `2d`, retained as a diagnostic baseline; software-rendered output is not proof of GPU
-  acceleration. See [gfxstream validation](docs/gfxstream-validation.md) for separate host, guest,
-  GPU-execution and presentation checks.
+- Guest GPU acceleration is the graphics development target. The ordinary VM default remains
+  crosvm `2d`, a diagnostic baseline, not GPU acceleration. A fixed app-private Venus candidate
+  now executes real guest GPU compute with shared memory; it does not upgrade the user's VM or
+  provide a desktop. See [Venus guest validation](docs/venus-guest-runtime-validation.md) and the
+  historical [gfxstream validation](docs/gfxstream-validation.md).
 - The app requests root through KernelSU-compatible `su` on first launch. The Root card shows
   authorization status and provides a retry after enabling Viruaisor in KernelSU's Superuser list.
   A grant is verified by a root child reporting UID 0, not merely by finding an installed `su`.
@@ -63,6 +64,10 @@ diskless AVF backend check. Build its generated worker before packaging using th
 [Android Venus build instructions](native/venus-host/README.md). Host validation
 does not mean AVF guest GPU acceleration is available; see the
 [device results and remaining system-backend boundary](docs/venus-host-validation.md).
+The separate app-private AVF candidate, paired guest ICD, rollback rules and current
+end-to-end evidence are documented in [Venus guest validation](docs/venus-guest-runtime-validation.md).
+Native/runtime changes can be checked with `bash scripts/test-venus-runtime.sh` in WSL;
+generated native workers, candidate and guest fixture must be built before APK packaging.
 
 ### Android application
 

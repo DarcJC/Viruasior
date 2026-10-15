@@ -19,7 +19,9 @@ local.properties
 /app/src/main/jniLibs/**/libviruaisor_native.so
 /app/src/main/jniLibs/**/libvenus_host_probe.so
 /app/src/main/jniLibs/**/libvenus_overlay_probe.so
+/app/src/main/jniLibs/**/libvenus_crosvm.so
 /app/src/main/assets/third_party/venus-host-notices.txt
+/app/src/main/assets/venus/guest-probe.cpio.gz
 /guest/avf-agent/avf-agent
 
 # Local Pi task logs, research cache, device dumps and VM images

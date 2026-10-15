@@ -1,5 +1,9 @@
 # Venus host validation and remaining AVF boundary — 2026-10-15
 
+Historical host/stock-AVF result. The subsequent app-private candidate now has
+guest compute and explicit-cache evidence; see [2026-10-16 guest validation](venus-guest-runtime-validation.md).
+The original system crosvm remains unchanged and retains the limitation below.
+
 ## Outcome
 
 The Android arm64 Venus host renderer is built and its memory/compute gate passes

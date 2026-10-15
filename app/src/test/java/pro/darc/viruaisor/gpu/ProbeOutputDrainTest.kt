@@ -6,6 +6,14 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ProbeOutputDrainTest {
+    @Test fun removesPreviousPassBeforeStartingAsyncReader() {
+        val file = java.nio.file.Files.createTempFile("venus-stale-result", ".console").toFile()
+        try {
+            file.writeText("VENUS_GUEST_RESULT=PASS physicalGpu=true passes=3 wordsPerPass=256\n")
+            ProbeOutputDrain.reset(file)
+            assertEquals("", file.readText())
+        } finally { file.delete() }
+    }
     @Test fun keepsOutputBelowLimit() {
         val input = ByteArrayInputStream("guest console\n".toByteArray())
         val output = ByteArrayOutputStream()

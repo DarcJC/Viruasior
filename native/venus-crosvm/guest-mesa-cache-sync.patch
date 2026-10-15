@@ -1,0 +1,71 @@
+diff --git a/src/virtio/vulkan/vn_device_memory.c b/src/virtio/vulkan/vn_device_memory.c
+index e277ce6..5d1c01f 100644
+--- a/src/virtio/vulkan/vn_device_memory.c
++++ b/src/virtio/vulkan/vn_device_memory.c
+@@ -512,7 +512,7 @@ vn_FlushMappedMemoryRanges(VkDevice device,
+       vn_renderer_bo_flush(dev->renderer, mem->base_bo, range->offset, size);
+    }
+ 
+-   return VK_SUCCESS;
++   return vn_call_vkFlushMappedMemoryRanges(dev->primary_ring, device, memoryRangeCount, pMemoryRanges);
+ }
+ 
+ VkResult
+@@ -534,7 +534,7 @@ vn_InvalidateMappedMemoryRanges(VkDevice device,
+                                 size);
+    }
+ 
+-   return VK_SUCCESS;
++   return vn_call_vkInvalidateMappedMemoryRanges(dev->primary_ring, device, memoryRangeCount, pMemoryRanges);
+ }
+ 
+ void
+diff --git a/src/virtio/vulkan/vn_physical_device.c b/src/virtio/vulkan/vn_physical_device.c
+index 0a95f89..f4a4b5f 100644
+--- a/src/virtio/vulkan/vn_physical_device.c
++++ b/src/virtio/vulkan/vn_physical_device.c
+@@ -9,6 +9,7 @@
+  */
+ 
+ #include "vn_physical_device.h"
++#include "viruaisor_cache_policy.h"
+ 
+ #include <stdio.h>
+ 
+@@ -722,33 +723,11 @@ vn_physical_device_init_memory_properties(
+ 
+    physical_dev->memory_properties = props2.memoryProperties;
+ 
+-   /* Kernel makes every mapping coherent. If a memory type is truly
+-    * incoherent, it's better to remove the host-visible flag than silently
+-    * making it coherent. However, for app compatibility purpose, when
+-    * coherent-cached memory type is unavailable, we append the cached bit to
+-    * the first coherent memory type.
+-    */
+-   bool has_coherent_cached = false;
+-   uint32_t first_coherent = VK_MAX_MEMORY_TYPES;
++   /* Private paired renderer supports explicit mapped-range cache commands.
++    * Preserve native non-coherent flags; never advertise fake coherence. */
+    VkPhysicalDeviceMemoryProperties *props = &physical_dev->memory_properties;
+    for (uint32_t i = 0; i < props->memoryTypeCount; i++) {
+-      VkMemoryPropertyFlags *flags = &props->memoryTypes[i].propertyFlags;
+-      const bool coherent = *flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+-      const bool cached = *flags & VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
+-      if (coherent) {
+-         if (first_coherent == VK_MAX_MEMORY_TYPES)
+-            first_coherent = i;
+-         if (cached)
+-            has_coherent_cached = true;
+-      } else if (cached) {
+-         *flags &= ~(VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+-                     VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
+-      }
+-   }
+-
+-   if (!has_coherent_cached) {
+-      props->memoryTypes[first_coherent].propertyFlags |=
+-         VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
++      props->memoryTypes[i].propertyFlags = venus_guest_memory_flags(props->memoryTypes[i].propertyFlags);
+    }
+ }
+ 

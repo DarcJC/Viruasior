@@ -2,6 +2,7 @@
 #include "overlay_policy.h"
 #include "overlay_copy.h"
 #include "overlay_mount_policy.h"
+#include "overlay_wait.h"
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -211,16 +212,17 @@ static void terminate_stock_lease(int owner_fd, const struct stock_children *chi
     if (children->crosvm_fd >= 0) syscall(SYS_pidfd_send_signal, children->crosvm_fd, SIGKILL, NULL, 0);
     if (children->virtmgr_fd >= 0) syscall(SYS_pidfd_send_signal, children->virtmgr_fd, SIGKILL, NULL, 0);
     syscall(SYS_pidfd_send_signal, owner_fd, SIGKILL, NULL, 0);
-    struct pollfd fds[2] = {{ .fd = children->crosvm_fd, .events = POLLIN }, { .fd = children->virtmgr_fd, .events = POLLIN }};
-    poll(fds, 2, 500);
-    printf("STOCK_LEASE_TERMINATED_BY_PIDFD\n");
+    struct pollfd fds[3] = {{ .fd = children->crosvm_fd, .events = POLLIN }, { .fd = children->virtmgr_fd, .events = POLLIN }, { .fd = owner_fd, .events = POLLIN }};
+    bool drained = overlay_wait_terminated(fds, 3, 1000);
+    printf("STOCK_LEASE_TERMINATED_BY_PIDFD all_exited=%d\n", drained);
 }
 int main(int argc, char **argv) {
     setvbuf(stdout, NULL, _IOLBF, 0);
     if (getuid() || argc < 5 || !overlay_token_valid(argv[3])) return 64;
     const char *mode = argv[4];
-    bool stock = !strcmp(mode, "stock-exec");
-    if (argc != (stock ? 7 : 5) || (!stock && strcmp(mode, "normal") && strcmp(mode, "timeout") && strcmp(mode, "client-death") && strcmp(mode, "helper-death"))) return 64;
+    bool candidate = !strcmp(mode, "venus-exec");
+    bool stock = !strcmp(mode, "stock-exec") || candidate;
+    if (argc != (candidate ? 10 : stock ? 7 : 5) || (!stock && strcmp(mode, "normal") && strcmp(mode, "timeout") && strcmp(mode, "client-death") && strcmp(mode, "helper-death"))) return 64;
     char *end; long parsed = strtol(argv[1], &end, 10);
     if (*end || parsed <= 1 || parsed > INT32_MAX) return 64;
     pid_t pid = (pid_t)parsed;
@@ -245,9 +247,23 @@ int main(int argc, char **argv) {
         uint64_t source_ino = strtoull(argv[6], &end, 10);
         REQUIRE(*argv[6] && !*end, "source-inode-number");
         struct statvfs fs;
-        REQUIRE(!fstat(STDIN_FILENO, &original_image) && S_ISREG(original_image.st_mode) && original_image.st_uid == 0 &&
+        REQUIRE(!stat(STOCK_CROSVM, &original_image) && S_ISREG(original_image.st_mode) && original_image.st_uid == 0 &&
             (uint64_t)original_image.st_dev == source_dev && (uint64_t)original_image.st_ino == source_ino &&
-            original_image.st_size == 13593816 && !fstatvfs(STDIN_FILENO, &fs) && (fs.f_flag & ST_RDONLY), "pinned-readonly-source-fd");
+            original_image.st_size == 13593816 && !statvfs(STOCK_CROSVM, &fs) && (fs.f_flag & ST_RDONLY), "pinned-original-artifact");
+        struct stat input;
+        REQUIRE(!fstat(STDIN_FILENO, &input) && (fcntl(STDIN_FILENO, F_GETFL) & O_ACCMODE) == O_RDONLY, "readonly-source-fd");
+        if (candidate) {
+            uint64_t candidate_dev = strtoull(argv[7], &end, 10);
+            REQUIRE(*argv[7] && !*end, "candidate-device-number");
+            uint64_t candidate_ino = strtoull(argv[8], &end, 10);
+            REQUIRE(*argv[8] && !*end, "candidate-inode-number");
+            uint64_t candidate_size = strtoull(argv[9], &end, 10);
+            REQUIRE(*argv[9] && !*end && candidate_size >= 1024 * 1024 && candidate_size <= 32 * 1024 * 1024, "candidate-size-bound");
+            REQUIRE(S_ISREG(input.st_mode) && (input.st_uid == 1000 || input.st_uid == 0) && input.st_nlink == 1 &&
+                ((input.st_mode & 07777) == 0755 || (input.st_mode & 07777) == 0555) &&
+                (uint64_t)input.st_dev == candidate_dev && (uint64_t)input.st_ino == candidate_ino &&
+                (uint64_t)input.st_size == candidate_size, "pinned-installer-owned-candidate-fd");
+        } else REQUIRE(same_inode(&input, &original_image), "pinned-stock-source-fd");
         REQUIRE(!stat(STOCK_VIRTMGR, &virtmgr_image) && no_existing_crosvm(&original_image), "stock-no-competing-vm");
     }
     pid_t parent = 0;
@@ -308,7 +324,7 @@ int main(int argc, char **argv) {
     printf("MOUNT_PROFILE kind=%s flags=%lu ro=1 nodev=1 nosuid=%d noexec=0 mode=%04o filecaps=none\n",
         stock ? "stock-copy" : "sentinel", mounted_fs.f_flag, !stock, copied_image.st_mode & 07777);
     printf("MOUNT_READY token=%s ns=%" PRIu64 " kind=%s snapshot_dev=%ju snapshot_ino=%ju\n", argv[3], target_ns,
-        stock ? "stock-copy-byte-identical" : "sentinel", (uintmax_t)copied_image.st_dev, (uintmax_t)copied_image.st_ino);
+        candidate ? "venus-candidate-byte-identical" : stock ? "stock-copy-byte-identical" : "sentinel", (uintmax_t)copied_image.st_dev, (uintmax_t)copied_image.st_ino);
     if (!strcmp(mode, "helper-death")) _exit(23); /* Dedicated app's independent watchdog destroys the namespace. */
     uint64_t deadline = monotonic_ms() + (stock ? 20000 : 8000);
     for (;;) {
@@ -334,10 +350,18 @@ int main(int argc, char **argv) {
     }
 cleanup:
     if (mounted) {
-        if (umount2(anchored, 0)) { printf("ROLLBACK=FAIL errno=%d\n", errno); result = 3; }
+        // pidfd readiness precedes final executable/mount reference reclamation.
+        // Retry only transient EBUSY, never detach/lazy-unmount or another target.
+        int unmounted; unsigned retries = 0;
+        uint64_t drain_deadline = monotonic_ms() + 1500;
+        while ((unmounted = umount2(anchored, 0)) && errno == EBUSY && monotonic_ms() < drain_deadline) {
+            ++retries; struct timespec delay = {.tv_nsec = 20000000}; nanosleep(&delay, NULL);
+        }
+        printf("ROLLBACK_MOUNT_DRAIN retries=%u\n", retries);
+        if (unmounted) { printf("ROLLBACK=FAIL errno=%d\n", errno); result = 3; }
         else {
             int restored = stock ? open(STOCK_CROSVM, O_RDONLY | O_CLOEXEC) : openat(dir, target_name, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
-            bool ok = restored >= 0 && (stock ? (!fstat(restored, &st) && same_inode(&st, &original_image) && overlay_same_bytes(STDIN_FILENO, restored)) : file_bytes(restored, original, uid));
+            bool ok = restored >= 0 && (stock ? (!fstat(restored, &st) && same_inode(&st, &original_image) && overlay_same_bytes(target, restored)) : file_bytes(restored, original, uid));
             if (restored >= 0) close(restored);
             printf("ROLLBACK=%s\n", ok ? "PASS" : "FAIL");
             if (!ok) result = 3;

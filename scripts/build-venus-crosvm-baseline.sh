@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Local compilation baseline ONLY. Does not install/overlay a candidate or enable guest GPU.
+# Local compilation ONLY. Does not install or overlay an artifact.
 set -euo pipefail
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 work=${VENUS_CROSVM_WORK_DIR:-"$repo/.pi/device-debug/venus-crosvm-build"}
@@ -32,12 +32,24 @@ export CFLAGS_aarch64_linux_android="-I$target_prefix/include"
 export LIBCLANG_PATH=${LIBCLANG_PATH:-/usr/lib/llvm-21/lib}
 export CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS="-L native=$target_prefix/lib -C link-arg=-Wl,-z,max-page-size=16384"
 cd "$work/crosvm"
-# --locked deliberately retains the registry 0.1.76-alpha.0 backend for the compile baseline.
-# A pinned local Android rutabaga + runtime Venus integrations are separate reviewed changes.
+if [[ ${VENUS_CROSVM_CANDIDATE:-0} == 1 ]]; then
+    grep -Fq 'rutabaga_gfx = { path = "../rutabaga", version = "=0.1.76" }' Cargo.toml
+else
+    grep -Fq 'rutabaga_gfx = "=0.1.76-alpha.0"' Cargo.toml
+fi
+# --locked: the candidate patch changes only the two local backend packages.
 # Upstream gpu_display emits only -lwayland-client, not its static libffi dependency.
 # Supply the real AArch64 archive at the final binary link, without rebuilding all crates.
 compiler_rt=$("$CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER" --print-libgcc-file-name)
+renderer_archive_sha=$(sha256sum "$renderer_work/build-android/src/libvirglrenderer.a" \
+    "$renderer_work/build-android/src/libvirgl.a" "$renderer_work/build-android/src/mesa/libmesa.a" | cut -d ' ' -f1 | sha256sum | cut -d ' ' -f1)
 [[ -f "$compiler_rt" ]] # libffi's AArch64 closure cache flush needs the NDK builtin.
+trace_args=()
+if [[ ${VENUS_CROSVM_TLS_TRACE:-0} == 1 ]]; then
+    "$CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER" -std=c11 -Wall -Wextra -Werror -fPIC \
+        -c "$repo/native/venus-crosvm/venus_tls_trace.c" -o "$target_prefix/venus_tls_trace.o"
+    trace_args=(-C "link-arg=$target_prefix/venus_tls_trace.o" -C 'link-arg=-Wl,--export-dynamic-symbol=pthread_key_create')
+fi
 cargo rustc --locked --release --target aarch64-linux-android --no-default-features \
     --features gpu,virgl_renderer,balloon --bin crosvm -- -C "link-arg=$target_prefix/lib/libffi.a" \
-    -C "link-arg=$compiler_rt"
+    -C "link-arg=$compiler_rt" -C "metadata=$renderer_archive_sha" "${trace_args[@]}"

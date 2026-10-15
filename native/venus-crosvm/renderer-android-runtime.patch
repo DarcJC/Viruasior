@@ -1,0 +1,297 @@
+diff --git a/src/venus/vkr_buffer.c b/src/venus/vkr_buffer.c
+index bba1f6a..a81aff3 100644
+--- a/src/venus/vkr_buffer.c
++++ b/src/venus/vkr_buffer.c
+@@ -7,6 +7,9 @@
+ 
+ #include "vkr_buffer_gen.h"
+ #include "vkr_physical_device.h"
++#ifdef __ANDROID__
++#include "venus_gralloc_policy.h"
++#endif
+ 
+ static void
+ vkr_dispatch_vkCreateBuffer(struct vn_dispatch_context *dispatch,
+@@ -37,7 +40,30 @@ vkr_dispatch_vkCreateBuffer(struct vn_dispatch_context *dispatch,
+     * vkr_physical_device_init_memory_properties as well.
+     */
+ 
++#ifdef __ANDROID__
++   struct vkr_device *dev = vkr_device_from_handle(args->device);
++   struct vkr_physical_device *physical = dev->physical_device;
++   const VkBufferCreateInfo *original = args->pCreateInfo;
++   VkBufferCreateInfo local = *original;
++   VkExternalMemoryBufferCreateInfo external = {.sType=VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO,
++      .pNext=local.pNext, .handleTypes=VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT};
++   VkPhysicalDeviceExternalBufferInfo query = {.sType=VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_BUFFER_INFO,
++      .flags=local.flags, .usage=local.usage, .handleType=VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT};
++   VkExternalBufferProperties properties = {.sType=VK_STRUCTURE_TYPE_EXTERNAL_BUFFER_PROPERTIES};
++   if (physical->EXT_external_memory_dma_buf)
++      physical->proc_table.GetPhysicalDeviceExternalBufferProperties(physical->base.handle.physical_device, &query, &properties);
++   if (venus_gralloc_buffer_external(physical->properties.vendorID, local.size, local.flags, local.usage,
++       vkr_find_struct(local.pNext, VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO) != NULL,
++       properties.externalMemoryProperties.externalMemoryFeatures & VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT)) {
++      local.pNext = &external;
++      args->pCreateInfo = &local;
++      vkr_log("VIRUAISOR_BUFFER_EXTERNAL_DMA_BUF size=%llu usage=%x", (unsigned long long)local.size, local.usage);
++   }
++   vkr_buffer_create_and_add(dispatch->data, args);
++   args->pCreateInfo = original;
++#else
+    vkr_buffer_create_and_add(dispatch->data, args);
++#endif
+ }
+ 
+ static void
+diff --git a/src/venus/vkr_device_memory.c b/src/venus/vkr_device_memory.c
+index 7d57c7c..edf232f 100644
+--- a/src/venus/vkr_device_memory.c
++++ b/src/venus/vkr_device_memory.c
+@@ -13,6 +13,96 @@
+ #include "vkr_metal_helpers.h"
+ #include "vkr_physical_device.h"
+ 
++#ifdef __ANDROID__
++#include "venus_dmaheap.h"
++#include "venus_gralloc.h"
++#include "venus_cache_sync.h"
++#include <inttypes.h>
++#include <fcntl.h>
++#include <linux/dma-heap.h>
++#include <sys/ioctl.h>
++
++/* Fixed Android allocator: no root, device selection, or guest-provided path. */
++static VkResult
++vkr_android_import(struct vkr_device *dev, VkMemoryAllocateInfo *info, uint32_t property_flags,
++                   int *retained_fd, AHardwareBuffer **out_buffer, VkImportMemoryFdInfoKHR *import)
++{
++   const uint64_t bytes = venus_heap_allocation_size(info->allocationSize, getpagesize());
++   if (!bytes)
++      return VK_ERROR_OUT_OF_DEVICE_MEMORY;
++   AHardwareBuffer *buffer = NULL;
++   int fd = venus_gralloc_allocate(bytes, property_flags & VK_MEMORY_PROPERTY_HOST_CACHED_BIT, &buffer);
++   if (fd < 0) {
++      vkr_log("VIRUAISOR_GRALLOC_ALLOC_FAILED result=%d", fd);
++      return VK_ERROR_OUT_OF_DEVICE_MEMORY;
++   }
++   VkMemoryFdPropertiesKHR properties = {.sType=VK_STRUCTURE_TYPE_MEMORY_FD_PROPERTIES_KHR};
++   if (!dev->proc_table.GetMemoryFdPropertiesKHR) { close(fd); venus_ahb_release(buffer); return VK_ERROR_FEATURE_NOT_PRESENT; }
++   VkResult ret = dev->proc_table.GetMemoryFdPropertiesKHR(dev->base.handle.device,
++      VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, fd, &properties);
++   vkr_log("VIRUAISOR_GRALLOC_IMPORT bytes=%" PRIu64 " type=%u fd_types=%x vk=%d", bytes, info->memoryTypeIndex, properties.memoryTypeBits, ret);
++   if (ret != VK_SUCCESS || !venus_heap_memory_type_valid(info->memoryTypeIndex, properties.memoryTypeBits)) {
++      close(fd);
++      venus_ahb_release(buffer);
++      return VK_ERROR_INVALID_EXTERNAL_HANDLE;
++   }
++   int duplicate = os_dupfd_cloexec(fd);
++   if (duplicate < 0) { close(fd); venus_ahb_release(buffer); return VK_ERROR_OUT_OF_HOST_MEMORY; }
++   *retained_fd = fd;
++   *out_buffer = buffer;
++   *import = (VkImportMemoryFdInfoKHR){.sType=VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR,
++      .pNext=info->pNext, .handleType=VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, .fd=duplicate};
++   info->allocationSize = bytes;
++   return VK_SUCCESS;
++}
++#endif
++
++static int
++vkr_dma_sync(int fd, uint64_t flags, UNUSED void *cookie)
++{
++#ifdef __ANDROID__
++   struct dma_buf_sync request = {.flags=flags};
++   return ioctl(fd, DMA_BUF_IOCTL_SYNC, &request);
++#else
++   (void)fd; (void)flags; errno=ENOTSUP; return -1;
++#endif
++}
++
++static VkResult
++vkr_cache_ranges(uint32_t count, const VkMappedMemoryRange *ranges, bool invalidate)
++{
++#ifdef __ANDROID__
++   for (uint32_t i=0; i<count; ++i) {
++      struct vkr_device_memory *mem = vkr_device_memory_from_handle(ranges[i].memory);
++      if (!mem || !mem->exported || mem->udmabuf_fd < 0 ||
++          !venus_cache_range_valid(mem->allocation_size, ranges[i].offset, ranges[i].size))
++         return VK_ERROR_MEMORY_MAP_FAILED;
++      if (venus_cache_sync(mem->udmabuf_fd, invalidate, vkr_dma_sync, NULL)) {
++         vkr_log("VIRUAISOR_CACHE_SYNC_FAILED invalidate=%d errno=%d", invalidate, errno);
++         return VK_ERROR_MEMORY_MAP_FAILED;
++      }
++   }
++   vkr_log("VIRUAISOR_CACHE_%s ranges=%u", invalidate ? "INVALIDATE" : "FLUSH", count);
++   return VK_SUCCESS;
++#else
++   (void)count; (void)ranges; (void)invalidate; return VK_ERROR_FEATURE_NOT_PRESENT;
++#endif
++}
++
++static void
++vkr_dispatch_vkFlushMappedMemoryRanges(UNUSED struct vn_dispatch_context *dispatch,
++                                       struct vn_command_vkFlushMappedMemoryRanges *args)
++{
++   args->ret = vkr_cache_ranges(args->memoryRangeCount, args->pMemoryRanges, false);
++}
++
++static void
++vkr_dispatch_vkInvalidateMappedMemoryRanges(UNUSED struct vn_dispatch_context *dispatch,
++                                            struct vn_command_vkInvalidateMappedMemoryRanges *args)
++{
++   args->ret = vkr_cache_ranges(args->memoryRangeCount, args->pMemoryRanges, true);
++}
++
+ static bool
+ vkr_get_fd_info_from_resource_info(struct vkr_context *ctx,
+                                    const VkImportMemoryResourceInfoMESA *res_info,
+@@ -300,6 +390,11 @@ vkr_dispatch_vkAllocateMemory(struct vn_dispatch_context *dispatch,
+    uint32_t valid_fd_types = 0;
+    int udmabuf_fd = -1;
+    void *gbm_bo = NULL;
++#ifdef __ANDROID__
++   AHardwareBuffer *android_buffer = NULL;
++#else
++   void *android_buffer = NULL;
++#endif
+    struct vkr_mtl_shm *mtl_shm = NULL;
+    VkExportMemoryAllocateInfo local_export_info;
+    VkImportMemoryMetalHandleInfoEXT local_metal_import;
+@@ -387,7 +482,13 @@ vkr_dispatch_vkAllocateMemory(struct vn_dispatch_context *dispatch,
+              */
+             args->ret = vkr_udmabuf_get_fd_info_from_allocation_info(
+                physical_dev, alloc_info, &udmabuf_fd, &local_import_info);
+-         } else {
++         }
++#ifdef __ANDROID__
++         else if (!physical_dev->gbm_device) {
++            args->ret = vkr_android_import(dev, alloc_info, property_flags, &udmabuf_fd, &android_buffer, &local_import_info);
++         }
++#endif
++         else {
+             args->ret = vkr_gbm_get_fd_info_from_allocation_info(
+                physical_dev, alloc_info, &gbm_bo, &local_import_info);
+          }
+@@ -410,6 +511,11 @@ vkr_dispatch_vkAllocateMemory(struct vn_dispatch_context *dispatch,
+    if (!mem) {
+       if (local_import_info.fd >= 0)
+          close(local_import_info.fd);
++      if (udmabuf_fd >= 0)
++         close(udmabuf_fd);
++#ifdef __ANDROID__
++      if (android_buffer) venus_ahb_release(android_buffer);
++#endif
+       if (gbm_bo)
+          vkr_gbm_bo_destroy(gbm_bo);
+       vkr_mtl_shm_free(mtl_shm);
+@@ -421,6 +527,7 @@ vkr_dispatch_vkAllocateMemory(struct vn_dispatch_context *dispatch,
+    mem->property_flags = property_flags;
+    mem->valid_fd_types = valid_fd_types;
+    mem->udmabuf_fd = udmabuf_fd;
++   mem->android_buffer = android_buffer;
+    mem->gbm_bo = gbm_bo;
+    mem->mtl_shm = mtl_shm;
+    mem->allocation_size = alloc_info->allocationSize;
+@@ -518,8 +625,13 @@ vkr_context_init_device_memory_dispatch(struct vkr_context *ctx)
+    dispatch->dispatch_vkFreeMemory = vkr_dispatch_vkFreeMemory;
+    dispatch->dispatch_vkMapMemory = NULL;
+    dispatch->dispatch_vkUnmapMemory = NULL;
++#ifdef __ANDROID__
++   dispatch->dispatch_vkFlushMappedMemoryRanges = vkr_dispatch_vkFlushMappedMemoryRanges;
++   dispatch->dispatch_vkInvalidateMappedMemoryRanges = vkr_dispatch_vkInvalidateMappedMemoryRanges;
++#else
+    dispatch->dispatch_vkFlushMappedMemoryRanges = NULL;
+    dispatch->dispatch_vkInvalidateMappedMemoryRanges = NULL;
++#endif
+    dispatch->dispatch_vkGetDeviceMemoryCommitment =
+       vkr_dispatch_vkGetDeviceMemoryCommitment;
+    dispatch->dispatch_vkGetDeviceMemoryOpaqueCaptureAddress =
+@@ -532,6 +644,9 @@ vkr_context_init_device_memory_dispatch(struct vkr_context *ctx)
+ void
+ vkr_device_memory_release(struct vkr_device_memory *mem)
+ {
++#ifdef __ANDROID__
++   if (mem->android_buffer) venus_ahb_release(mem->android_buffer);
++#endif
+    vkr_mtl_shm_free(mem->mtl_shm);
+    if (mem->gbm_bo)
+       vkr_gbm_bo_destroy(mem->gbm_bo);
+@@ -558,15 +673,14 @@ vkr_device_memory_export_blob(struct vkr_device_memory *mem,
+    uint32_t map_info = VIRGL_RENDERER_MAP_CACHE_NONE;
+    if (blob_flags & VIRGL_RENDERER_BLOB_FLAG_USE_MAPPABLE) {
+       const bool visible = mem->property_flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
+-      const bool coherent = mem->property_flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+       const bool cached = mem->property_flags & VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
+       if (!visible) {
+          vkr_log("mem cannot support mappable blob");
+          return false;
+       }
+ 
+-      /* XXX guessed */
+-      map_info = (coherent && cached) ? VIRGL_RENDERER_MAP_CACHE_CACHED
++      /* Paired guest ICD uses explicit noncoherent cache commands for cached mappings. */
++      map_info = cached ? VIRGL_RENDERER_MAP_CACHE_CACHED
+                                       : VIRGL_RENDERER_MAP_CACHE_WC;
+    }
+ 
+diff --git a/src/venus/vkr_device_memory.h b/src/venus/vkr_device_memory.h
+index 3259966..9c832fb 100644
+--- a/src/venus/vkr_device_memory.h
++++ b/src/venus/vkr_device_memory.h
+@@ -26,6 +26,8 @@ struct vkr_device_memory {
+ 
+    /* udmabuf backing non-external mappable memory */
+    int udmabuf_fd;
++   /* Android graphics allocator ownership for a retained DMA-BUF. */
++   void *android_buffer;
+ 
+    /* Metal buffer backed by POSIX shared memory */
+    struct vkr_mtl_shm *mtl_shm;
+diff --git a/src/venus/vkr_renderer.c b/src/venus/vkr_renderer.c
+index 8aae924..3004025 100644
+--- a/src/venus/vkr_renderer.c
++++ b/src/venus/vkr_renderer.c
+@@ -10,6 +10,10 @@
+ #include "venus_hw.h"
+ 
+ #include "vkr_context.h"
++#ifdef __ANDROID__
++#include <dlfcn.h>
++#include <android/dlext.h>
++#endif
+ 
+ struct vkr_renderer_state {
+    const struct vkr_renderer_callbacks *cbs;
+@@ -73,6 +77,33 @@ vkr_renderer_init(uint32_t flags, const struct vkr_renderer_callbacks *cbs)
+    if (cbs->debug_logger)
+       virgl_log_set_handler(cbs->debug_logger, NULL, NULL);
+ 
++#ifdef __ANDROID__
++   /* OEM Vulkan dependency owns TLS destructors that outlive its dlclose.
++    * Preserve code lifetime, never suppress callbacks or delete TLS keys. */
++   static void *crypto_pin;
++   if (!crypto_pin)
++      crypto_pin = dlopen("/system/lib64/libcrypto.so", RTLD_NOW | RTLD_LOCAL | RTLD_NODELETE);
++   if (!crypto_pin) { vkr_log("VIRUAISOR_CRYPTO_PIN_FAILED %s", dlerror()); return false; }
++   /* Keep a strong handle as in the qualified host probe. Do not rely only
++    * on NODELETE after dropping the explicit reference on this OEM loader. */
++   static void *system_crypto_pin;
++   if (!system_crypto_pin) {
++      void *loader = dlopen("libdl_android.so", RTLD_NOW | RTLD_LOCAL | RTLD_NODELETE);
++      struct android_namespace_t *(*get_namespace)(const char *) = NULL;
++      void *symbol = loader ? dlsym(loader, "android_get_exported_namespace") : NULL;
++      STATIC_ASSERT(sizeof(symbol) == sizeof(get_namespace));
++      memcpy(&get_namespace, &symbol, sizeof(symbol));
++      struct android_namespace_t *system_ns = get_namespace ? get_namespace("system") : NULL;
++      if (!system_ns) { vkr_log("VIRUAISOR_CRYPTO_SYSTEM_NAMESPACE_UNAVAILABLE"); return false; }
++      const android_dlextinfo info = {.flags=ANDROID_DLEXT_USE_NAMESPACE, .library_namespace=system_ns};
++      system_crypto_pin = android_dlopen_ext("/system/lib64/libcrypto.so",
++         RTLD_NOW | RTLD_LOCAL | RTLD_NODELETE, &info);
++      if (!system_crypto_pin) { vkr_log("VIRUAISOR_CRYPTO_SYSTEM_PIN_FAILED %s", dlerror()); return false; }
++   }
++   vkr_log("VIRUAISOR_CRYPTO_SYSTEM_PINNED_PROCESS_LIFETIME");
++   vkr_log("VIRUAISOR_CRYPTO_PINNED_PROCESS_LIFETIME");
++#endif
++
+    vkr_state.cbs = cbs;
+    list_inithead(&vkr_state.contexts);
+ 

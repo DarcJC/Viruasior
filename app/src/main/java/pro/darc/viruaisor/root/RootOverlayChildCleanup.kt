@@ -6,7 +6,7 @@ import java.util.concurrent.TimeUnit
 internal object RootOverlayChildCleanup {
     fun finish(process: Process) {
         try {
-            if (process.waitFor(1, TimeUnit.SECONDS)) return
+            if (process.waitFor(3, TimeUnit.SECONDS)) return
         } catch (_: InterruptedException) {
             Thread.currentThread().interrupt()
         }

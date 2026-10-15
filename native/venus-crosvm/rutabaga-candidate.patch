@@ -1,0 +1,45 @@
+diff --git a/src/rutabaga_core.rs b/src/rutabaga_core.rs
+index 6a1b979..0dbdd66 100644
+--- a/src/rutabaga_core.rs
++++ b/src/rutabaga_core.rs
+@@ -63,6 +63,9 @@ use crate::snapshot::RutabagaSnapshotWriter;
+ use crate::virgl_renderer::VirglRenderer;
+ use crate::RutabagaPaths;
+ 
++#[path = "venus_init_policy.rs"]
++mod venus_init_policy;
++
+ const RUTABAGA_DEFAULT_WIDTH: u32 = 1280;
+ const RUTABAGA_DEFAULT_HEIGHT: u32 = 1024;
+ 
+@@ -1475,6 +1478,11 @@ impl RutabagaBuilder {
+         }
+ 
+         // Make sure that disabled components are not used as default.
++        // This product links only the embedded thread server (no exec/fork mode).
++        #[cfg(target_os = "android")]
++        if self.capset_mask == (1 << RUTABAGA_CAPSET_VENUS) && self.server_descriptor.is_none() {
++            self.virglrenderer_flags = self.virglrenderer_flags.use_render_server(true);
++        }
+         #[cfg(not(feature = "virgl_renderer"))]
+         if self.default_component == RutabagaComponentType::VirglRenderer {
+             return Err(RutabagaError::InvalidRutabagaBuild);
+@@ -1487,12 +1495,16 @@ impl RutabagaBuilder {
+         if self.default_component != RutabagaComponentType::Rutabaga2D {
+             #[cfg(feature = "virgl_renderer")]
+             if self.default_component == RutabagaComponentType::VirglRenderer {
+-                if let Ok(virgl) = VirglRenderer::init(
++                if let Some(virgl) = venus_init_policy::initialization(capset_enabled(RUTABAGA_CAPSET_VENUS), VirglRenderer::init(
+                     self.virglrenderer_flags,
+                     self.fence_handler.clone(),
+                     self.server_descriptor,
+                     self.paths.clone(),
+-                ) {
++                ))? {
++                    if capset_enabled(RUTABAGA_CAPSET_VENUS) && virgl.get_capset_info(RUTABAGA_CAPSET_VENUS).1 == 0 {
++                        return Err(RutabagaError::InvalidRutabagaBuild);
++                    }
++                    log::info!("VIRUAISOR_VENUS_RENDERER_READY capset4_size={}", virgl.get_capset_info(RUTABAGA_CAPSET_VENUS).1);
+                     rutabaga_components.insert(RutabagaComponentType::VirglRenderer, virgl);
+ 
+                     push_capset(RUTABAGA_CAPSET_VIRGL);

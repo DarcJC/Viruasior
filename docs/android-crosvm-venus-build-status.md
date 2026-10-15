@@ -86,7 +86,11 @@ Logs are ignored under `.pi/device-debug/venus-crosvm-build/`:
 `native-target-deps.log`, `host-build-deps.log`. Build outputs remain in WSL `/tmp` and
 the local ignored artifact directory; there is no device-side rollback for them.
 
-## Remaining qualification gates
+## Remaining qualification gates (historical baseline)
+
+The following described the first linked artifact, not the subsequently qualified
+app-private candidate. Current source pins, guest-memory results and remaining
+production limitations are in [Venus guest validation](venus-guest-runtime-validation.md).
 
 - Review/switch to pinned local Android rutabaga; select the embedded renderer server
   for Venus explicitly and reject failed initialization/zero capset rather than 2D fallback.

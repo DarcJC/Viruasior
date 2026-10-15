@@ -1,0 +1,39 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index 76c38ba..6f42706 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -1944,9 +1944,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "mesa3d_util"
+-version = "0.1.76-alpha.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "659fee097888a000ce2412571495943fe505cd3552d751009286ae635957a284"
++version = "0.1.76"
+ dependencies = [
+  "cfg-if",
+  "libc",
+@@ -2702,9 +2700,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "rutabaga_gfx"
+-version = "0.1.76-alpha.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "988c93caed844e77bcb3c3988d89d249408aa772702b543c980d49b6665fb5fd"
++version = "0.1.76"
+ dependencies = [
+  "cfg-if",
+  "libc",
+diff --git a/Cargo.toml b/Cargo.toml
+index 0ff3f6e..7342c96 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -202,7 +202,7 @@ gdbstub_arch = "0.3.0"
+ libc = "0.2.153"
+ rand = "0.9.2"
+ remain = "0.2"
+-rutabaga_gfx = "=0.1.76-alpha.0"
++rutabaga_gfx = { path = "../rutabaga", version = "=0.1.76" }
+ serde = "1.0"
+ serde_json = "1"
+ static_assertions = "1.1"

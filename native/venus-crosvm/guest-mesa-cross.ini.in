@@ -1,0 +1,16 @@
+[binaries]
+c = ['aarch64-linux-gnu-gcc', '--sysroot=@SYSROOT@', '-B@SYSROOT@/usr/lib/aarch64-linux-gnu/', '-nostdinc', '-isystem', '@GCC_INCLUDE@', '-isystem', '@SYSROOT@/usr/include/aarch64-linux-gnu', '-isystem', '@SYSROOT@/usr/include', '-isystem', '/usr/aarch64-linux-gnu/include']
+cpp = ['aarch64-linux-gnu-g++', '--sysroot=@SYSROOT@', '-B@SYSROOT@/usr/lib/aarch64-linux-gnu/', '-nostdinc', '-nostdinc++', '-isystem', '@CXX_INCLUDE@', '-isystem', '@CXX_INCLUDE@/aarch64-linux-gnu', '-isystem', '@CXX_INCLUDE@/backward', '-isystem', '@GCC_INCLUDE@', '-isystem', '@SYSROOT@/usr/include/aarch64-linux-gnu', '-isystem', '@SYSROOT@/usr/include', '-isystem', '/usr/aarch64-linux-gnu/include']
+ar = 'aarch64-linux-gnu-ar'
+strip = 'aarch64-linux-gnu-strip'
+pkg-config = 'pkg-config'
+[host_machine]
+system = 'linux'
+cpu_family = 'aarch64'
+cpu = 'armv8-a'
+endian = 'little'
+[properties]
+needs_exe_wrapper = true
+[built-in options]
+c_link_args = ['-L@SYSROOT@/usr/lib/aarch64-linux-gnu', '-Wl,-rpath-link,@GUEST_LIB@']
+cpp_link_args = ['-L@SYSROOT@/usr/lib/aarch64-linux-gnu', '-Wl,-rpath-link,@GUEST_LIB@']

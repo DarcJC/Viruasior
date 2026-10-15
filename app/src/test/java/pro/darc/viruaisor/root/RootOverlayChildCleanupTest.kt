@@ -7,6 +7,14 @@ import java.nio.file.Files
 import java.util.concurrent.TimeUnit
 
 class RootOverlayChildCleanupTest {
+    @Test fun permitsBoundedMultiChildAndMountReleaseDrain() {
+        withChild(1500) { child, marker ->
+            child.outputStream.close()
+            RootOverlayChildCleanup.finish(child)
+            assertTrue("All descendant exit and mount-reference draining needs a bounded grace", marker.isFile)
+            assertFalse(child.isAlive)
+        }
+    }
     @Test fun allowsOwnerDeathCleanupToCompleteBeforeKillingChild() {
         withChild(200) { child, marker ->
             child.outputStream.close()
@@ -22,7 +30,7 @@ class RootOverlayChildCleanupTest {
             val started = System.nanoTime()
             RootOverlayChildCleanup.finish(child)
             assertTrue(child.waitFor(1, TimeUnit.SECONDS))
-            assertTrue(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started) < 3000)
+            assertTrue(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started) < 5000)
             assertFalse(marker.exists())
         }
     }
