@@ -10,8 +10,8 @@ function inspectDesktop(log) {
   const syncMatch=/VIRUAISOR_DISPLAY_SYNC_READY ctx=\d+ rings=[1-9]\d*(?=\r?$)/m.exec(afterPlasma);
   const afterSync=syncMatch ? afterPlasma.slice(syncMatch.index+syncMatch[0].length) : '';
   let frameMatch=null;
-  for (const candidate of afterSync.matchAll(/FRAME_SOURCE frame=\d+ path=dmabuf-sync-mmap[^\n]*colored=(\d+) opaque=(\d+)[^\n]*hash=[0-9a-f]+/g)) {
-    if (Number(candidate[1])>=10000 && Number(candidate[2])>=500000) {
+  for (const candidate of afterSync.matchAll(/FRAME_SOURCE frame=\d+ path=(?:ahb-image-blast|ahb-image-lock|ahb-lock|dmabuf-sync-mmap)[^\n]*colored=(\d+) opaque=(\d+)[^\n]*hash=[0-9a-f]+/g)) {
+    if (Number(candidate[1])>=6000 && Number(candidate[2])>=500000) {
       frameMatch=candidate;
       break;
     }
@@ -24,9 +24,8 @@ function inspectDesktop(log) {
     venusDriver:/driverID\s*=\s*(?:VK_)?DRIVER_ID_MESA_VENUS|driverName\s*=\s*venus/i.test(clean),
     hardwareGl:/GL_RENDERER=[^\n]*zink[^\n]*mali/i.test(clean),
     shaderReadback:/GPU_DRAW_READBACK_PASS/.test(clean),
-    compositorActive:/Compositing is active/.test(clean),
-    compositorGl:/Compositing Type:\s*OpenGL/.test(clean),
-    compositorRenderer:/OpenGL renderer string:[^\n]*zink[^\n]*mali/i.test(clean),
+    compositorDisabled:/Compositing is not active/.test(clean),
+    compositorPolicy:/VIRUAISOR_KWIN_COMPOSITING=disabled/.test(clean),
     plasmaReady:!!plasmaMatch,
     surfaceAttached:/Root Direct Surface attached/.test(clean),
     rendererSynchronized:!!syncMatch,
@@ -37,7 +36,7 @@ function inspectDesktop(log) {
   const missing=Object.keys(requirements).filter(key=>!requirements[key]);
   if (failed) missing.push('errorOrSoftwareRenderer');
   return {passed:missing.length===0,missing,token:lease?.[1]??null,
-    scope:'GPU rendering, compositor, renderer synchronization and a post-ready full-size non-black frame sample; exercise input separately'};
+    scope:'Venus GPU rendering, disabled KWin compositing, renderer synchronization and a post-ready full-size non-black frame sample; exercise input separately'};
 }
 module.exports={inspectDesktop};
 if (require.main === module) {

@@ -1,6 +1,7 @@
 package pro.darc.viruaisor.display
 
 import android.content.Intent
+import android.hardware.HardwareBuffer
 import android.os.Binder
 import android.os.IBinder
 import android.os.Parcel
@@ -83,7 +84,49 @@ class RootDisplayService : RootService() {
                                     val binder = connector.waitForDisplayService()
                                     check(token.isBinderAlive) { "Display session died during startup" }
                                     requestedDisplay = binder
-                                    connector.setSurface(binder, owned.surface)
+                                    val frameSink = object : Binder() {
+                                        private var calls = 0L
+
+                                        init {
+                                            attachInterface(null, FRAME_SINK_DESCRIPTOR)
+                                        }
+
+                                        override fun onTransact(
+                                            code: Int,
+                                            data: Parcel,
+                                            reply: Parcel?,
+                                            flags: Int,
+                                        ): Boolean {
+                                            check(getCallingUid() == applicationInfo.uid) {
+                                                "Frame producer UID mismatch"
+                                            }
+                                            if (code == IBinder.INTERFACE_TRANSACTION) {
+                                                return super.onTransact(code, data, reply, flags)
+                                            }
+                                            require(code == PRESENT_FRAME &&
+                                                flags and IBinder.FLAG_ONEWAY == 0 && reply != null) {
+                                                "Unsupported frame transaction"
+                                            }
+                                            data.enforceInterface(FRAME_SINK_DESCRIPTOR)
+                                            calls++
+                                            if (calls == 1L) Log.i(TAG, "FRAME_SINK_RECEIVED uid=${getCallingUid()}")
+                                            val buffer = HardwareBuffer.CREATOR.createFromParcel(data)
+                                            try {
+                                                data.enforceNoDataAvail()
+                                                val frameIdentity = clearCallingIdentity()
+                                                try {
+                                                    synchronized(lock) { owned.present(buffer) }
+                                                } finally {
+                                                    restoreCallingIdentity(frameIdentity)
+                                                }
+                                                reply.writeNoException()
+                                            } finally {
+                                                buffer.close()
+                                            }
+                                            return true
+                                        }
+                                    }
+                                    connector.setSurface(binder, owned.surface, frameSink)
                                     check(token.isBinderAlive) { "Display session died during attachment" }
                                     owned.show()
                                     display = binder
@@ -200,5 +243,7 @@ class RootDisplayService : RootService() {
     private companion object {
         const val TAG = "ViruaisorRootDisplay"
         const val OPERATION_TIMEOUT_SECONDS = 15L
+        const val PRESENT_FRAME = 1
+        const val FRAME_SINK_DESCRIPTOR = "pro.darc.viruaisor.display.IRootFrameSink"
     }
 }

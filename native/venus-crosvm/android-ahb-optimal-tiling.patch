@@ -1,0 +1,40 @@
+--- a/src/venus/vkr_image.c
++++ b/src/venus/vkr_image.c
+@@ -13,6 +13,8 @@
+                            struct vn_command_vkCreateImage *args)
+ {
+ #ifdef __ANDROID__
++   VkImageCreateInfo *create_info = (VkImageCreateInfo *)args->pCreateInfo;
++   const VkImageTiling original_tiling = create_info->tiling;
+    VkExternalMemoryImageCreateInfo *external = vkr_find_struct(
+       args->pCreateInfo->pNext,
+       VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO);
+@@ -30,10 +32,11 @@
+       original_handle_types = external->handleTypes;
+       external->handleTypes =
+          VK_EXTERNAL_MEMORY_HANDLE_TYPE_ANDROID_HARDWARE_BUFFER_BIT_ANDROID;
+-      vkr_log("VIRUAISOR_IMAGE_EXTERNAL_AHB width=%u height=%u layers=%u usage=%x",
+-              args->pCreateInfo->extent.width,
+-              args->pCreateInfo->extent.height,
+-              args->pCreateInfo->arrayLayers, args->pCreateInfo->usage);
++      create_info->tiling = VK_IMAGE_TILING_OPTIMAL;
++      vkr_log("VIRUAISOR_IMAGE_EXTERNAL_AHB width=%u height=%u layers=%u usage=%x guest_tiling=%u host_tiling=%u",
++              create_info->extent.width, create_info->extent.height,
++              create_info->arrayLayers, create_info->usage,
++              original_tiling, create_info->tiling);
+    }
+ #endif
+    /* XXX If VkExternalMemoryImageCreateInfo is chained by the app, all is
+@@ -57,8 +60,11 @@
+
+    struct vkr_image *image = vkr_image_create_and_add(dispatch->data, args);
+ #ifdef __ANDROID__
+-   if (translate_to_ahb)
++   if (translate_to_ahb) {
+       external->handleTypes = original_handle_types;
++      create_info->tiling = original_tiling;
++      vkr_log("VIRUAISOR_IMAGE_EXTERNAL_AHB_RESULT vk=%d", args->ret);
++   }
+    if (image && translate_to_ahb) {
+       image->android_hardware_buffer_external = true;
+       image->format = VK_FORMAT_B8G8R8A8_UNORM;

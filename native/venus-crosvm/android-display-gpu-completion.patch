@@ -1,0 +1,157 @@
+--- a/src/venus/vkr_queue.c
++++ b/src/venus/vkr_queue.c
+@@ -111,6 +111,38 @@
+    return true;
+ }
+
++int
++vkr_queue_wait_for_display(struct vkr_queue *queue, uint64_t timeout_ns)
++{
++   struct vkr_device *dev = queue->device;
++   struct vn_device_proc_table *vk = &dev->proc_table;
++   const VkFenceCreateInfo create_info = {
++      .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
++   };
++   VkFence fence = VK_NULL_HANDLE;
++   VkResult result = vk->CreateFence(dev->base.handle.device,
++                                     &create_info, NULL, &fence);
++   if (result != VK_SUCCESS)
++      return -1;
++
++   /* Order this fence after the render submissions already decoded from the
++    * Venus ring.  Release the queue lock before waiting so new work can be
++    * submitted and the guest cannot be stalled by display refresh. */
++   mtx_lock(&queue->vk_mutex);
++   result = vk->QueueSubmit(queue->base.handle.queue, 0, NULL, fence);
++   mtx_unlock(&queue->vk_mutex);
++   if (result == VK_SUCCESS)
++      result = vk->WaitForFences(dev->base.handle.device, 1, &fence,
++                                 VK_TRUE, timeout_ns);
++   vk->DestroyFence(dev->base.handle.device, fence, NULL);
++
++   if (result == VK_SUCCESS)
++      return 1;
++   if (result == VK_TIMEOUT)
++      return 0;
++   return -1;
++}
++
+ static void
+ vkr_queue_sync_thread_fini(struct vkr_queue *queue)
+ {
+--- a/src/venus/vkr_queue.h
++++ b/src/venus/vkr_queue.h
+@@ -95,4 +95,7 @@
+                       uint32_t ring_idx,
+                       uint64_t fence_id);
+
++int
++vkr_queue_wait_for_display(struct vkr_queue *queue, uint64_t timeout_ns);
++
+ #endif /* VKR_QUEUE_H */
+--- a/src/venus/vkr_context.c
++++ b/src/venus/vkr_context.c
+@@ -608,6 +608,35 @@
+    return ok && !vkr_context_get_fatal(ctx);
+ }
+
++int
++vkr_context_wait_queues_for_display(struct vkr_context *ctx,
++                                    uint64_t timeout_ns,
++                                    unsigned *out_queue_count)
++{
++   assert(out_queue_count);
++   *out_queue_count = 0;
++   if (!ctx->instance)
++      return 1;
++
++   bool ready = true;
++   for (uint32_t i = 0; i < ctx->instance->physical_device_count; ++i) {
++      struct vkr_physical_device *physical = ctx->instance->physical_devices[i];
++      list_for_each_entry (struct vkr_device, dev, &physical->devices,
++                           base.track_head) {
++         list_for_each_entry (struct vkr_queue, queue, &dev->queues,
++                              base.track_head) {
++            (*out_queue_count)++;
++            const int status = vkr_queue_wait_for_display(queue, timeout_ns);
++            if (status < 0)
++               return -1;
++            if (!status)
++               ready = false;
++         }
++      }
++   }
++   return ready ? 1 : 0;
++}
++
+ static int
+ vkr_context_ring_monitor_thread(void *arg)
+ {
+--- a/src/venus/vkr_context.h
++++ b/src/venus/vkr_context.h
+@@ -265,6 +265,11 @@
+                                     uint64_t timeout_ns,
+                                     bool *out_reached);
+
++int
++vkr_context_wait_queues_for_display(struct vkr_context *ctx,
++                                    uint64_t timeout_ns,
++                                    unsigned *out_queue_count);
++
+ void
+ vkr_context_add_instance(struct vkr_context *ctx,
+                          struct vkr_instance *instance,
+--- a/src/venus/vkr_renderer.c
++++ b/src/venus/vkr_renderer.c
+@@ -221,6 +221,7 @@
+     * snapshot consistent.  finish runs after that mutex is released because
+     * a ring can need to submit a round-trip command before advancing its head.
+     */
++   bool all_rings_drained = true;
+    for (unsigned i = 0; i < wait->ring_count; i++) {
+       struct vkr_ring *ring = wait->rings[i].ring;
+       const uint32_t tail = wait->rings[i].tail;
+@@ -233,15 +234,39 @@
+          free(wait);
+          return false;
+       }
+-      if (!drained)
++      if (!drained) {
++         all_rings_drained = false;
+          vkr_log("VIRUAISOR_DISPLAY_SYNC_DEFERRED ctx=%u ring=%" PRIu64
+                  " head=%u tail=%u", wait->ctx_id, ring->id,
+                  vkr_ring_load_head(ring), tail);
++      }
+    }
+
+-   /* DMA_BUF_IOCTL_SYNC(START|READ) waits for the exporter's implicit fence.
+-    * Do not call vkDeviceWaitIdle or block queue submission here.
+-    */
++   if (!all_rings_drained) {
++      free(wait);
++      return true;
++   }
++
++   /* VIRUAISOR_DISPLAY_SYNC_GPU_FENCE: an empty queue submission supplies
++    * the completion edge that this Android DMA-BUF exporter does not attach
++    * as an implicit fence.  Each wait is bounded and holds no queue mutex. */
++   unsigned queue_count = 0;
++   const int gpu_ready = vkr_context_wait_queues_for_display(
++      wait->ctx, 50000000, &queue_count);
++   if (gpu_ready < 0) {
++      vkr_log("VIRUAISOR_DISPLAY_SYNC_GPU_FAILED ctx=%u queues=%u",
++              wait->ctx_id, queue_count);
++      free(wait);
++      return false;
++   }
++   if (!gpu_ready) {
++      vkr_log("VIRUAISOR_DISPLAY_SYNC_GPU_DEFERRED ctx=%u queues=%u",
++              wait->ctx_id, queue_count);
++      free(wait);
++      return true;
++   }
++   vkr_log("VIRUAISOR_DISPLAY_SYNC_GPU_READY ctx=%u queues=%u",
++           wait->ctx_id, queue_count);
+    vkr_log("VIRUAISOR_DISPLAY_SYNC_READY ctx=%u rings=%u",
+            wait->ctx_id, wait->ring_count);
+    free(wait);

@@ -137,7 +137,7 @@ class DirectAvfSurfaceBackend(
 /** Small internal seam used to isolate the version-specific binder protocol in tests. */
 interface AvfDisplayConnector {
     fun waitForDisplayService(): IBinder
-    fun setSurface(displayBinder: IBinder, surface: Surface)
+    fun setSurface(displayBinder: IBinder, surface: Surface, frameSink: IBinder? = null)
     fun removeSurface(displayBinder: IBinder)
 }
 
@@ -156,10 +156,11 @@ class Android17AvfDisplayConnector : AvfDisplayConnector {
         }
     }
 
-    override fun setSurface(displayBinder: IBinder, surface: Surface) {
+    override fun setSurface(displayBinder: IBinder, surface: Surface, frameSink: IBinder?) {
         transact(displayBinder, DISPLAY_DESCRIPTOR, SET_SURFACE, write = { data ->
             data.writeTypedObject(surface, 0)
             data.writeBoolean(false)
+            if (frameSink != null) data.writeStrongBinder(frameSink)
         }) { Unit }
     }
 

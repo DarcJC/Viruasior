@@ -1,0 +1,43 @@
+diff --git a/src/venus/vkr_image.c b/src/venus/vkr_image.c
+--- a/src/venus/vkr_image.c
++++ b/src/venus/vkr_image.c
+@@ -91,8 +91,19 @@ vkr_dispatch_vkGetImageMemoryRequirements(
+    struct vkr_device *dev = vkr_device_from_handle(args->device);
+    struct vn_device_proc_table *vk = &dev->proc_table;
+
++#ifdef __ANDROID__
++   struct vkr_image *image = vkr_image_from_handle(args->image);
++#endif
+    vn_replace_vkGetImageMemoryRequirements_args_handle(args);
+    vk->GetImageMemoryRequirements(args->device, args->image, args->pMemoryRequirements);
++#ifdef __ANDROID__
++   if (image && image->android_hardware_buffer_external)
++      vkr_log("VIRUAISOR_AHB_IMAGE_REQUIREMENTS api=legacy size=%" PRIu64
++              " alignment=%" PRIu64 " types=%x",
++              args->pMemoryRequirements->size,
++              args->pMemoryRequirements->alignment,
++              args->pMemoryRequirements->memoryTypeBits);
++#endif
+    vkr_physical_device_mem_type_spoof(dev->physical_device,
+                                       &args->pMemoryRequirements->memoryTypeBits);
+ }
+@@ -105,8 +116,19 @@ vkr_dispatch_vkGetImageMemoryRequirements2(
+    struct vkr_device *dev = vkr_device_from_handle(args->device);
+    struct vn_device_proc_table *vk = &dev->proc_table;
+
++#ifdef __ANDROID__
++   struct vkr_image *image = vkr_image_from_handle(args->pInfo->image);
++#endif
+    vn_replace_vkGetImageMemoryRequirements2_args_handle(args);
+    vk->GetImageMemoryRequirements2(args->device, args->pInfo, args->pMemoryRequirements);
++#ifdef __ANDROID__
++   if (image && image->android_hardware_buffer_external)
++      vkr_log("VIRUAISOR_AHB_IMAGE_REQUIREMENTS api=v2 size=%" PRIu64
++              " alignment=%" PRIu64 " types=%x",
++              args->pMemoryRequirements->memoryRequirements.size,
++              args->pMemoryRequirements->memoryRequirements.alignment,
++              args->pMemoryRequirements->memoryRequirements.memoryTypeBits);
++#endif
+    vkr_physical_device_mem_type_spoof(
+       dev->physical_device,
+       &args->pMemoryRequirements->memoryRequirements.memoryTypeBits);

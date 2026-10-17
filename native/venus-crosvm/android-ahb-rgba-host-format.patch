@@ -1,0 +1,47 @@
+--- a/src/venus/vkr_image.c
++++ b/src/venus/vkr_image.c
+@@ -15,6 +15,7 @@
+ #ifdef __ANDROID__
+    VkImageCreateInfo *create_info = (VkImageCreateInfo *)args->pCreateInfo;
+    const VkImageTiling original_tiling = create_info->tiling;
++   const VkFormat original_format = create_info->format;
+    void *prev_of_modifier = NULL;
+    void *modifier_info = NULL;
+    VkExternalMemoryImageCreateInfo *external = vkr_find_struct(
+@@ -83,6 +84,9 @@
+          }
+       }
+       create_info->tiling = VK_IMAGE_TILING_OPTIMAL;
++      create_info->format = VK_FORMAT_R8G8B8A8_UNORM;
++      vkr_log("VIRUAISOR_AHB_HOST_FORMAT guest=%u host=%u",
++              original_format, create_info->format);
+       vkr_log("VIRUAISOR_IMAGE_EXTERNAL_AHB width=%u height=%u layers=%u usage=%x guest_tiling=%u host_tiling=%u",
+               create_info->extent.width, create_info->extent.height,
+               create_info->arrayLayers, create_info->usage,
+@@ -120,13 +124,14 @@
+    if (translate_to_ahb) {
+       external->handleTypes = original_handle_types;
+       create_info->tiling = original_tiling;
++      create_info->format = original_format;
+       vkr_log("VIRUAISOR_IMAGE_EXTERNAL_AHB_RESULT vk=%d", args->ret);
+       if (modifier_info)
+          vkr_pnext_set_next(prev_of_modifier, modifier_info);
+    }
+    if (image && translate_to_ahb) {
+       image->android_hardware_buffer_external = true;
+-      image->format = VK_FORMAT_B8G8R8A8_UNORM;
++      image->format = VK_FORMAT_R8G8B8A8_UNORM;
+       image->extent = args->pCreateInfo->extent;
+       image->array_layers = args->pCreateInfo->arrayLayers;
+       if (!guest_layout_valid &&
+--- a/src/venus/vkr_device_memory.c
++++ b/src/venus/vkr_device_memory.c
+@@ -232,7 +232,7 @@
+    const bool image_allocation =
+       vkr_android_dedicated_ahb_image(info, &image);
+    int fd = image_allocation
+-      ? venus_gralloc_allocate_bgra_image(
++      ? venus_gralloc_allocate_rgba_image(
+            image->extent.width, image->extent.height, image->array_layers,
+            &buffer)
+       : venus_gralloc_allocate(

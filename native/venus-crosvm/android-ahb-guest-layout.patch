@@ -1,0 +1,138 @@
+--- a/src/venus/vkr_image.h
++++ b/src/venus/vkr_image.h
+@@ -15,6 +15,10 @@
+    VkFormat format;
+    VkExtent3D extent;
+    uint32_t array_layers;
++   bool guest_drm_format_modifier_valid;
++   bool guest_subresource_layout_valid;
++   uint64_t guest_drm_format_modifier;
++   VkSubresourceLayout guest_subresource_layout;
+ #endif
+ };
+ VKR_DEFINE_OBJECT_CAST(image, VK_OBJECT_TYPE_IMAGE, VkImage)
+--- a/src/venus/vkr_image.c
++++ b/src/venus/vkr_image.c
+@@ -20,6 +20,33 @@
+    VkExternalMemoryImageCreateInfo *external = vkr_find_struct(
+       args->pCreateInfo->pNext,
+       VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO);
++   VkImageDrmFormatModifierExplicitCreateInfoEXT *explicit_modifier =
++      vkr_find_struct(create_info->pNext,
++                      VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_EXPLICIT_CREATE_INFO_EXT);
++   VkImageDrmFormatModifierListCreateInfoEXT *modifier_list =
++      vkr_find_struct(create_info->pNext,
++                      VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_LIST_CREATE_INFO_EXT);
++   VkSubresourceLayout guest_layout = {0};
++   bool guest_layout_valid = false;
++   bool guest_layout_synthetic = false;
++   uint64_t guest_modifier = 0;
++   bool guest_modifier_valid = false;
++   if (explicit_modifier) {
++      guest_modifier = explicit_modifier->drmFormatModifier;
++      guest_modifier_valid = true;
++      if (explicit_modifier->drmFormatModifierPlaneCount == 1 &&
++          explicit_modifier->pPlaneLayouts) {
++         guest_layout = explicit_modifier->pPlaneLayouts[0];
++         if (!guest_layout.size && guest_layout.rowPitch &&
++             create_info->extent.height <= UINT64_MAX / guest_layout.rowPitch)
++            guest_layout.size = guest_layout.rowPitch * create_info->extent.height;
++         guest_layout_valid = true;
++      }
++   } else if (modifier_list && modifier_list->drmFormatModifierCount == 1 &&
++              modifier_list->pDrmFormatModifiers) {
++      guest_modifier = modifier_list->pDrmFormatModifiers[0];
++      guest_modifier_valid = true;
++   }
+    if (create_info->imageType == VK_IMAGE_TYPE_2D)
+       vkr_log("VIRUAISOR_IMAGE_CANDIDATE width=%u height=%u format=%u tiling=%u usage=%x external=%x",
+               create_info->extent.width, create_info->extent.height,
+@@ -102,6 +129,36 @@
+       image->format = VK_FORMAT_B8G8R8A8_UNORM;
+       image->extent = args->pCreateInfo->extent;
+       image->array_layers = args->pCreateInfo->arrayLayers;
++      if (!guest_layout_valid &&
++          (original_tiling == VK_IMAGE_TILING_LINEAR ||
++           (original_tiling == VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT &&
++            guest_modifier_valid && guest_modifier == 0))) {
++         const uint64_t row_pitch =
++            (UINT64_C(4) * args->pCreateInfo->extent.width + UINT64_C(63)) &
++            ~UINT64_C(63);
++         if (row_pitch &&
++             args->pCreateInfo->extent.height <= UINT64_MAX / row_pitch) {
++            guest_layout.rowPitch = row_pitch;
++            guest_layout.arrayPitch = row_pitch * args->pCreateInfo->extent.height;
++            guest_layout.depthPitch = guest_layout.arrayPitch;
++            guest_layout.size = guest_layout.arrayPitch;
++            guest_layout_valid = true;
++            guest_layout_synthetic = true;
++         }
++      }
++      image->guest_drm_format_modifier_valid = guest_modifier_valid;
++      image->guest_subresource_layout_valid = guest_layout_valid;
++      image->guest_drm_format_modifier = guest_modifier;
++      image->guest_subresource_layout = guest_layout;
++      if (original_tiling == VK_IMAGE_TILING_LINEAR ||
++          original_tiling == VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT)
++         vkr_log("VIRUAISOR_AHB_GUEST_LAYOUT tiling=%u modifier_valid=%u"
++                 " modifier=%" PRIu64 " layout=%u synthetic=%u"
++                 " offset=%" PRIu64 " row=%" PRIu64 " size=%" PRIu64,
++                 original_tiling, guest_modifier_valid, guest_modifier,
++                 guest_layout_valid, guest_layout_synthetic,
++                 guest_layout.offset, guest_layout.rowPitch,
++                 guest_layout.size);
+    }
+ #else
+    (void)image;
+@@ -253,6 +310,16 @@
+ {
+    struct vkr_device *dev = vkr_device_from_handle(args->device);
+    struct vn_device_proc_table *vk = &dev->proc_table;
++#ifdef __ANDROID__
++   struct vkr_image *image = vkr_image_from_handle(args->image);
++   if (image && image->guest_subresource_layout_valid) {
++      *args->pLayout = image->guest_subresource_layout;
++      vkr_log("VIRUAISOR_AHB_GUEST_LAYOUT_QUERY api=legacy row=%" PRIu64
++              " size=%" PRIu64,
++              args->pLayout->rowPitch, args->pLayout->size);
++      return;
++   }
++#endif
+
+    vn_replace_vkGetImageSubresourceLayout_args_handle(args);
+    vk->GetImageSubresourceLayout(args->device, args->image, args->pSubresource,
+@@ -266,6 +333,17 @@
+ {
+    struct vkr_device *dev = vkr_device_from_handle(args->device);
+    struct vn_device_proc_table *vk = &dev->proc_table;
++#ifdef __ANDROID__
++   struct vkr_image *image = vkr_image_from_handle(args->image);
++   if (image && image->guest_subresource_layout_valid) {
++      args->pLayout->subresourceLayout = image->guest_subresource_layout;
++      vkr_log("VIRUAISOR_AHB_GUEST_LAYOUT_QUERY api=v2 row=%" PRIu64
++              " size=%" PRIu64,
++              args->pLayout->subresourceLayout.rowPitch,
++              args->pLayout->subresourceLayout.size);
++      return;
++   }
++#endif
+
+    vn_replace_vkGetImageSubresourceLayout2_args_handle(args);
+    vk->GetImageSubresourceLayout2(args->device, args->image, args->pSubresource,
+@@ -291,6 +369,16 @@
+ {
+    struct vkr_device *dev = vkr_device_from_handle(args->device);
+    struct vn_device_proc_table *vk = &dev->proc_table;
++#ifdef __ANDROID__
++   struct vkr_image *image = vkr_image_from_handle(args->image);
++   if (image && image->guest_drm_format_modifier_valid) {
++      args->pProperties->drmFormatModifier = image->guest_drm_format_modifier;
++      args->ret = VK_SUCCESS;
++      vkr_log("VIRUAISOR_AHB_GUEST_MODIFIER_QUERY modifier=%" PRIu64,
++              image->guest_drm_format_modifier);
++      return;
++   }
++#endif
+
+    vn_replace_vkGetImageDrmFormatModifierPropertiesEXT_args_handle(args);
+    args->ret = vk->GetImageDrmFormatModifierPropertiesEXT(args->device, args->image,

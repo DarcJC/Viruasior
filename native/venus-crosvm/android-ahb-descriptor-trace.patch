@@ -1,0 +1,30 @@
+--- a/src/venus/vkr_device_memory.c
++++ b/src/venus/vkr_device_memory.c
+@@ -166,8 +166,14 @@
+               " stage=proc", object_id);
+       return VK_ERROR_EXTENSION_NOT_PRESENT;
+    }
++   AHardwareBuffer_Desc ahb_desc = {0};
++   AHardwareBuffer_describe(buffer, &ahb_desc);
++   VkAndroidHardwareBufferFormatPropertiesANDROID format_properties = {
++      .sType = VK_STRUCTURE_TYPE_ANDROID_HARDWARE_BUFFER_FORMAT_PROPERTIES_ANDROID,
++   };
+    VkAndroidHardwareBufferPropertiesANDROID properties = {
+       .sType = VK_STRUCTURE_TYPE_ANDROID_HARDWARE_BUFFER_PROPERTIES_ANDROID,
++      .pNext = &format_properties,
+    };
+    VkResult ret = get_properties(dev->base.handle.device, buffer, &properties);
+    if (ret != VK_SUCCESS) {
+@@ -175,6 +181,12 @@
+               " stage=properties vk=%d", object_id, ret);
+       return ret;
+    }
++   vkr_log("VIRUAISOR_AHB_DESCRIPTOR object=%" PRIu64
++           " width=%u height=%u layers=%u format=%u usage=%" PRIu64
++           " stride=%u vk_format=%u external=%" PRIu64,
++           object_id, ahb_desc.width, ahb_desc.height, ahb_desc.layers,
++           ahb_desc.format, ahb_desc.usage, ahb_desc.stride,
++           format_properties.format, format_properties.externalFormat);
+    VkMemoryRequirements requirements = {0};
+    dev->proc_table.GetImageMemoryRequirements(
+       dev->base.handle.device, image->base.handle.image, &requirements);

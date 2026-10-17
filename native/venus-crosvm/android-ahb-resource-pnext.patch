@@ -1,0 +1,25 @@
+--- a/src/venus/vkr_device_memory.c
++++ b/src/venus/vkr_device_memory.c
+@@ -763,9 +763,19 @@
+ #endif
+
+ #ifdef __ANDROID__
+-      vkr_pnext_set_next(prev_of_res_info,
+-                         uses_ahb_import ? (void *)&local_ahb_import
+-                                         : (void *)&local_import_info);
++      if (uses_ahb_import) {
++         /* Mali only recognizes the AHB import when it is the chain head.
++          * Remove the guest-only resource node first so dedicated allocation
++          * remains in the tail without forming a cycle. */
++         vkr_pnext_set_next(prev_of_res_info, res_info->pNext);
++         local_ahb_import.pNext = alloc_info->pNext;
++         alloc_info->pNext = &local_ahb_import;
++         vkr_log("VIRUAISOR_AHB_RESOURCE_PNEXT object=%" PRIu64
++                 " res=%u head=ahb", viruaisor_memory_id,
++                 res_info->resourceId);
++      } else {
++         vkr_pnext_set_next(prev_of_res_info, &local_import_info);
++      }
+ #else
+       vkr_pnext_set_next(prev_of_res_info, &local_import_info);
+ #endif

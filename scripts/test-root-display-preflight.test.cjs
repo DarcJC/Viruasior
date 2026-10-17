@@ -38,12 +38,11 @@ else if (args.startsWith('logcat ') && process.env.TEST_READY === 'true') {
   console.log('I virtmgr: driverID = DRIVER_ID_MESA_VENUS');
   console.log('I virtmgr: GL_RENDERER=zink Vulkan 1.3 (Virtio-GPU Venus (Mali-G2-Ultra-NX MC16))');
   console.log('I virtmgr: GPU_DRAW_READBACK_PASS');
-  console.log('I virtmgr: Compositing is active');
-  console.log('I virtmgr: Compositing Type: OpenGL');
-  console.log('I virtmgr: OpenGL renderer string: zink Vulkan 1.3 (Mali-G2-Ultra-NX MC16)');
+  console.log('I virtmgr: Compositing is not active');
   console.log('I virtmgr: VIRUAISOR_PLASMA_HARDWARE_READY=true');
+  console.log('I virtmgr: VIRUAISOR_KWIN_COMPOSITING=disabled');
   console.log('I ViruaisorVenusRenderer: VIRUAISOR_DISPLAY_SYNC_READY ctx=2 rings=1');
-  console.log('I ViruaisorVenusDisplay: FRAME_SOURCE frame=181 path=dmabuf-sync-mmap fd=607 offset=0 stride=5120 fourcc=34325258 colored=123456 opaque=921600 hash=1234567890abcdef');
+  console.log('I ViruaisorVenusDisplay: FRAME_SOURCE frame=181 path=ahb-image-blast fd=607 offset=0 stride=5120 fourcc=34325258 colored=123456 opaque=921600 hash=1234567890abcdef');
   console.log('I ViruaisorVenusDisplay: FRAME_POSTED count=240');
 }
 else if (args.startsWith('logcat ') && process.env.TEST_FAILURE) {

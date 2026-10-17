@@ -27,7 +27,24 @@ import pro.darc.viruaisor.gpu.VenusDesktopLease
 import pro.darc.viruaisor.MainActivity
 import pro.darc.viruaisor.R
 import pro.darc.viruaisor.display.InputBackendRegistry
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.Executor
+
+internal class PendingLifecycleCommands {
+    private val count = AtomicInteger()
+
+    fun begin() {
+        count.incrementAndGet()
+    }
+
+    fun complete(): Boolean {
+        val remaining = count.decrementAndGet()
+        check(remaining >= 0) { "Lifecycle command completion was not balanced" }
+        return remaining == 0
+    }
+
+    fun hasPending(): Boolean = count.get() != 0
+}
 
 class VmService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -40,6 +57,7 @@ class VmService : Service() {
     private var foreground = false
     private var venusLease: VenusDesktopLease? = null
     private val lifecycleMutex=Mutex()
+    private val pendingLifecycleCommands = PendingLifecycleCommands()
 
     override fun onCreate() {
         super.onCreate()
@@ -64,17 +82,15 @@ class VmService : Service() {
         when (intent?.action) {
             ACTION_IMPORT -> {
                 val uri = intent.data
-                if (uri == null) fail("No VM bundle was selected.") else scope.launch { lifecycleMutex.withLock { importBundle(uri) } }
+                if (uri == null) fail("No VM bundle was selected.") else launchLifecycle { importBundle(uri) }
             }
-            ACTION_IMPORT_PREPARED -> scope.launch {
-                lifecycleMutex.withLock {
-                    val file=getExternalFilesDir(null)?.resolve(PREPARED_BUNDLE_NAME)
-                    if (file?.isFile == true) importBundle(Uri.fromFile(file))
-                    else fail("Prepared Manjaro bundle is missing.")
-                }
+            ACTION_IMPORT_PREPARED -> launchLifecycle {
+                val file=getExternalFilesDir(null)?.resolve(PREPARED_BUNDLE_NAME)
+                if (file?.isFile == true) importBundle(Uri.fromFile(file))
+                else fail("Prepared Manjaro bundle is missing.")
             }
-            ACTION_START -> scope.launch { lifecycleMutex.withLock { startVm() } }
-            ACTION_STOP -> scope.launch { lifecycleMutex.withLock { stopVm() } }
+            ACTION_START -> launchLifecycle { startVm() }
+            ACTION_STOP -> launchLifecycle { stopVm() }
             ACTION_SURFACE_READY -> scope.launch {
                 desktopRequested = true
                 startDesktopIfReady()
@@ -143,7 +159,18 @@ class VmService : Service() {
             if (wakeLock.isHeld) wakeLock.release()
             Log.i(TAG,"IMPORT_WAKE_RELEASED")
         }
-        finishForegroundIfIdle()
+    }
+
+    private fun launchLifecycle(command: suspend () -> Unit) {
+        pendingLifecycleCommands.begin()
+        scope.launch {
+            try {
+                lifecycleMutex.withLock { command() }
+            } finally {
+                pendingLifecycleCommands.complete()
+                finishForegroundIfIdle()
+            }
+        }
     }
 
     private suspend fun startVm() {
@@ -340,6 +367,7 @@ class VmService : Service() {
     }
 
     private fun finishForegroundIfIdle() {
+        if (pendingLifecycleCommands.hasPending()) return
         if (venusLease != null) return // Teardown must finish before the owning service is destroyed.
         val status = VmRuntime.state.value.status
         if (status is VmStatus.Starting || status is VmStatus.Running ||

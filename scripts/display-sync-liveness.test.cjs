@@ -13,6 +13,20 @@ const patch = fs.readFileSync(path.join(
   'venus-crosvm',
   'android-display-sync.patch',
 ), 'utf8');
+const completionPatch = fs.readFileSync(path.join(
+  __dirname,
+  '..',
+  'native',
+  'venus-crosvm',
+  'android-display-gpu-completion.patch',
+), 'utf8');
+const nullSlotPatch = fs.readFileSync(path.join(
+  __dirname,
+  '..',
+  'native',
+  'venus-crosvm',
+  'android-display-gpu-null-slot.patch',
+), 'utf8');
 
 test('display refresh drains Venus rings without blocking their queue submissions', () => {
   assert.match(patch, /vkr_context_wait_ring_seqno/,
@@ -40,4 +54,34 @@ test('display refresh drains Venus rings without blocking their queue submission
   assert.match(normalized,
     /bool\nrender_state_wait_idle\(uint32_t ctx_id\)\n\{\s*struct vkr_renderer_wait \*wait;\s*\{\s*SCOPE_LOCK_RENDERER\(\);\s*wait = vkr_renderer_prepare_wait_idle\(ctx_id\);\s*\}\s*return vkr_renderer_finish_wait_idle\(wait\);\s*\}/,
     'renderer_mutex must protect the snapshot but be released before rings are awaited');
+});
+
+test('display refresh waits on a bounded GPU fence after draining Venus commands', () => {
+  const code = completionPatch
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\+?\s*\/\/.*$/gm, '');
+
+  assert.match(code, /QueueSubmit\([^;]*fence\)/s,
+    'an empty queue submission must order the display fence after prior rendering');
+  assert.match(code, /WaitForFences\([^;]*timeout_ns\)/s,
+    'the CPU copy must wait for GPU completion with a finite timeout');
+  assert.doesNotMatch(code, /DeviceWaitIdle|QueueWaitIdle/,
+    'display refresh must not stall the whole Vulkan device or queue');
+
+  const nullSlotCode = nullSlotPatch.replace(/^\+/gm, '');
+  const physicalLookup = nullSlotCode.indexOf('physical_devices[i]');
+  const nullGuard = nullSlotCode.indexOf('if (!physical)', physicalLookup);
+  const deviceWalk = nullSlotCode.indexOf('&physical->devices', physicalLookup);
+  assert.ok(physicalLookup >= 0 && nullGuard > physicalLookup && deviceWalk > nullGuard,
+    'sparse physical-device slots must be skipped before walking their device lists');
+
+  const lockIndex = code.indexOf('mtx_lock(&queue->vk_mutex)');
+  const submitIndex = code.indexOf('QueueSubmit', lockIndex);
+  const unlockIndex = code.indexOf('mtx_unlock(&queue->vk_mutex)', submitIndex);
+  const waitIndex = code.indexOf('WaitForFences', unlockIndex);
+  assert.ok(lockIndex >= 0 && submitIndex > lockIndex && unlockIndex > submitIndex &&
+      waitIndex > unlockIndex,
+  'queue submission is externally synchronized, but the mutex is released before waiting');
+  assert.match(completionPatch, /VIRUAISOR_DISPLAY_SYNC_GPU_(READY|DEFERRED|FAILED)/,
+    'device evidence must distinguish completion, timeout and failure');
 });

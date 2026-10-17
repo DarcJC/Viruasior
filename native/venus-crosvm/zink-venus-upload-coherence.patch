@@ -1,10 +1,8 @@
 diff --git a/src/gallium/drivers/zink/zink_resource.c b/src/gallium/drivers/zink/zink_resource.c
-old mode 100644
-new mode 100755
-index 0e29737..7d77677
+index 0e29737..107d1f9 100644
 --- a/src/gallium/drivers/zink/zink_resource.c
 +++ b/src/gallium/drivers/zink/zink_resource.c
-@@ -937,10 +937,24 @@ allocate_bo(struct zink_screen *screen, const struct pipe_resource *templ,
+@@ -937,10 +937,24 @@
              VkMemoryRequirements *reqs, struct zink_resource_object *obj,
              struct mem_alloc_info *alloc_info)
  {
@@ -30,7 +28,7 @@ index 0e29737..7d77677
     enum zink_heap heap = zink_heap_from_domain_flags(alloc_info->flags, alloc_info->aflags);
     if (templ->flags & PIPE_RESOURCE_FLAG_MAP_COHERENT) {
        if (!(vk_domain_from_heap(heap) & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))
-@@ -1055,7 +1069,7 @@ allocate_bo(struct zink_screen *screen, const struct pipe_resource *templ,
+@@ -1055,7 +1069,7 @@
              continue;
 
           mai.memoryTypeIndex = screen->heap_map[heap][i];
@@ -39,7 +37,7 @@ index 0e29737..7d77677
        }
 
        if (obj->bo || heap != ZINK_HEAP_DEVICE_LOCAL_VISIBLE)
-@@ -1289,6 +1303,37 @@ create_image(struct zink_screen *screen, struct zink_resource_object *obj,
+@@ -1289,6 +1303,37 @@
     }
     init_ici(screen, &ici, templ, templ->bind, ici_modifier_count);
 
@@ -77,10 +75,17 @@ index 0e29737..7d77677
     bool success = false;
     uint64_t mod = eval_ici(screen, &ici, templ, templ->bind, ici_modifier_count, ici_modifiers, &success);
     if (ici.format == VK_FORMAT_A8_UNORM_KHR && !success) {
-@@ -1318,12 +1363,24 @@ create_image(struct zink_screen *screen, struct zink_resource_object *obj,
+@@ -1318,6 +1363,19 @@
 
     obj->render_target = (ici.usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) != 0;
 
++   if (viruaisor_import_dmabuf) {
++      alloc_info->external = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
++      alloc_info->export_types = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
++      mesa_logi("VIRUAISOR_ZINK_DMA_BUF_IMPORT_HANDLE handle=%x",
++                alloc_info->external);
++   }
++
 +   if (viruaisor_scanout_dmabuf) {
 +      alloc_info->external = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
 +      alloc_info->export_types = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
@@ -90,27 +95,13 @@ index 0e29737..7d77677
     if (ici.tiling == VK_IMAGE_TILING_OPTIMAL) {
        alloc_info->external &= ~VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
        alloc_info->export_types &= ~VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
-    }
-
--   if (alloc_info->shared || alloc_info->external) {
-+   /* Mali rejects a linear scanout image when the DMA-BUF handle type is
-+    * advertised at image creation time. Keep the allocation exportable, but
-+    * create the image without VkExternalMemoryImageCreateInfo. Venus supports
-+    * binding exportable memory to such an image (see vkr_image.c).
-+    */
-+   if ((alloc_info->shared || alloc_info->external) &&
-+       !viruaisor_scanout_dmabuf && !viruaisor_import_dmabuf) {
-       emici.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO;
-       emici.pNext = ici.pNext;
-       emici.handleTypes = alloc_info->export_types;
-@@ -1367,6 +1424,29 @@ create_image(struct zink_screen *screen, struct zink_resource_object *obj,
+@@ -1367,6 +1425,28 @@
        ici.pNext = &emici;
     }
 
-+   if (viruaisor_scanout_dmabuf)
-+      mesa_logi("VIRUAISOR_ZINK_LINEAR_SCANOUT_ALLOCATION_ONLY");
-+   else if (viruaisor_import_dmabuf)
-+      mesa_logi("VIRUAISOR_ZINK_LINEAR_IMPORT_ALLOCATION_ONLY");
++   if (viruaisor_scanout_dmabuf || viruaisor_import_dmabuf)
++      mesa_logi("VIRUAISOR_ZINK_EXTERNAL_IMAGE_DECLARATION handle=%x",
++                emici.handleTypes);
 +
 +   const bool viruaisor_trace_image =
 +      !screen->info.have_EXT_image_drm_format_modifier &&
@@ -133,7 +124,7 @@ index 0e29737..7d77677
     if (linear)
        *linear = ici.tiling == VK_IMAGE_TILING_LINEAR;
 
-@@ -2006,27 +2086,40 @@ zink_resource_from_handle(struct pipe_screen *pscreen,
+@@ -2006,27 +2086,40 @@
                   unsigned usage)
  {
  #ifdef ZINK_USE_DMABUF
@@ -180,12 +171,10 @@ index 0e29737..7d77677
        struct zink_resource *res = zink_resource(pres);
        if (pres->target != PIPE_BUFFER)
 diff --git a/src/gallium/drivers/zink/zink_screen.c b/src/gallium/drivers/zink/zink_screen.c
-old mode 100644
-new mode 100755
-index bc0cc58..a3bb4fd
+index bc0cc58..a3bb4fd 100644
 --- a/src/gallium/drivers/zink/zink_screen.c
 +++ b/src/gallium/drivers/zink/zink_screen.c
-@@ -764,6 +764,41 @@ zink_init_screen_caps(struct zink_screen *screen)
+@@ -764,6 +764,41 @@
 
     u_init_pipe_screen_caps(&screen->base, screen->is_cpu ? 0 : 1);
 
@@ -227,7 +216,7 @@ index bc0cc58..a3bb4fd
     caps->null_textures = screen->info.rb_image_feats.robustImageAccess;
     /* support OVR_multiview and OVR_multiview2 */
     caps->multiview = screen->info.have_vulkan13 ? 2 * screen->info.feats11.multiview : 0;
-@@ -3394,6 +3429,15 @@ zink_internal_create_screen(const struct pipe_screen_config *config, int64_t dev
+@@ -3394,6 +3429,15 @@
        goto fail;
     }
 

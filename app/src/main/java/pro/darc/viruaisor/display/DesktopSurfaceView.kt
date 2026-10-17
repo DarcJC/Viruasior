@@ -27,6 +27,7 @@ internal class DesktopSurfaceView(context: Context) : SurfaceView(context) {
     init {
         isFocusable = true
         isFocusableInTouchMode = true
+        setZOrderOnTop(true)
         setBackgroundColor(android.graphics.Color.BLACK)
     }
 

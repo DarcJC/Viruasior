@@ -1,0 +1,396 @@
+--- a/src/venus/vkr_physical_device.h
++++ b/src/venus/vkr_physical_device.h
+@@ -23,6 +23,9 @@
+
+    bool KHR_external_memory_fd;
+    bool EXT_external_memory_dma_buf;
++#ifdef __ANDROID__
++   bool ANDROID_external_memory_android_hardware_buffer;
++#endif
+    bool KHR_portability_subset;
+
+    bool KHR_external_fence_fd;
+--- a/src/venus/vkr_physical_device.c
++++ b/src/venus/vkr_physical_device.c
+@@ -301,6 +301,11 @@
+          physical_dev->KHR_external_memory_fd = true;
+       else if (!strcmp(props->extensionName, "VK_EXT_external_memory_dma_buf"))
+          physical_dev->EXT_external_memory_dma_buf = true;
++#ifdef __ANDROID__
++      else if (!strcmp(props->extensionName,
++                       "VK_ANDROID_external_memory_android_hardware_buffer"))
++         physical_dev->ANDROID_external_memory_android_hardware_buffer = true;
++#endif
+       else if (!strcmp(props->extensionName, "VK_KHR_external_fence_fd"))
+          physical_dev->KHR_external_fence_fd = true;
+       else if (!strcmp(props->extensionName, "VK_EXT_external_memory_metal"))
+--- a/src/venus/vkr_device.c
++++ b/src/venus/vkr_device.c
+@@ -136,6 +136,9 @@
+    ext_count += physical_dev->KHR_portability_subset;
+    ext_count += physical_dev->KHR_external_memory_fd;
+    ext_count += physical_dev->EXT_external_memory_dma_buf;
++#ifdef __ANDROID__
++   ext_count += physical_dev->ANDROID_external_memory_android_hardware_buffer;
++#endif
+    ext_count += physical_dev->KHR_external_fence_fd;
+    if (ext_count > args->pCreateInfo->enabledExtensionCount) {
+       exts = malloc(sizeof(*exts) * ext_count);
+@@ -158,6 +161,11 @@
+          exts[ext_count++] = "VK_KHR_external_memory_fd";
+       if (physical_dev->EXT_external_memory_dma_buf)
+          exts[ext_count++] = "VK_EXT_external_memory_dma_buf";
++#ifdef __ANDROID__
++      if (physical_dev->ANDROID_external_memory_android_hardware_buffer)
++         exts[ext_count++] =
++            "VK_ANDROID_external_memory_android_hardware_buffer";
++#endif
+       if (physical_dev->KHR_external_fence_fd)
+          exts[ext_count++] = "VK_KHR_external_fence_fd";
+
+--- a/src/venus/vkr_image.h
++++ b/src/venus/vkr_image.h
+@@ -10,6 +10,12 @@
+
+ struct vkr_image {
+    struct vkr_object base;
++#ifdef __ANDROID__
++   bool android_hardware_buffer_external;
++   VkFormat format;
++   VkExtent3D extent;
++   uint32_t array_layers;
++#endif
+ };
+ VKR_DEFINE_OBJECT_CAST(image, VK_OBJECT_TYPE_IMAGE, VkImage)
+
+--- a/src/venus/vkr_image.c
++++ b/src/venus/vkr_image.c
+@@ -12,6 +12,30 @@
+ vkr_dispatch_vkCreateImage(struct vn_dispatch_context *dispatch,
+                            struct vn_command_vkCreateImage *args)
+ {
++#ifdef __ANDROID__
++   VkExternalMemoryImageCreateInfo *external = vkr_find_struct(
++      args->pCreateInfo->pNext,
++      VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO);
++   struct vkr_device *dev = vkr_device_from_handle(args->device);
++   const bool translate_to_ahb =
++      external &&
++      (external->handleTypes & VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT) &&
++      dev->physical_device->properties.vendorID == 0x13b5 &&
++      dev->physical_device->ANDROID_external_memory_android_hardware_buffer &&
++      args->pCreateInfo->imageType == VK_IMAGE_TYPE_2D &&
++      args->pCreateInfo->tiling == VK_IMAGE_TILING_LINEAR &&
++      args->pCreateInfo->format == VK_FORMAT_B8G8R8A8_UNORM;
++   VkExternalMemoryHandleTypeFlags original_handle_types = 0;
++   if (translate_to_ahb) {
++      original_handle_types = external->handleTypes;
++      external->handleTypes =
++         VK_EXTERNAL_MEMORY_HANDLE_TYPE_ANDROID_HARDWARE_BUFFER_BIT_ANDROID;
++      vkr_log("VIRUAISOR_IMAGE_EXTERNAL_AHB width=%u height=%u layers=%u usage=%x",
++              args->pCreateInfo->extent.width,
++              args->pCreateInfo->extent.height,
++              args->pCreateInfo->arrayLayers, args->pCreateInfo->usage);
++   }
++#endif
+    /* XXX If VkExternalMemoryImageCreateInfo is chained by the app, all is
+     * good.  If it is not chained, we might still bind an external memory to
+     * the image, because vkr_dispatch_vkAllocateMemory makes any HOST_VISIBLE
+@@ -31,7 +55,19 @@
+     * situation because the app does not consider the memory external.
+     */
+
+-   vkr_image_create_and_add(dispatch->data, args);
++   struct vkr_image *image = vkr_image_create_and_add(dispatch->data, args);
++#ifdef __ANDROID__
++   if (translate_to_ahb)
++      external->handleTypes = original_handle_types;
++   if (image && translate_to_ahb) {
++      image->android_hardware_buffer_external = true;
++      image->format = VK_FORMAT_B8G8R8A8_UNORM;
++      image->extent = args->pCreateInfo->extent;
++      image->array_layers = args->pCreateInfo->arrayLayers;
++   }
++#else
++   (void)image;
++#endif
+ }
+
+ static void
+--- a/src/venus/vkr_device_memory.h
++++ b/src/venus/vkr_device_memory.h
+@@ -28,6 +28,7 @@
+    int udmabuf_fd;
+    /* Android graphics allocator ownership for a retained DMA-BUF. */
+    void *android_buffer;
++   bool android_buffer_registered;
+
+    /* Metal buffer backed by POSIX shared memory */
+    struct vkr_mtl_shm *mtl_shm;
+--- a/src/venus/vkr_device_memory.c
++++ b/src/venus/vkr_device_memory.c
+@@ -22,6 +22,7 @@
+ #include "venus_dma_buf_size_policy.h"
+ #include "venus_import_type_policy.h"
+ #include "venus_ahb_registry.h"
++#include <vulkan/vulkan_android.h>
+ #include <inttypes.h>
+ #include <fcntl.h>
+ #include <linux/dma-heap.h>
+@@ -102,19 +103,131 @@
+ }
+
+ /* Fixed Android allocator: no root, device selection, or guest-provided path. */
++static PFN_vkGetAndroidHardwareBufferPropertiesANDROID
++vkr_android_get_ahb_properties_proc(struct vkr_device *dev)
++{
++   return (PFN_vkGetAndroidHardwareBufferPropertiesANDROID)
++      dev->physical_device->proc_table.GetDeviceProcAddr(
++         dev->base.handle.device,
++         "vkGetAndroidHardwareBufferPropertiesANDROID");
++}
++
++static uint32_t
++vkr_android_select_import_type(struct vkr_device *dev, uint32_t selected,
++                               uint32_t compatible, uint32_t property_flags)
++{
++   VkPhysicalDeviceMemoryProperties native_properties;
++   dev->physical_device->proc_table.GetPhysicalDeviceMemoryProperties(
++      dev->physical_device->base.handle.physical_device, &native_properties);
++   struct venus_import_memory_type native_types[VK_MAX_MEMORY_TYPES];
++   for (uint32_t i = 0; i < native_properties.memoryTypeCount; ++i) {
++      native_types[i].property_flags =
++         native_properties.memoryTypes[i].propertyFlags;
++      native_types[i].heap_index =
++         native_properties.memoryTypes[i].heapIndex;
++   }
++   return venus_import_select_native_type(
++      selected, compatible, property_flags, native_types,
++      native_properties.memoryTypeCount);
++}
++
++static bool
++vkr_android_dedicated_ahb_image(VkMemoryAllocateInfo *info,
++                                struct vkr_image **out_image)
++{
++   VkMemoryDedicatedAllocateInfo *dedicated = vkr_find_struct(
++      info->pNext, VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO);
++   if (!dedicated || !dedicated->image)
++      return false;
++   struct vkr_image *image = vkr_image_from_handle(dedicated->image);
++   if (!image || !image->android_hardware_buffer_external)
++      return false;
++   *out_image = image;
++   return true;
++}
++
++static VkResult
++vkr_android_prepare_ahb_import(struct vkr_device *dev,
++                              VkMemoryAllocateInfo *info,
++                              uint32_t property_flags, uint64_t object_id,
++                              AHardwareBuffer *buffer,
++                              VkImportAndroidHardwareBufferInfoANDROID *import)
++{
++   struct vkr_image *image = NULL;
++   if (!buffer || !vkr_android_dedicated_ahb_image(info, &image))
++      return VK_ERROR_INVALID_EXTERNAL_HANDLE;
++   PFN_vkGetAndroidHardwareBufferPropertiesANDROID get_properties =
++      vkr_android_get_ahb_properties_proc(dev);
++   if (!get_properties)
++      return VK_ERROR_EXTENSION_NOT_PRESENT;
++   VkAndroidHardwareBufferPropertiesANDROID properties = {
++      .sType = VK_STRUCTURE_TYPE_ANDROID_HARDWARE_BUFFER_PROPERTIES_ANDROID,
++   };
++   VkResult ret = get_properties(dev->base.handle.device, buffer, &properties);
++   if (ret != VK_SUCCESS)
++      return ret;
++   VkMemoryRequirements requirements = {0};
++   dev->proc_table.GetImageMemoryRequirements(
++      dev->base.handle.device, image->base.handle.image, &requirements);
++   const uint32_t compatible =
++      properties.memoryTypeBits & requirements.memoryTypeBits;
++   const uint32_t selected = vkr_android_select_import_type(
++      dev, info->memoryTypeIndex, compatible, property_flags);
++   if (selected == VENUS_IMPORT_TYPE_INVALID)
++      return VK_ERROR_INVALID_EXTERNAL_HANDLE;
++   info->allocationSize = properties.allocationSize;
++   info->memoryTypeIndex = selected;
++   *import = (VkImportAndroidHardwareBufferInfoANDROID) {
++      .sType = VK_STRUCTURE_TYPE_IMPORT_ANDROID_HARDWARE_BUFFER_INFO_ANDROID,
++      .pNext = info->pNext,
++      .buffer = buffer,
++   };
++   vkr_log("VIRUAISOR_AHB_IMAGE_IMPORT object=%" PRIu64
++           " width=%u height=%u allocation=%" PRIu64
++           " types=%x compatible=%x target=%u",
++           object_id, image->extent.width, image->extent.height,
++           properties.allocationSize, properties.memoryTypeBits,
++           compatible, selected);
++   return VK_SUCCESS;
++}
++
+ static VkResult
+ vkr_android_import(struct vkr_device *dev, VkMemoryAllocateInfo *info, uint32_t property_flags,
+                    uint64_t object_id, int *retained_fd, AHardwareBuffer **out_buffer,
+-                   VkImportMemoryFdInfoKHR *import)
++                   VkImportMemoryFdInfoKHR *import,
++                   VkImportAndroidHardwareBufferInfoANDROID *ahb_import,
++                   bool *uses_ahb)
+ {
+    const uint64_t bytes = venus_heap_allocation_size(info->allocationSize, getpagesize());
+    if (!bytes)
+       return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+    AHardwareBuffer *buffer = NULL;
+-   int fd = venus_gralloc_allocate(bytes, property_flags & VK_MEMORY_PROPERTY_HOST_CACHED_BIT, &buffer);
++   struct vkr_image *image = NULL;
++   const bool image_allocation =
++      vkr_android_dedicated_ahb_image(info, &image);
++   int fd = image_allocation
++      ? venus_gralloc_allocate_bgra_image(
++           image->extent.width, image->extent.height, image->array_layers,
++           &buffer)
++      : venus_gralloc_allocate(
++           bytes, property_flags & VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
++           &buffer);
+    if (fd < 0) {
+       vkr_log("VIRUAISOR_GRALLOC_ALLOC_FAILED result=%d", fd);
+       return VK_ERROR_OUT_OF_DEVICE_MEMORY;
++   }
++   if (image_allocation) {
++      VkResult ahb_result = vkr_android_prepare_ahb_import(
++         dev, info, property_flags, object_id, buffer, ahb_import);
++      if (ahb_result != VK_SUCCESS) {
++         close(fd);
++         venus_ahb_release(buffer);
++         return ahb_result;
++      }
++      *retained_fd = fd;
++      *out_buffer = buffer;
++      *uses_ahb = true;
++      return VK_SUCCESS;
+    }
+    VkMemoryFdPropertiesKHR properties = {.sType=VK_STRUCTURE_TYPE_MEMORY_FD_PROPERTIES_KHR};
+    if (!dev->proc_table.GetMemoryFdPropertiesKHR) { close(fd); venus_ahb_release(buffer); return VK_ERROR_FEATURE_NOT_PRESENT; }
+@@ -182,6 +295,7 @@
+    vkr_trace_dma_buf_fd("android-vk-import", object_id, 0, duplicate);
+    *retained_fd = fd;
+    *out_buffer = buffer;
++   *uses_ahb = false;
+    *import = (VkImportMemoryFdInfoKHR){.sType=VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR,
+       .pNext=info->pNext, .handleType=VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, .fd=duplicate};
+    info->allocationSize = bytes;
+@@ -499,6 +613,11 @@
+
+    /* translate VkImportMemoryResourceInfoMESA into VkImportMemoryFdInfoKHR in place */
+    VkImportMemoryFdInfoKHR local_import_info = { .fd = -1 };
++#ifdef __ANDROID__
++   VkImportAndroidHardwareBufferInfoANDROID local_ahb_import = {0};
++   AHardwareBuffer *resource_ahb = NULL;
++   bool uses_ahb_import = false;
++#endif
+    VkImportMemoryResourceInfoMESA *res_info = NULL;
+    void *prev_of_res_info = vkr_find_prev_struct(
+       alloc_info, VK_STRUCTURE_TYPE_IMPORT_MEMORY_RESOURCE_INFO_MESA);
+@@ -516,7 +635,27 @@
+       }
+
+ #ifdef __ANDROID__
+-      if (local_import_info.handleType ==
++      struct vkr_image *resource_image = NULL;
++      resource_ahb = (AHardwareBuffer *)viruaisor_ahb_acquire_from_fd(
++         local_import_info.fd);
++      if (resource_ahb &&
++          vkr_android_dedicated_ahb_image(alloc_info, &resource_image)) {
++         args->ret = vkr_android_prepare_ahb_import(
++            dev, alloc_info, property_flags, viruaisor_memory_id,
++            resource_ahb, &local_ahb_import);
++         if (args->ret != VK_SUCCESS) {
++            close(local_import_info.fd);
++            venus_ahb_release(resource_ahb);
++            return;
++         }
++         close(local_import_info.fd);
++         local_import_info.fd = -1;
++         uses_ahb_import = true;
++      } else if (resource_ahb) {
++         venus_ahb_release(resource_ahb);
++         resource_ahb = NULL;
++      }
++      if (!uses_ahb_import && local_import_info.handleType ==
+              VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT &&
+           dev->proc_table.GetMemoryFdPropertiesKHR) {
+          VkMemoryFdPropertiesKHR fd_props = {
+@@ -608,7 +747,13 @@
+       }
+ #endif
+
++#ifdef __ANDROID__
++      vkr_pnext_set_next(prev_of_res_info,
++                         uses_ahb_import ? (void *)&local_ahb_import
++                                         : (void *)&local_import_info);
++#else
+       vkr_pnext_set_next(prev_of_res_info, &local_import_info);
++#endif
+    }
+
+    VkExportMemoryAllocateInfo *export_info =
+@@ -652,7 +797,8 @@
+    int udmabuf_fd = -1;
+    void *gbm_bo = NULL;
+ #ifdef __ANDROID__
+-   AHardwareBuffer *android_buffer = NULL;
++   AHardwareBuffer *android_buffer = resource_ahb;
++   bool android_buffer_registered = false;
+ #else
+    void *android_buffer = NULL;
+ #endif
+@@ -757,7 +903,9 @@
+                                                       force_gbm_import)) {
+             args->ret = vkr_android_import(dev, alloc_info, property_flags,
+                                            viruaisor_memory_id, &udmabuf_fd,
+-                                           &android_buffer, &local_import_info);
++                                           &android_buffer, &local_import_info,
++                                           &local_ahb_import, &uses_ahb_import);
++            android_buffer_registered = args->ret == VK_SUCCESS;
+          }
+ #endif
+          else {
+@@ -767,7 +915,13 @@
+          if (args->ret != VK_SUCCESS)
+             return;
+
++#ifdef __ANDROID__
++         alloc_info->pNext = uses_ahb_import
++            ? (void *)&local_ahb_import
++            : (void *)&local_import_info;
++#else
+          alloc_info->pNext = &local_import_info;
++#endif
+          valid_fd_types = 1 << VIRGL_RESOURCE_FD_DMABUF;
+       }
+    }
+@@ -813,9 +967,13 @@
+    mem->udmabuf_fd = udmabuf_fd;
+    mem->android_buffer = android_buffer;
+ #ifdef __ANDROID__
+-   if (android_buffer && !viruaisor_ahb_register(udmabuf_fd, android_buffer))
++   mem->android_buffer_registered = android_buffer_registered;
++   if (android_buffer_registered &&
++       !viruaisor_ahb_register(udmabuf_fd, android_buffer)) {
++      mem->android_buffer_registered = false;
+       vkr_log("VIRUAISOR_AHB_REGISTRY_FULL object=%" PRIu64,
+               viruaisor_memory_id);
++   }
+ #endif
+    mem->gbm_bo = gbm_bo;
+    mem->mtl_shm = mtl_shm;
+@@ -966,7 +1124,8 @@
+ {
+ #ifdef __ANDROID__
+    if (mem->android_buffer) {
+-      viruaisor_ahb_unregister(mem->udmabuf_fd, mem->android_buffer);
++      if (mem->android_buffer_registered)
++         viruaisor_ahb_unregister(mem->udmabuf_fd, mem->android_buffer);
+       venus_ahb_release(mem->android_buffer);
+    }
+ #endif

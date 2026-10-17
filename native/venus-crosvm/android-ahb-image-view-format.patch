@@ -1,0 +1,89 @@
+diff --git a/src/venus/vkr_image.c b/src/venus/vkr_image.c
+--- a/src/venus/vkr_image.c
++++ b/src/venus/vkr_image.c
+@@ -289,9 +289,17 @@ vkr_dispatch_vkBindImageMemory(UNUSED struct vn_dispatch_context *dispatch,
+    struct vkr_device *dev = vkr_device_from_handle(args->device);
+    struct vn_device_proc_table *vk = &dev->proc_table;
+
++#ifdef __ANDROID__
++   struct vkr_image *image = vkr_image_from_handle(args->image);
++#endif
+    vn_replace_vkBindImageMemory_args_handle(args);
+    args->ret =
+       vk->BindImageMemory(args->device, args->image, args->memory, args->memoryOffset);
++#ifdef __ANDROID__
++   if (image && image->android_hardware_buffer_external)
++      vkr_log("VIRUAISOR_AHB_IMAGE_BIND api=legacy offset=%" PRIu64 " vk=%d",
++              args->memoryOffset, args->ret);
++#endif
+ }
+
+ static void
+@@ -304,8 +312,22 @@ vkr_dispatch_vkBindImageMemory2(UNUSED struct vn_dispatch_context *dispatch,
+    struct vkr_device *dev = vkr_device_from_handle(args->device);
+    struct vn_device_proc_table *vk = &dev->proc_table;
+
++#ifdef __ANDROID__
++   uint32_t ahb_image_count = 0;
++   for (uint32_t i = 0; i < args->bindInfoCount; ++i) {
++      struct vkr_image *image =
++         vkr_image_from_handle(args->pBindInfos[i].image);
++      if (image && image->android_hardware_buffer_external)
++         ahb_image_count++;
++   }
++#endif
+    vn_replace_vkBindImageMemory2_args_handle(args);
+    args->ret = vk->BindImageMemory2(args->device, args->bindInfoCount, args->pBindInfos);
++#ifdef __ANDROID__
++   if (ahb_image_count)
++      vkr_log("VIRUAISOR_AHB_IMAGE_BIND api=v2 count=%u vk=%d",
++              ahb_image_count, args->ret);
++#endif
+ }
+
+ static void
+@@ -391,11 +413,44 @@ vkr_dispatch_vkGetImageDrmFormatModifierPropertiesEXT(
+                                                           args->pProperties);
+ }
+
++#ifdef __ANDROID__
++static VkFormat
++vkr_android_ahb_view_format(VkFormat guest_format)
++{
++   switch (guest_format) {
++   case VK_FORMAT_B8G8R8A8_UNORM:
++      return VK_FORMAT_R8G8B8A8_UNORM;
++   case VK_FORMAT_B8G8R8A8_SRGB:
++      return VK_FORMAT_R8G8B8A8_SRGB;
++   default:
++      return guest_format;
++   }
++}
++#endif
++
+ static void
+ vkr_dispatch_vkCreateImageView(struct vn_dispatch_context *dispatch,
+                                struct vn_command_vkCreateImageView *args)
+ {
++#ifdef __ANDROID__
++   VkImageViewCreateInfo *create_info =
++      (VkImageViewCreateInfo *)args->pCreateInfo;
++   struct vkr_image *image = vkr_image_from_handle(create_info->image);
++   const VkFormat guest_format = create_info->format;
++   const VkFormat host_format = image && image->android_hardware_buffer_external
++      ? vkr_android_ahb_view_format(guest_format)
++      : guest_format;
++   if (host_format != guest_format)
++      create_info->format = host_format;
++#endif
+    vkr_image_view_create_and_add(dispatch->data, args);
++#ifdef __ANDROID__
++   if (host_format != guest_format) {
++      create_info->format = guest_format;
++      vkr_log("VIRUAISOR_AHB_IMAGE_VIEW guest=%u host=%u vk=%d",
++              guest_format, host_format, args->ret);
++   }
++#endif
+ }
+
+ static void

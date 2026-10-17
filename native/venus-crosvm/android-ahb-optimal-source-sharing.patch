@@ -1,0 +1,23 @@
+diff --git a/src/venus/vkr_image.c b/src/venus/vkr_image.c
+--- a/src/venus/vkr_image.c
++++ b/src/venus/vkr_image.c
+@@ -33,7 +33,8 @@ vkr_dispatch_vkCreateImage(struct vn_dispatch_context *dispatch,
+       dev->physical_device->properties.vendorID == 0x13b5 &&
+       dev->physical_device->ANDROID_external_memory_android_hardware_buffer &&
+       args->pCreateInfo->imageType == VK_IMAGE_TYPE_2D &&
+-      args->pCreateInfo->tiling == VK_IMAGE_TILING_LINEAR &&
++      (args->pCreateInfo->tiling == VK_IMAGE_TILING_LINEAR ||
++       args->pCreateInfo->tiling == VK_IMAGE_TILING_OPTIMAL) &&
+       args->pCreateInfo->format == VK_FORMAT_B8G8R8A8_UNORM;
+    VkExternalMemoryHandleTypeFlags original_handle_types = 0;
+    if (translate_to_ahb) {
+@@ -47,6 +48,9 @@ vkr_dispatch_vkCreateImage(struct vn_dispatch_context *dispatch,
+               create_info->extent.width, create_info->extent.height,
+               create_info->arrayLayers, create_info->usage,
+               original_tiling, create_info->tiling);
++      if (original_tiling == VK_IMAGE_TILING_OPTIMAL)
++         vkr_log("VIRUAISOR_AHB_OPTIMAL_SOURCE width=%u height=%u",
++                 create_info->extent.width, create_info->extent.height);
+    }
+ #endif
+    /* XXX If VkExternalMemoryImageCreateInfo is chained by the app, all is

@@ -1,0 +1,11 @@
+diff --git a/src/venus/vkr_device_memory.c b/src/venus/vkr_device_memory.c
+--- a/src/venus/vkr_device_memory.c
++++ b/src/venus/vkr_device_memory.c
+@@ -674,6 +674,7 @@ vkr_dispatch_vkAllocateMemory(struct vn_dispatch_context *dispatch,
+          }
+          close(local_import_info.fd);
+          local_import_info.fd = -1;
++         driver_mem_type_index = alloc_info->memoryTypeIndex;
+          uses_ahb_import = true;
+       } else if (resource_ahb) {
+          venus_ahb_release(resource_ahb);

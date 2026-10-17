@@ -83,7 +83,7 @@ if [[ ${VENUS_CROSVM_DISPLAY:-0} == 1 ]]; then
     # Without this feature the descriptor is silently treated as a tiny raw disk.
     features+=,android_display,net,composite-disk
     display_args=(-C "link-arg=$target_prefix/lib/libvenus_android_display.a"
-        -C 'link-arg=-lbinder_ndk' -C 'link-arg=-lnativewindow' -C 'link-arg=-llog'
+        -C 'link-arg=-lbinder_ndk' -C 'link-arg=-lnativewindow' -C 'link-arg=-landroid' -C 'link-arg=-llog'
         -C "link-arg=$ndk/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_static.a"
         -C "link-arg=$ndk/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++abi.a")
 fi

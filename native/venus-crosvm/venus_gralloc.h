@@ -28,22 +28,14 @@ static void venus_gralloc_load(void) {
     memcpy(&venus_ahb_handle, &handle, sizeof(handle));
     /* Process-local system library; keep its callbacks executable until exit. */
 }
-static int venus_gralloc_allocate(uint64_t bytes, bool cached, AHardwareBuffer **out) {
-    if (!out || !bytes || bytes > 64*1024*1024) return -EINVAL;
-    static pthread_once_t once = PTHREAD_ONCE_INIT;
-    pthread_once(&once, venus_gralloc_load);
-    if (!venus_ahb_allocate || !venus_ahb_release || !venus_ahb_handle) return -ENOSYS;
-    const AHardwareBuffer_Desc desc = {.width=(uint32_t)bytes,.height=1,.layers=1,
-        .format=AHARDWAREBUFFER_FORMAT_BLOB,
-        .usage=AHARDWAREBUFFER_USAGE_GPU_DATA_BUFFER | (cached ?
-            AHARDWAREBUFFER_USAGE_CPU_READ_OFTEN | AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN :
-            AHARDWAREBUFFER_USAGE_CPU_READ_RARELY | AHARDWAREBUFFER_USAGE_CPU_WRITE_RARELY)};
-    AHardwareBuffer *buffer = NULL;
-    int result = venus_ahb_allocate(&desc, &buffer);
-    if (result || !buffer) { if (buffer) venus_ahb_release(buffer); return result < 0 ? result : -ENOMEM; }
+static int venus_gralloc_export_fd(AHardwareBuffer *buffer, uint64_t minimum_bytes,
+                                   bool cached) {
+    if (!buffer) return -EINVAL;
     const struct venus_native_handle *handle = venus_ahb_handle(buffer);
     int selected = -1, matches = 0;
-    if (handle && handle->version == 12 && handle->num_fds > 0 && handle->num_fds <= 8 && handle->num_ints >= 0 && handle->num_ints <= 256) {
+    if (handle && handle->version == 12 && handle->num_fds > 0 &&
+        handle->num_fds <= 8 && handle->num_ints >= 0 &&
+        handle->num_ints <= 256) {
         for (int i = 0; i < handle->num_fds; ++i) {
             char path[80], name[160];
             snprintf(path, sizeof(path), "/proc/self/fd/%d", handle->data[i]);
@@ -51,13 +43,55 @@ static int venus_gralloc_allocate(uint64_t bytes, bool cached, AHardwareBuffer *
             if (length < 0) continue;
             name[length] = 0;
             off_t size = lseek(handle->data[i], 0, SEEK_END);
-            vkr_log("VIRUAISOR_GRALLOC_FD index=%d name=%s bytes=%lld cached=%d", i, name, (long long)size, cached);
-            if (venus_gralloc_fd_candidate(name, size, bytes)) { selected=handle->data[i]; ++matches; }
+            vkr_log("VIRUAISOR_GRALLOC_FD index=%d name=%s bytes=%lld cached=%d",
+                    i, name, (long long)size, cached);
+            if (venus_gralloc_fd_candidate(name, size, minimum_bytes)) {
+                selected = handle->data[i];
+                ++matches;
+            }
         }
     }
-    if (matches != 1) { venus_ahb_release(buffer); return -ENOTSUP; }
+    if (matches != 1) return -ENOTSUP;
     int fd = fcntl(selected, F_DUPFD_CLOEXEC, 0);
-    if (fd < 0) { int error=errno; venus_ahb_release(buffer); return -error; }
+    return fd < 0 ? -errno : fd;
+}
+static int venus_gralloc_allocate_desc(const AHardwareBuffer_Desc *desc,
+                                       uint64_t minimum_bytes, bool cached,
+                                       AHardwareBuffer **out) {
+    if (!out || !desc || !minimum_bytes || minimum_bytes > 64*1024*1024)
+        return -EINVAL;
+    static pthread_once_t once = PTHREAD_ONCE_INIT;
+    pthread_once(&once, venus_gralloc_load);
+    if (!venus_ahb_allocate || !venus_ahb_release || !venus_ahb_handle) return -ENOSYS;
+    AHardwareBuffer *buffer = NULL;
+    int result = venus_ahb_allocate(desc, &buffer);
+    if (result || !buffer) { if (buffer) venus_ahb_release(buffer); return result < 0 ? result : -ENOMEM; }
+    int fd = venus_gralloc_export_fd(buffer, minimum_bytes, cached);
+    if (fd < 0) { venus_ahb_release(buffer); return fd; }
     *out = buffer;
     return fd;
+}
+static int venus_gralloc_allocate(uint64_t bytes, bool cached, AHardwareBuffer **out) {
+    const AHardwareBuffer_Desc desc = {.width=(uint32_t)bytes,.height=1,.layers=1,
+        .format=AHARDWAREBUFFER_FORMAT_BLOB,
+        .usage=AHARDWAREBUFFER_USAGE_GPU_DATA_BUFFER | (cached ?
+            AHARDWAREBUFFER_USAGE_CPU_READ_OFTEN | AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN :
+            AHARDWAREBUFFER_USAGE_CPU_READ_RARELY | AHARDWAREBUFFER_USAGE_CPU_WRITE_RARELY)};
+    return venus_gralloc_allocate_desc(&desc, bytes, cached, out);
+}
+static int venus_gralloc_allocate_rgba_image(uint32_t width, uint32_t height,
+                                             uint32_t layers,
+                                             AHardwareBuffer **out) {
+    if (!width || !height || !layers) return -EINVAL;
+    const uint64_t minimum_bytes = (uint64_t)width * height * layers * 4;
+    if (minimum_bytes > 64*1024*1024) return -E2BIG;
+    const AHardwareBuffer_Desc desc = {
+        .width=width, .height=height, .layers=layers,
+        .format=AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM,
+        .usage=AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE |
+               AHARDWAREBUFFER_USAGE_GPU_FRAMEBUFFER |
+               AHARDWAREBUFFER_USAGE_CPU_READ_OFTEN |
+               AHARDWAREBUFFER_USAGE_CPU_WRITE_RARELY,
+    };
+    return venus_gralloc_allocate_desc(&desc, minimum_bytes, true, out);
 }

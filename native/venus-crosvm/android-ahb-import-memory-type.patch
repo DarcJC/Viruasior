@@ -1,0 +1,12 @@
+diff --git a/src/venus/vkr_device_memory.c b/src/venus/vkr_device_memory.c
+--- a/src/venus/vkr_device_memory.c
++++ b/src/venus/vkr_device_memory.c
+@@ -178,7 +178,6 @@ vkr_android_prepare_ahb_import(struct vkr_device *dev,
+    VkMemoryRequirements requirements = {0};
+    dev->proc_table.GetImageMemoryRequirements(
+       dev->base.handle.device, image->base.handle.image, &requirements);
+-   const uint32_t compatible =
+-      properties.memoryTypeBits & requirements.memoryTypeBits;
++   const uint32_t compatible = properties.memoryTypeBits;
+    const uint32_t selected = vkr_android_select_import_type(
+       dev, info->memoryTypeIndex, compatible, property_flags);

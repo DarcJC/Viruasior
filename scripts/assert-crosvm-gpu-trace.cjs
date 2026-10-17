@@ -30,6 +30,12 @@ for (const operation of ['create', 'destroy', 'attach', 'detach']) {
 }
 assert.match(commandSource, /VIRUAISOR_CONTEXT_CREATE_FAILED ctx_id=\{\} init=\{:#x\}/,
   'missing error-level context creation trace');
+assert.match(commandSource, /VIRUAISOR_BLOB_CREATE_FAILED ctx_id=\{\} resource_id=\{\}/,
+  'missing blob creation failure trace');
+assert.match(commandSource, /VIRUAISOR_SET_SCANOUT_BLOB_FAILED scanout_id=\{\} resource_id=\{\}/,
+  'missing blob scanout failure trace');
+assert.match(commandSource, /VIRUAISOR_RESOURCE_FLUSH_FAILED resource_id=\{\}/,
+  'missing resource flush failure trace');
 assert.match(scanoutSource, /VIRUAISOR_SCANOUT_FLIP resource_id=\{\}/,
   'missing resource-to-import scanout trace');
 assert.match(displaySource, /VIRUAISOR_DISPLAY_IMPORT import_id=\{\}/,

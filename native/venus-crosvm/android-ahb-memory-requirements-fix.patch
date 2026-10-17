@@ -1,0 +1,56 @@
+diff --git a/src/venus/vkr_image.c b/src/venus/vkr_image.c
+--- a/src/venus/vkr_image.c
++++ b/src/venus/vkr_image.c
+@@ -79,9 +79,35 @@ static void
+ vkr_dispatch_vkDestroyImage(struct vn_dispatch_context *dispatch,
+                             struct vn_command_vkDestroyImage *args)
+ {
+    vkr_image_destroy_and_remove(dispatch->data, args);
+ }
+
++#ifdef __ANDROID__
++static void
++vkr_android_fix_ahb_image_requirements(
++   const struct vkr_image *image, VkMemoryRequirements *requirements)
++{
++   if (image && image->android_hardware_buffer_external &&
++       requirements->size == 0) {
++      uint64_t bytes = image->extent.width;
++      if (__builtin_mul_overflow(bytes, (uint64_t)image->extent.height,
++                                 &bytes) ||
++          __builtin_mul_overflow(bytes, (uint64_t)image->array_layers,
++                                 &bytes) ||
++          __builtin_mul_overflow(bytes, UINT64_C(4), &bytes) ||
++          __builtin_add_overflow(bytes, UINT64_C(4095), &bytes) ||
++          !bytes)
++         return;
++      requirements->size = bytes & ~UINT64_C(4095);
++      requirements->alignment = 4096;
++      vkr_log("VIRUAISOR_AHB_IMAGE_REQUIREMENTS_SYNTHETIC size=%" PRIu64
++              " alignment=%" PRIu64 " types=%x",
++              requirements->size, requirements->alignment,
++              requirements->memoryTypeBits);
++   }
++}
++#endif
++
+ static void
+ vkr_dispatch_vkGetImageMemoryRequirements(
+    UNUSED struct vn_dispatch_context *dispatch,
+@@ -96,6 +122,7 @@ vkr_dispatch_vkGetImageMemoryRequirements(
+ #endif
+    vn_replace_vkGetImageMemoryRequirements_args_handle(args);
+    vk->GetImageMemoryRequirements(args->device, args->image, args->pMemoryRequirements);
+ #ifdef __ANDROID__
++   vkr_android_fix_ahb_image_requirements(image, args->pMemoryRequirements);
+    if (image && image->android_hardware_buffer_external)
+       vkr_log("VIRUAISOR_AHB_IMAGE_REQUIREMENTS api=legacy size=%" PRIu64
+@@ -121,6 +148,8 @@ vkr_dispatch_vkGetImageMemoryRequirements2(
+ #endif
+    vn_replace_vkGetImageMemoryRequirements2_args_handle(args);
+    vk->GetImageMemoryRequirements2(args->device, args->pInfo, args->pMemoryRequirements);
+ #ifdef __ANDROID__
++   vkr_android_fix_ahb_image_requirements(
++      image, &args->pMemoryRequirements->memoryRequirements);
+    if (image && image->android_hardware_buffer_external)
+       vkr_log("VIRUAISOR_AHB_IMAGE_REQUIREMENTS api=v2 size=%" PRIu64

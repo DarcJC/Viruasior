@@ -1,0 +1,15 @@
+diff --git a/src/venus/vkr_image.c b/src/venus/vkr_image.c
+--- a/src/venus/vkr_image.c
++++ b/src/venus/vkr_image.c
+@@ -17,6 +17,12 @@ vkr_dispatch_vkCreateImage(struct vn_dispatch_context *dispatch,
+    VkExternalMemoryImageCreateInfo *external = vkr_find_struct(
+       args->pCreateInfo->pNext,
+       VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO);
++   if (create_info->imageType == VK_IMAGE_TYPE_2D)
++      vkr_log("VIRUAISOR_IMAGE_CANDIDATE width=%u height=%u format=%u tiling=%u usage=%x external=%x",
++              create_info->extent.width, create_info->extent.height,
++              create_info->format, create_info->tiling, create_info->usage,
++              external ? external->handleTypes : 0);
+    struct vkr_device *dev = vkr_device_from_handle(args->device);
+    const bool translate_to_ahb =
+       external &&

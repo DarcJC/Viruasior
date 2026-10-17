@@ -1,0 +1,11 @@
+--- a/src/venus/vkr_context.c
++++ b/src/venus/vkr_context.c
+@@ -620,6 +620,8 @@ vkr_context_wait_queues_for_display(struct vkr_context *ctx,
+    bool ready = true;
+    for (uint32_t i = 0; i < ctx->instance->physical_device_count; ++i) {
+       struct vkr_physical_device *physical = ctx->instance->physical_devices[i];
++      if (!physical) /* VIRUAISOR_DISPLAY_SYNC_GPU_NULL_SLOT */
++         continue;
+       list_for_each_entry (struct vkr_device, dev, &physical->devices,
+                            base.track_head) {
+          list_for_each_entry (struct vkr_queue, queue, &dev->queues,

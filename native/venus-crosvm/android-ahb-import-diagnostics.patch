@@ -1,0 +1,45 @@
+diff --git a/src/venus/vkr_device_memory.c b/src/venus/vkr_device_memory.c
+--- a/src/venus/vkr_device_memory.c
++++ b/src/venus/vkr_device_memory.c
+@@ -156,23 +156,38 @@ vkr_android_prepare_ahb_import(struct vkr_device *dev,
+ {
+    struct vkr_image *image = NULL;
+-   if (!buffer || !vkr_android_dedicated_ahb_image(info, &image))
++   if (!buffer || !vkr_android_dedicated_ahb_image(info, &image)) {
++      vkr_log("VIRUAISOR_AHB_IMAGE_IMPORT_FAILED object=%" PRIu64
++              " stage=dedicated", object_id);
+       return VK_ERROR_INVALID_EXTERNAL_HANDLE;
++   }
+    PFN_vkGetAndroidHardwareBufferPropertiesANDROID get_properties =
+       vkr_android_get_ahb_properties_proc(dev);
+-   if (!get_properties)
++   if (!get_properties) {
++      vkr_log("VIRUAISOR_AHB_IMAGE_IMPORT_FAILED object=%" PRIu64
++              " stage=proc", object_id);
+       return VK_ERROR_EXTENSION_NOT_PRESENT;
++   }
+    VkAndroidHardwareBufferPropertiesANDROID properties = {
+       .sType = VK_STRUCTURE_TYPE_ANDROID_HARDWARE_BUFFER_PROPERTIES_ANDROID,
+    };
+    VkResult ret = get_properties(dev->base.handle.device, buffer, &properties);
+-   if (ret != VK_SUCCESS)
++   if (ret != VK_SUCCESS) {
++      vkr_log("VIRUAISOR_AHB_IMAGE_IMPORT_FAILED object=%" PRIu64
++              " stage=properties vk=%d", object_id, ret);
+       return ret;
++   }
+    VkMemoryRequirements requirements = {0};
+    dev->proc_table.GetImageMemoryRequirements(
+       dev->base.handle.device, image->base.handle.image, &requirements);
+    const uint32_t compatible =
+       properties.memoryTypeBits & requirements.memoryTypeBits;
+    const uint32_t selected = vkr_android_select_import_type(
+       dev, info->memoryTypeIndex, compatible, property_flags);
++   vkr_log("VIRUAISOR_AHB_IMAGE_IMPORT_COMPAT object=%" PRIu64
++           " allocation=%" PRIu64 " ahb_types=%x image_types=%x"
++           " compatible=%x guest=%u flags=%x target=%u",
++           object_id, properties.allocationSize, properties.memoryTypeBits,
++           requirements.memoryTypeBits, compatible, info->memoryTypeIndex,
++           property_flags, selected);
+    if (selected == VENUS_IMPORT_TYPE_INVALID)
+       return VK_ERROR_INVALID_EXTERNAL_HANDLE;

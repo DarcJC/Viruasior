@@ -1,0 +1,21 @@
+diff --git a/src/venus/vkr_device_memory.c b/src/venus/vkr_device_memory.c
+index 0000000..0000000 100644
+--- a/src/venus/vkr_device_memory.c
++++ b/src/venus/vkr_device_memory.c
+@@ -1300,8 +1300,13 @@ vkr_device_memory_export_blob(struct vkr_device_memory *mem,
+ #ifdef __ANDROID__
+       const bool size_valid = venus_dma_buf_blob_size_valid(
+-         dma_buf_size, mem->allocation_size, blob_size, getpagesize());
++         dma_buf_size, mem->allocation_size, blob_size,
++         UINT64_C(64) * 1024, mem->android_buffer != NULL);
+       if (size_valid && dma_buf_size <= 0)
+          vkr_log("VIRUAISOR_DMA_BUF_SIZE_FALLBACK probed=%lld allocation=%" PRIu64
+                  " blob=%" PRIu64 " page=%d", (long long)dma_buf_size,
+                  mem->allocation_size, blob_size, getpagesize());
++      else if (size_valid && (uint64_t)dma_buf_size < blob_size)
++         vkr_log("VIRUAISOR_DMA_BUF_AHB_SIZE_PADDING probed=%lld allocation=%" PRIu64
++                 " blob=%" PRIu64 " granule=%u", (long long)dma_buf_size,
++                 mem->allocation_size, blob_size, 64u * 1024u);
+ #else
+       const bool size_valid =
+          dma_buf_size >= 0 && (uint64_t)dma_buf_size >= blob_size;

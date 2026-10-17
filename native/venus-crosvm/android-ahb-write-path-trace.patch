@@ -1,0 +1,348 @@
+diff --git a/src/venus/vkr_image.h b/src/venus/vkr_image.h
+--- a/src/venus/vkr_image.h
++++ b/src/venus/vkr_image.h
+@@ -12,6 +12,7 @@
+    struct vkr_object base;
+ #ifdef __ANDROID__
+    bool android_hardware_buffer_external;
++   vkr_object_id memory_id;
+    VkFormat format;
+    VkExtent3D extent;
+    uint32_t array_layers;
+@@ -25,6 +26,12 @@
+
+ struct vkr_image_view {
+    struct vkr_object base;
++#ifdef __ANDROID__
++   bool android_hardware_buffer_image;
++   vkr_object_id image_memory_id;
++   uint32_t image_width;
++   uint32_t image_height;
++#endif
+ };
+ VKR_DEFINE_OBJECT_CAST(image_view, VK_OBJECT_TYPE_IMAGE_VIEW, VkImageView)
+
+diff --git a/src/venus/vkr_image.c b/src/venus/vkr_image.c
+--- a/src/venus/vkr_image.c
++++ b/src/venus/vkr_image.c
+@@ -7,6 +7,9 @@
+
+ #include "vkr_image_gen.h"
+ #include "vkr_physical_device.h"
++#ifdef __ANDROID__
++#include "vkr_device_memory.h"
++#endif
+
+ static void
+ vkr_dispatch_vkCreateImage(struct vn_dispatch_context *dispatch,
+@@ -294,6 +297,10 @@
+
+ #ifdef __ANDROID__
+    struct vkr_image *image = vkr_image_from_handle(args->image);
++   struct vkr_device_memory *memory =
++      vkr_device_memory_from_handle(args->memory);
++   if (image && image->android_hardware_buffer_external && memory)
++      image->memory_id = memory->viruaisor_memory_id;
+ #endif
+    vn_replace_vkBindImageMemory_args_handle(args);
+    args->ret =
+@@ -317,8 +324,13 @@
+    for (uint32_t i = 0; i < args->bindInfoCount; ++i) {
+       struct vkr_image *image =
+          vkr_image_from_handle(args->pBindInfos[i].image);
+-      if (image && image->android_hardware_buffer_external)
++      if (image && image->android_hardware_buffer_external) {
++         struct vkr_device_memory *memory =
++            vkr_device_memory_from_handle(args->pBindInfos[i].memory);
++         if (memory)
++            image->memory_id = memory->viruaisor_memory_id;
+          ahb_image_count++;
++      }
+    }
+ #endif
+    vn_replace_vkBindImageMemory2_args_handle(args);
+@@ -442,12 +454,20 @@
+    if (host_format != guest_format)
+       create_info->format = host_format;
+ #endif
+-   vkr_image_view_create_and_add(dispatch->data, args);
++   struct vkr_image_view *view =
++      vkr_image_view_create_and_add(dispatch->data, args);
+ #ifdef __ANDROID__
++   if (view && image && image->android_hardware_buffer_external) {
++      view->android_hardware_buffer_image = true;
++      view->image_memory_id = image->memory_id;
++      view->image_width = image->extent.width;
++      view->image_height = image->extent.height;
++   }
+    if (host_format != guest_format) {
+       create_info->format = guest_format;
+-      vkr_log("VIRUAISOR_AHB_IMAGE_VIEW guest=%u host=%u vk=%d",
+-              guest_format, host_format, args->ret);
++      vkr_log("VIRUAISOR_AHB_IMAGE_VIEW guest=%u host=%u width=%u height=%u vk=%d",
++              guest_format, host_format, image->extent.width,
++              image->extent.height, args->ret);
+    }
+ #endif
+ }
+diff --git a/src/venus/vkr_render_pass.h b/src/venus/vkr_render_pass.h
+--- a/src/venus/vkr_render_pass.h
++++ b/src/venus/vkr_render_pass.h
+@@ -15,6 +15,9 @@
+
+ struct vkr_framebuffer {
+    struct vkr_object base;
++#ifdef __ANDROID__
++   bool android_hardware_buffer_attachment;
++#endif
+ };
+ VKR_DEFINE_OBJECT_CAST(framebuffer, VK_OBJECT_TYPE_FRAMEBUFFER, VkFramebuffer)
+
+diff --git a/src/venus/vkr_render_pass.c b/src/venus/vkr_render_pass.c
+--- a/src/venus/vkr_render_pass.c
++++ b/src/venus/vkr_render_pass.c
+@@ -6,6 +6,9 @@
+ #include "vkr_render_pass.h"
+
+ #include "vkr_render_pass_gen.h"
++#ifdef __ANDROID__
++#include "vkr_image.h"
++#endif
+
+ static void
+ vkr_dispatch_vkCreateRenderPass(struct vn_dispatch_context *dispatch,
+@@ -75,7 +78,23 @@
+ vkr_dispatch_vkCreateFramebuffer(struct vn_dispatch_context *dispatch,
+                                  struct vn_command_vkCreateFramebuffer *args)
+ {
+-   vkr_framebuffer_create_and_add(dispatch->data, args);
++#ifdef __ANDROID__
++   bool ahb_attachment = false;
++   for (uint32_t i = 0; i < args->pCreateInfo->attachmentCount; ++i) {
++      struct vkr_image_view *view =
++         vkr_image_view_from_handle(args->pCreateInfo->pAttachments[i]);
++      if (view && view->android_hardware_buffer_image) {
++         ahb_attachment = true;
++         break;
++      }
++   }
++#endif
++   struct vkr_framebuffer *framebuffer =
++      vkr_framebuffer_create_and_add(dispatch->data, args);
++#ifdef __ANDROID__
++   if (framebuffer)
++      framebuffer->android_hardware_buffer_attachment = ahb_attachment;
++#endif
+ }
+
+ static void
+diff --git a/src/venus/vkr_command_buffer.c b/src/venus/vkr_command_buffer.c
+--- a/src/venus/vkr_command_buffer.c
++++ b/src/venus/vkr_command_buffer.c
+@@ -6,6 +6,40 @@
+ #include "vkr_command_buffer.h"
+
+ #include "vkr_command_buffer_gen.h"
++#ifdef __ANDROID__
++#include "vkr_image.h"
++#include "vkr_render_pass.h"
++
++static struct vkr_image *
++vkr_android_ahb_image(VkImage handle)
++{
++   struct vkr_image *image = vkr_image_from_handle(handle);
++   return image && image->android_hardware_buffer_external ? image : NULL;
++}
++
++static void
++vkr_android_trace_ahb_image_write(const char *kind, VkImage handle)
++{
++   struct vkr_image *image = vkr_android_ahb_image(handle);
++   if (image)
++      vkr_log("VIRUAISOR_AHB_WRITE_COMMAND kind=%s memory=%" PRIu64
++              " width=%u height=%u", kind, image->memory_id,
++              image->extent.width, image->extent.height);
++}
++
++static void
++vkr_android_trace_ahb_view_write(const char *kind, VkImageView handle,
++                                 VkImageLayout layout, VkAttachmentLoadOp load,
++                                 VkAttachmentStoreOp store)
++{
++   struct vkr_image_view *view = vkr_image_view_from_handle(handle);
++   if (view && view->android_hardware_buffer_image)
++      vkr_log("VIRUAISOR_AHB_WRITE_COMMAND kind=%s memory=%" PRIu64
++              " width=%u height=%u layout=%u load=%u store=%u",
++              kind, view->image_memory_id, view->image_width,
++              view->image_height, layout, load, store);
++}
++#endif
+
+ #ifdef __clang__
+ #pragma clang diagnostic ignored "-Wgnu-zero-variadic-macro-arguments"
+@@ -304,6 +338,9 @@
+ vkr_dispatch_vkCmdCopyImage(UNUSED struct vn_dispatch_context *dispatch,
+                             struct vn_command_vkCmdCopyImage *args)
+ {
++#ifdef __ANDROID__
++   vkr_android_trace_ahb_image_write("copy-image", args->dstImage);
++#endif
+    VKR_CMD_CALL(CmdCopyImage, args, args->srcImage, args->srcImageLayout, args->dstImage,
+                 args->dstImageLayout, args->regionCount, args->pRegions);
+ }
+@@ -312,6 +349,10 @@
+ vkr_dispatch_vkCmdCopyImage2(UNUSED struct vn_dispatch_context *dispatch,
+                              struct vn_command_vkCmdCopyImage2 *args)
+ {
++#ifdef __ANDROID__
++   vkr_android_trace_ahb_image_write(
++      "copy-image", args->pCopyImageInfo->dstImage);
++#endif
+    VKR_CMD_CALL(CmdCopyImage2, args, args->pCopyImageInfo);
+ }
+
+@@ -319,6 +360,9 @@
+ vkr_dispatch_vkCmdBlitImage(UNUSED struct vn_dispatch_context *dispatch,
+                             struct vn_command_vkCmdBlitImage *args)
+ {
++#ifdef __ANDROID__
++   vkr_android_trace_ahb_image_write("blit-image", args->dstImage);
++#endif
+    VKR_CMD_CALL(CmdBlitImage, args, args->srcImage, args->srcImageLayout, args->dstImage,
+                 args->dstImageLayout, args->regionCount, args->pRegions, args->filter);
+ }
+@@ -327,6 +371,10 @@
+ vkr_dispatch_vkCmdBlitImage2(UNUSED struct vn_dispatch_context *dispatch,
+                              struct vn_command_vkCmdBlitImage2 *args)
+ {
++#ifdef __ANDROID__
++   vkr_android_trace_ahb_image_write(
++      "blit-image", args->pBlitImageInfo->dstImage);
++#endif
+    VKR_CMD_CALL(CmdBlitImage2, args, args->pBlitImageInfo);
+ }
+
+@@ -334,6 +382,9 @@
+ vkr_dispatch_vkCmdCopyBufferToImage(UNUSED struct vn_dispatch_context *dispatch,
+                                     struct vn_command_vkCmdCopyBufferToImage *args)
+ {
++#ifdef __ANDROID__
++   vkr_android_trace_ahb_image_write("copy-buffer-image", args->dstImage);
++#endif
+    VKR_CMD_CALL(CmdCopyBufferToImage, args, args->srcBuffer, args->dstImage,
+                 args->dstImageLayout, args->regionCount, args->pRegions);
+ }
+@@ -342,6 +393,10 @@
+ vkr_dispatch_vkCmdCopyBufferToImage2(UNUSED struct vn_dispatch_context *dispatch,
+                                      struct vn_command_vkCmdCopyBufferToImage2 *args)
+ {
++#ifdef __ANDROID__
++   vkr_android_trace_ahb_image_write(
++      "copy-buffer-image", args->pCopyBufferToImageInfo->dstImage);
++#endif
+    VKR_CMD_CALL(CmdCopyBufferToImage2, args, args->pCopyBufferToImageInfo);
+ }
+
+@@ -380,6 +435,9 @@
+ vkr_dispatch_vkCmdClearColorImage(UNUSED struct vn_dispatch_context *dispatch,
+                                   struct vn_command_vkCmdClearColorImage *args)
+ {
++#ifdef __ANDROID__
++   vkr_android_trace_ahb_image_write("clear-color", args->image);
++#endif
+    VKR_CMD_CALL(CmdClearColorImage, args, args->image, args->imageLayout, args->pColor,
+                 args->rangeCount, args->pRanges);
+ }
+@@ -405,6 +463,9 @@
+ vkr_dispatch_vkCmdResolveImage(UNUSED struct vn_dispatch_context *dispatch,
+                                struct vn_command_vkCmdResolveImage *args)
+ {
++#ifdef __ANDROID__
++   vkr_android_trace_ahb_image_write("resolve-image", args->dstImage);
++#endif
+    VKR_CMD_CALL(CmdResolveImage, args, args->srcImage, args->srcImageLayout,
+                 args->dstImage, args->dstImageLayout, args->regionCount, args->pRegions);
+ }
+@@ -413,6 +474,10 @@
+ vkr_dispatch_vkCmdResolveImage2(UNUSED struct vn_dispatch_context *dispatch,
+                                 struct vn_command_vkCmdResolveImage2 *args)
+ {
++#ifdef __ANDROID__
++   vkr_android_trace_ahb_image_write(
++      "resolve-image", args->pResolveImageInfo->dstImage);
++#endif
+    VKR_CMD_CALL(CmdResolveImage2, args, args->pResolveImageInfo);
+ }
+
+@@ -501,6 +566,12 @@
+ vkr_dispatch_vkCmdBeginRenderPass(UNUSED struct vn_dispatch_context *dispatch,
+                                   struct vn_command_vkCmdBeginRenderPass *args)
+ {
++#ifdef __ANDROID__
++   struct vkr_framebuffer *framebuffer =
++      vkr_framebuffer_from_handle(args->pRenderPassBegin->framebuffer);
++   if (framebuffer && framebuffer->android_hardware_buffer_attachment)
++      vkr_log("VIRUAISOR_AHB_WRITE_COMMAND kind=render-pass");
++#endif
+    VKR_CMD_CALL(CmdBeginRenderPass, args, args->pRenderPassBegin, args->contents);
+ }
+
+@@ -546,6 +617,12 @@
+ vkr_dispatch_vkCmdBeginRenderPass2(UNUSED struct vn_dispatch_context *dispatch,
+                                    struct vn_command_vkCmdBeginRenderPass2 *args)
+ {
++#ifdef __ANDROID__
++   struct vkr_framebuffer *framebuffer =
++      vkr_framebuffer_from_handle(args->pRenderPassBegin->framebuffer);
++   if (framebuffer && framebuffer->android_hardware_buffer_attachment)
++      vkr_log("VIRUAISOR_AHB_WRITE_COMMAND kind=render-pass");
++#endif
+    VKR_CMD_CALL(CmdBeginRenderPass2, args, args->pRenderPassBegin,
+                 args->pSubpassBeginInfo);
+ }
+@@ -797,6 +874,21 @@
+ vkr_dispatch_vkCmdBeginRendering(UNUSED struct vn_dispatch_context *ctx,
+                                  struct vn_command_vkCmdBeginRendering *args)
+ {
++#ifdef __ANDROID__
++   for (uint32_t i = 0; i < args->pRenderingInfo->colorAttachmentCount; ++i) {
++      const VkRenderingAttachmentInfo *attachment =
++         &args->pRenderingInfo->pColorAttachments[i];
++      if (attachment->imageView)
++         vkr_android_trace_ahb_view_write(
++            "dynamic-rendering", attachment->imageView,
++            attachment->imageLayout, attachment->loadOp, attachment->storeOp);
++      if (attachment->resolveImageView)
++         vkr_android_trace_ahb_view_write(
++            "resolve-image", attachment->resolveImageView,
++            attachment->resolveImageLayout, VK_ATTACHMENT_LOAD_OP_DONT_CARE,
++            attachment->storeOp);
++   }
++#endif
+    VKR_CMD_CALL(CmdBeginRendering, args, args->pRenderingInfo);
+ }
+
+diff --git a/src/venus/vkr_device_memory.h b/src/venus/vkr_device_memory.h
+--- a/src/venus/vkr_device_memory.h
++++ b/src/venus/vkr_device_memory.h
+@@ -29,6 +29,9 @@
+    /* Android graphics allocator ownership for a retained DMA-BUF. */
+    void *android_buffer;
+    bool android_buffer_registered;
++#ifdef __ANDROID__
++   vkr_object_id viruaisor_memory_id;
++#endif
+
+    /* Metal buffer backed by POSIX shared memory */
+    struct vkr_mtl_shm *mtl_shm;
+diff --git a/src/venus/vkr_device_memory.c b/src/venus/vkr_device_memory.c
+--- a/src/venus/vkr_device_memory.c
++++ b/src/venus/vkr_device_memory.c
+@@ -1004,6 +1004,7 @@
+    mem->udmabuf_fd = udmabuf_fd;
+    mem->android_buffer = android_buffer;
+ #ifdef __ANDROID__
++   mem->viruaisor_memory_id = viruaisor_memory_id;
+    mem->android_buffer_registered = android_buffer_registered;
+    if (android_buffer_registered &&
+        !viruaisor_ahb_register(udmabuf_fd, android_buffer)) {

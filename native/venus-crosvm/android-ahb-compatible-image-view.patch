@@ -1,0 +1,61 @@
+diff --git a/src/venus/vkr_image.c b/src/venus/vkr_image.c
+--- a/src/venus/vkr_image.c
++++ b/src/venus/vkr_image.c
+@@ -424,21 +424,6 @@ vkr_dispatch_vkGetImageDrmFormatModifierPropertiesEXT(
+                                                           args->pProperties);
+ }
+
+-#ifdef __ANDROID__
+-static VkFormat
+-vkr_android_ahb_view_format(VkFormat guest_format)
+-{
+-   switch (guest_format) {
+-   case VK_FORMAT_B8G8R8A8_UNORM:
+-      return VK_FORMAT_R8G8B8A8_UNORM;
+-   case VK_FORMAT_B8G8R8A8_SRGB:
+-      return VK_FORMAT_R8G8B8A8_SRGB;
+-   default:
+-      return guest_format;
+-   }
+-}
+-#endif
+-
+ static void
+ vkr_dispatch_vkCreateImageView(struct vn_dispatch_context *dispatch,
+                                struct vn_command_vkCreateImageView *args)
+@@ -447,27 +432,25 @@ vkr_dispatch_vkCreateImageView(struct vn_dispatch_context *dispatch,
+    VkImageViewCreateInfo *create_info =
+       (VkImageViewCreateInfo *)args->pCreateInfo;
+    struct vkr_image *image = vkr_image_from_handle(create_info->image);
++   const bool ahb_image =
++      image && image->android_hardware_buffer_external;
+    const VkFormat guest_format = create_info->format;
+-   const VkFormat host_format = image && image->android_hardware_buffer_external
+-      ? vkr_android_ahb_view_format(guest_format)
+-      : guest_format;
+-   if (host_format != guest_format)
+-      create_info->format = host_format;
++   const VkFormat host_format = guest_format;
+ #endif
+    struct vkr_image_view *view =
+       vkr_image_view_create_and_add(dispatch->data, args);
+ #ifdef __ANDROID__
+-   if (view && image && image->android_hardware_buffer_external) {
++   if (view && ahb_image) {
+       view->android_hardware_buffer_image = true;
+       view->image_memory_id = image->memory_id;
+       view->image_width = image->extent.width;
+       view->image_height = image->extent.height;
+    }
+-   if (host_format != guest_format) {
+-      create_info->format = guest_format;
+-      vkr_log("VIRUAISOR_AHB_IMAGE_VIEW guest=%u host=%u width=%u height=%u vk=%d",
++   /* VIRUAISOR_AHB_IMAGE_VIEW: retain the guest attachment format so the
++    * dynamic-rendering pipeline and the compatible mutable image view agree. */
++   if (ahb_image)
++      vkr_log("VIRUAISOR_AHB_COMPATIBLE_IMAGE_VIEW guest=%u host=%u width=%u height=%u vk=%d",
+               guest_format, host_format, image->extent.width,
+               image->extent.height, args->ret);
+-   }
+ #endif
+ }

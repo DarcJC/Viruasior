@@ -1,0 +1,72 @@
+--- a/devices/src/virtio/gpu/mod.rs
++++ b/devices/src/virtio/gpu/mod.rs
+@@ -438,7 +438,15 @@
+                 None,
+             ),
+             GpuCommand::ResourceFlush(info) => {
+-                self.virtio_gpu.flush_resource(info.resource_id.to_native())
++                let resource_id = info.resource_id.to_native();
++                self.virtio_gpu
++                    .flush_resource(resource_id)
++                    .inspect_err(|e| {
++                        error!(
++                            "VIRUAISOR_RESOURCE_FLUSH_FAILED resource_id={} error={:?}",
++                            resource_id, e
++                        );
++                    })
+             }
+             GpuCommand::TransferToHost2d(info) => {
+                 let resource_id = info.resource_id.to_native();
+@@ -661,13 +669,26 @@
+                     }
+                 }
+
+-                self.virtio_gpu.resource_create_blob(
+-                    ctx_id,
+-                    resource_id,
+-                    resource_create_blob,
+-                    vecs,
+-                    mem,
+-                )
++                self.virtio_gpu
++                    .resource_create_blob(
++                        ctx_id,
++                        resource_id,
++                        resource_create_blob,
++                        vecs,
++                        mem,
++                    )
++                    .inspect_err(|e| {
++                        error!(
++                            "VIRUAISOR_BLOB_CREATE_FAILED ctx_id={} resource_id={} mem={} flags={:#x} blob_id={} size={} error={:?}",
++                            ctx_id,
++                            resource_id,
++                            resource_create_blob.blob_mem,
++                            resource_create_blob.blob_flags,
++                            resource_create_blob.blob_id,
++                            resource_create_blob.size,
++                            e
++                        );
++                    })
+             }
+             GpuCommand::SetScanoutBlob(info) => {
+                 let scanout_id = info.scanout_id.to_native();
+@@ -705,6 +726,18 @@
+
+                 self.virtio_gpu
+                     .set_scanout(info.r, scanout_id, resource_id, Some(scanout))
++                    .inspect_err(|e| {
++                        error!(
++                            "VIRUAISOR_SET_SCANOUT_BLOB_FAILED scanout_id={} resource_id={} width={} height={} format={} stride={} error={:?}",
++                            scanout_id,
++                            resource_id,
++                            width,
++                            height,
++                            virtio_gpu_format,
++                            strides[0],
++                            e
++                        );
++                    })
+             }
+             GpuCommand::ResourceMapBlob(info) => {
+                 let resource_id = info.resource_id.to_native();

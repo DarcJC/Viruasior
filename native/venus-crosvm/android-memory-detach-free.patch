@@ -1,0 +1,16 @@
+diff --git a/src/venus/vkr_device_memory.c b/src/venus/vkr_device_memory.c
+--- a/src/venus/vkr_device_memory.c
++++ b/src/venus/vkr_device_memory.c
+@@ -1017,6 +1017,11 @@ vkr_dispatch_vkFreeMemory(struct vn_dispatch_context *dispatch,
+ #endif
+    vkr_device_memory_release(mem);
+-   vkr_device_memory_destroy_driver_handle(ctx, args);
++   /* The generated destroy helper resolves args->memory through object_table.
++    * The entry was deliberately detached above, so use the host handles that
++    * were resolved while the object was still live.
++    */
++   dev->proc_table.FreeMemory(dev->base.handle.device,
++                              mem->base.handle.device_memory, NULL);
+
+    mtx_lock(&dev->object_mutex);
+    list_del(&mem->base.track_head);

@@ -1,0 +1,78 @@
+--- a/src/venus/vkr_device_memory.c
++++ b/src/venus/vkr_device_memory.c
+@@ -962,33 +962,33 @@
+          valid_fd_types = 1 << VIRGL_RESOURCE_FD_DMABUF;
+       }
+    }
+
+    if (export_info) {
+       if (export_info->handleTypes & VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT)
+          valid_fd_types |= 1 << VIRGL_RESOURCE_FD_OPAQUE;
+       if (export_info->handleTypes & VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT)
+          valid_fd_types |= 1 << VIRGL_RESOURCE_FD_DMABUF;
+    }
+
+ #ifdef __ANDROID__
+    if (local_import_info.fd >= 0)
+       vkr_trace_dma_buf_fd("vk-allocate-before", viruaisor_memory_id,
+                            res_info ? res_info->resourceId : 0, local_import_info.fd);
+ #endif
+-   struct vkr_device_memory *mem = vkr_device_memory_create_and_add(ctx, args);
++   struct vkr_device_memory *mem = vkr_device_memory_create(ctx, args);
+    if (!mem) {
+ #ifdef __ANDROID__
+       if (res_info)
+          vkr_log("VIRUAISOR_MEMORY_IMPORT_RESULT object=%" PRIu64
+                  " res=%u allocation=%" PRIu64 " type=%u vk=%d",
+                  viruaisor_memory_id, res_info->resourceId,
+                  alloc_info->allocationSize, alloc_info->memoryTypeIndex, args->ret);
+ #endif
+       if (local_import_info.fd >= 0)
+          close(local_import_info.fd);
+       if (udmabuf_fd >= 0)
+          close(udmabuf_fd);
+ #ifdef __ANDROID__
+       if (android_buffer) venus_ahb_release(android_buffer);
+ #endif
+       if (gbm_bo)
+@@ -1004,33 +1004,40 @@
+    mem->udmabuf_fd = udmabuf_fd;
+    mem->android_buffer = android_buffer;
+ #ifdef __ANDROID__
+    mem->viruaisor_memory_id = viruaisor_memory_id;
+    mem->android_buffer_registered = android_buffer_registered;
+    if (android_buffer_registered &&
+        !viruaisor_ahb_register(udmabuf_fd, android_buffer)) {
+       mem->android_buffer_registered = false;
+       vkr_log("VIRUAISOR_AHB_REGISTRY_FULL object=%" PRIu64,
+               viruaisor_memory_id);
+    }
+ #endif
+    mem->gbm_bo = gbm_bo;
+    mem->mtl_shm = mtl_shm;
+    mem->allocation_size = alloc_info->allocationSize;
+    mem->memory_type_index = alloc_info->memoryTypeIndex;
++   /* The blob exporter resolves allocations through the shared object table.
++    * Publish only after the Android backing and allocation metadata are ready. */
++   vkr_device_add_object(ctx, dev, &mem->base);
+ #ifdef __ANDROID__
++   vkr_log("VIRUAISOR_MEMORY_PUBLISH_READY object=%" PRIu64
++           " retained=%d ahb=%d allocation=%" PRIu64,
++           viruaisor_memory_id, mem->udmabuf_fd >= 0,
++           mem->android_buffer != NULL, mem->allocation_size);
+    if (res_info)
+       vkr_log("VIRUAISOR_MEMORY_IMPORT_RESULT object=%" PRIu64
+               " res=%u allocation=%" PRIu64 " type=%u vk=%d",
+               viruaisor_memory_id, res_info->resourceId,
+               alloc_info->allocationSize, alloc_info->memoryTypeIndex, args->ret);
+ #endif
+ }
+
+ static void
+ vkr_dispatch_vkFreeMemory(struct vn_dispatch_context *dispatch,
+                           struct vn_command_vkFreeMemory *args)
+ {
+    TRACE_FUNC();
+    struct vkr_context *ctx = dispatch->data;
+    struct vkr_device_memory *mem = vkr_device_memory_from_handle(args->memory);
+    if (!mem)

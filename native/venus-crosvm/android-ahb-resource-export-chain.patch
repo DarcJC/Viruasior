@@ -1,0 +1,26 @@
+--- a/src/venus/vkr_device_memory.c
++++ b/src/venus/vkr_device_memory.c
+@@ -779,6 +779,24 @@ vkr_dispatch_vkAllocateMemory(struct vn_dispatch_context *dispatch,
+    VkExportMemoryAllocateInfo *export_info =
+       vkr_find_struct(alloc_info->pNext, VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO);
+
++#ifdef __ANDROID__
++   if (uses_ahb_import && export_info && export_info->handleTypes) {
++      /* The guest may re-export this imported allocation, but the native
++       * allocation is an import of an existing AHardwareBuffer. Passing the
++       * guest fd export declaration to Mali changes that import contract and
++       * can produce an allocation whose image metadata no longer aliases the
++       * original buffer. Keep export_info for renderer bookkeeping and later
++       * fd duplication, while removing only its native pNext node. */
++      void *prev_of_export_info = vkr_find_prev_struct(
++         alloc_info, VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO);
++      assert(prev_of_export_info);
++      vkr_pnext_set_next(prev_of_export_info, export_info->pNext);
++      vkr_log("VIRUAISOR_AHB_RESOURCE_EXPORT_STRIPPED object=%" PRIu64
++              " res=%u types=%x", viruaisor_memory_id,
++              res_info->resourceId, export_info->handleTypes);
++   }
++#endif
++
+    /* track if driver has requested export allocation */
+    const bool might_export = export_info && export_info->handleTypes;

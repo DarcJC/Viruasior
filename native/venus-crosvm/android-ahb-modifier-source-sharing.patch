@@ -1,0 +1,62 @@
+diff --git a/src/venus/vkr_image.c b/src/venus/vkr_image.c
+--- a/src/venus/vkr_image.c
++++ b/src/venus/vkr_image.c
+@@ -15,6 +15,8 @@ vkr_dispatch_vkCreateImage(struct vn_dispatch_context *dispatch,
+ #ifdef __ANDROID__
+    VkImageCreateInfo *create_info = (VkImageCreateInfo *)args->pCreateInfo;
+    const VkImageTiling original_tiling = create_info->tiling;
++   void *prev_of_modifier = NULL;
++   void *modifier_info = NULL;
+    VkExternalMemoryImageCreateInfo *external = vkr_find_struct(
+       args->pCreateInfo->pNext,
+       VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO);
+@@ -35,7 +37,8 @@ vkr_dispatch_vkCreateImage(struct vn_dispatch_context *dispatch,
+       dev->physical_device->ANDROID_external_memory_android_hardware_buffer &&
+       args->pCreateInfo->imageType == VK_IMAGE_TYPE_2D &&
+       (args->pCreateInfo->tiling == VK_IMAGE_TILING_LINEAR ||
+-       args->pCreateInfo->tiling == VK_IMAGE_TILING_OPTIMAL) &&
++       args->pCreateInfo->tiling == VK_IMAGE_TILING_OPTIMAL ||
++       args->pCreateInfo->tiling == VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT) &&
+       args->pCreateInfo->format == VK_FORMAT_B8G8R8A8_UNORM;
+    VkExternalMemoryHandleTypeFlags original_handle_types = 0;
+    if (translate_to_ahb) {
+@@ -43,6 +46,20 @@ vkr_dispatch_vkCreateImage(struct vn_dispatch_context *dispatch,
+       original_handle_types = external->handleTypes;
+       external->handleTypes =
+          VK_EXTERNAL_MEMORY_HANDLE_TYPE_ANDROID_HARDWARE_BUFFER_BIT_ANDROID;
++      if (original_tiling == VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT) {
++         prev_of_modifier = vkr_find_prev_struct(
++            create_info,
++            VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_EXPLICIT_CREATE_INFO_EXT);
++         if (!prev_of_modifier)
++            prev_of_modifier = vkr_find_prev_struct(
++               create_info,
++               VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_LIST_CREATE_INFO_EXT);
++         if (prev_of_modifier) {
++            modifier_info = (void *)vkr_pnext_get_next(prev_of_modifier);
++            vkr_pnext_set_next(prev_of_modifier,
++                               vkr_pnext_get_next(modifier_info));
++         }
++      }
+       create_info->tiling = VK_IMAGE_TILING_OPTIMAL;
+       vkr_log("VIRUAISOR_IMAGE_EXTERNAL_AHB width=%u height=%u layers=%u usage=%x guest_tiling=%u host_tiling=%u",
+               create_info->extent.width, create_info->extent.height,
+@@ -53,5 +69,9 @@ vkr_dispatch_vkCreateImage(struct vn_dispatch_context *dispatch,
+          vkr_log("VIRUAISOR_AHB_OPTIMAL_SOURCE width=%u height=%u",
+                  create_info->extent.width, create_info->extent.height);
++      if (original_tiling == VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT)
++         vkr_log("VIRUAISOR_AHB_MODIFIER_SOURCE width=%u height=%u stripped=%u",
++                 create_info->extent.width, create_info->extent.height,
++                 modifier_info != NULL);
+    }
+ #endif
+    /* XXX If VkExternalMemoryImageCreateInfo is chained by the app, all is
+@@ -78,6 +98,8 @@ vkr_dispatch_vkCreateImage(struct vn_dispatch_context *dispatch,
+       external->handleTypes = original_handle_types;
+       create_info->tiling = original_tiling;
+       vkr_log("VIRUAISOR_IMAGE_EXTERNAL_AHB_RESULT vk=%d", args->ret);
++      if (modifier_info)
++         vkr_pnext_set_next(prev_of_modifier, modifier_info);
+    }
+    if (image && translate_to_ahb) {
+       image->android_hardware_buffer_external = true;
