@@ -1,0 +1,90 @@
+--- a/src/proxy/proxy_context.c
++++ b/src/proxy/proxy_context.c
+@@ -24,6 +24,26 @@
+    struct list_head head;
+ };
+
++static void
++proxy_context_trace_fd(const char *stage, uint32_t ctx_id, uint32_t res_id, int fd)
++{
++   struct stat st = {0};
++   const int stat_ret = fstat(fd, &st);
++   char fd_path[64];
++   char fd_target[256];
++   snprintf(fd_path, sizeof(fd_path), "/proc/self/fd/%d", fd);
++   ssize_t target_length = readlink(fd_path, fd_target, sizeof(fd_target) - 1);
++   if (target_length < 0)
++      target_length = 0;
++   fd_target[target_length] = 0;
++   proxy_log("VIRUAISOR_PROXY_FD stage=%s pid=%d ctx=%u res=%u fd=%d stat=%d "
++             "dev=%llu ino=%llu size=%lld target=%s",
++             stage, getpid(), ctx_id, res_id, fd, stat_ret,
++             stat_ret ? 0ULL : (unsigned long long)st.st_dev,
++             stat_ret ? 0ULL : (unsigned long long)st.st_ino,
++             stat_ret ? 0LL : (long long)st.st_size, fd_target);
++}
++
+ static inline void
+ proxy_context_resource_add(struct proxy_context *ctx, uint32_t res_id)
+ {
+@@ -401,6 +421,7 @@
+       return -1;
+    }
+
++   proxy_context_trace_fd("blob-reply", ctx->base.ctx_id, res_id, reply_fd);
+    blob->type = reply.fd_type;
+    blob->u.fd = reply_fd;
+    blob->map_info = reply.map_info;
+@@ -497,6 +518,7 @@
+       .fd_type = res_fd_type,
+       .size = res_size,
+    };
++   proxy_context_trace_fd("attach-send", ctx->base.ctx_id, res_id, res_fd);
+    if (!proxy_socket_send_request_with_fds(&ctx->socket, &req, sizeof(req), &res_fd, 1))
+       proxy_log("failed to attach res %d", res_id);
+
+--- a/server/render_context.c
++++ b/server/render_context.c
+@@ -6,12 +6,34 @@
+ #include "render_context.h"
+
+ #include <sys/mman.h>
++#include <sys/stat.h>
++#include <unistd.h>
+
+ #include "util/u_thread.h"
+ #include "virgl_util.h"
+
+ #include "render_state.h"
+
++static void
++render_context_trace_fd(const char *stage, uint32_t ctx_id, uint32_t res_id, int fd)
++{
++   struct stat st = {0};
++   const int stat_ret = fstat(fd, &st);
++   char fd_path[64];
++   char fd_target[256];
++   snprintf(fd_path, sizeof(fd_path), "/proc/self/fd/%d", fd);
++   ssize_t target_length = readlink(fd_path, fd_target, sizeof(fd_target) - 1);
++   if (target_length < 0)
++      target_length = 0;
++   fd_target[target_length] = 0;
++   render_log("VIRUAISOR_RENDER_FD stage=%s pid=%d ctx=%u res=%u fd=%d stat=%d "
++              "dev=%llu ino=%llu size=%lld target=%s",
++              stage, getpid(), ctx_id, res_id, fd, stat_ret,
++              stat_ret ? 0ULL : (unsigned long long)st.st_dev,
++              stat_ret ? 0ULL : (unsigned long long)st.st_ino,
++              stat_ret ? 0LL : (long long)st.st_size, fd_target);
++}
++
+ void
+ render_context_update_timeline(struct render_context *ctx,
+                                uint32_t ring_idx,
+@@ -93,6 +115,7 @@
+    /* classic 3d resource with valid size reuses the blob import path here */
+    const struct render_context_op_import_resource_request *req =
+       &request->import_resource;
++   render_context_trace_fd("import-receive", ctx->ctx_id, req->res_id, fds[0]);
+    return render_state_import_resource(ctx->ctx_id, req->res_id, req->fd_type, fds[0],
+                                        req->size);
+ }

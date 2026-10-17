@@ -1,0 +1,131 @@
+--- a/src/venus/vkr_device_memory.c
++++ b/src/venus/vkr_device_memory.c
+@@ -70,11 +70,61 @@
+    VkResult ret = dev->proc_table.GetMemoryFdPropertiesKHR(dev->base.handle.device,
+       VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, fd, &properties);
+    vkr_log("VIRUAISOR_GRALLOC_IMPORT bytes=%" PRIu64 " type=%u fd_types=%x vk=%d", bytes, info->memoryTypeIndex, properties.memoryTypeBits, ret);
+-   if (ret != VK_SUCCESS || !venus_heap_memory_type_valid(info->memoryTypeIndex, properties.memoryTypeBits)) {
++   if (ret != VK_SUCCESS) {
+       close(fd);
+       venus_ahb_release(buffer);
+       return VK_ERROR_INVALID_EXTERNAL_HANDLE;
+    }
++   if (!venus_heap_memory_type_valid(info->memoryTypeIndex,
++                                     properties.memoryTypeBits)) {
++      VkMemoryDedicatedAllocateInfo *dedicated = vkr_find_struct(
++         info->pNext, VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO);
++      VkMemoryRequirements requirements = {0};
++      const char *resource_kind = "none";
++      if (dedicated && dedicated->image) {
++         struct vkr_image *image = vkr_image_from_handle(dedicated->image);
++         dev->proc_table.GetImageMemoryRequirements(
++            dev->base.handle.device, image->base.handle.image, &requirements);
++         resource_kind = "image";
++      } else if (dedicated && dedicated->buffer) {
++         struct vkr_buffer *buffer = vkr_buffer_from_handle(dedicated->buffer);
++         dev->proc_table.GetBufferMemoryRequirements(
++            dev->base.handle.device, buffer->base.handle.buffer, &requirements);
++         resource_kind = "buffer";
++      }
++
++      const uint32_t compatible_type_bits =
++         properties.memoryTypeBits & requirements.memoryTypeBits;
++      VkPhysicalDeviceMemoryProperties native_properties;
++      dev->physical_device->proc_table.GetPhysicalDeviceMemoryProperties(
++         dev->physical_device->base.handle.physical_device,
++         &native_properties);
++      struct venus_import_memory_type native_types[VK_MAX_MEMORY_TYPES];
++      for (uint32_t i = 0; i < native_properties.memoryTypeCount; ++i) {
++         native_types[i].property_flags =
++            native_properties.memoryTypes[i].propertyFlags;
++         native_types[i].heap_index = native_properties.memoryTypes[i].heapIndex;
++      }
++      const uint32_t remapped_type = venus_import_select_native_type(
++         info->memoryTypeIndex, compatible_type_bits, property_flags,
++         native_types, native_properties.memoryTypeCount);
++      if (remapped_type == VENUS_IMPORT_TYPE_INVALID) {
++         vkr_log("VIRUAISOR_GRALLOC_IMPORT_TYPE_REJECT object=%" PRIu64
++                 " kind=%s selected=%u fd_types=%x resource_types=%x compatible=%x",
++                 object_id, resource_kind, info->memoryTypeIndex,
++                 properties.memoryTypeBits, requirements.memoryTypeBits,
++                 compatible_type_bits);
++         close(fd);
++         venus_ahb_release(buffer);
++         return VK_ERROR_INVALID_EXTERNAL_HANDLE;
++      }
++      vkr_log("VIRUAISOR_GRALLOC_IMPORT_TYPE_REMAP object=%" PRIu64
++              " kind=%s selected=%u target=%u fd_types=%x resource_types=%x compatible=%x",
++              object_id, resource_kind, info->memoryTypeIndex, remapped_type,
++              properties.memoryTypeBits, requirements.memoryTypeBits,
++              compatible_type_bits);
++      info->memoryTypeIndex = remapped_type;
++   }
+    int duplicate = os_dupfd_cloexec(fd);
+    if (duplicate < 0) { close(fd); venus_ahb_release(buffer); return VK_ERROR_OUT_OF_HOST_MEMORY; }
+    vkr_trace_dma_buf_fd("android-retained", object_id, 0, fd);
+@@ -558,8 +608,18 @@
+    struct vkr_mtl_shm *mtl_shm = NULL;
+    VkExportMemoryAllocateInfo local_export_info;
+    VkImportMemoryMetalHandleInfoEXT local_metal_import;
++   const bool force_gbm_import = !!physical_dev->gbm_device;
++   const bool force_udmabuf_import = physical_dev->udmabuf_dev_fd >= 0;
++#ifdef __ANDROID__
++   const bool force_gralloc_export =
++      venus_gralloc_export_backing_required_on_android(force_udmabuf_import,
++                                                        might_export);
++#else
++   const bool force_gralloc_export = false;
++#endif
+
+-   if ((property_flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) && !res_info) {
++   if (((property_flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) ||
++        force_gralloc_export) && !res_info) {
+       /* An implementation can support dma_buf import along with opaque fd export/import.
+        * If the client driver is using external memory and requesting dma_buf, without
+        * dma_buf fd export support, we must use gbm bo import path instead of forcing
+@@ -568,9 +628,7 @@
+       const bool no_dma_buf_export =
+          !export_info ||
+          !(export_info->handleTypes & VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT);
+-      const bool force_gbm_import = !!physical_dev->gbm_device;
+-      const bool force_udmabuf_import = physical_dev->udmabuf_dev_fd >= 0;
+-      if (!(force_gbm_import || force_udmabuf_import) &&
++      if (!(force_gralloc_export || force_gbm_import || force_udmabuf_import) &&
+           (physical_dev->is_dma_buf_fd_export_supported ||
+            (physical_dev->is_opaque_fd_export_supported && no_dma_buf_export))) {
+          const VkExternalMemoryHandleTypeFlagBits handle_type =
+@@ -644,7 +702,8 @@
+                physical_dev, alloc_info, &udmabuf_fd, &local_import_info);
+          }
+ #ifdef __ANDROID__
+-         else if (!physical_dev->gbm_device) {
++         else if (venus_gralloc_preferred_on_android(force_udmabuf_import,
++                                                      force_gbm_import)) {
+             args->ret = vkr_android_import(dev, alloc_info, property_flags,
+                                            viruaisor_memory_id, &udmabuf_fd,
+                                            &android_buffer, &local_import_info);
+@@ -935,7 +994,7 @@
+       return false;
+    }
+
+-   int fd;
++   int fd = -1;
+    if (mem->udmabuf_fd >= 0) {
+ #ifdef __ANDROID__
+       vkr_trace_dma_buf_fd("blob-export-retained", mem->base.id, 0,
+@@ -966,10 +1025,13 @@
+          .handleType = handle_type,
+       };
+       VkResult ret = vk->GetMemoryFdKHR(mem->device->base.handle.device, &fd_info, &fd);
+-      if (ret != VK_SUCCESS) {
+-         vkr_log("mem fd export failed (vk ret %d)", ret);
++      if (ret != VK_SUCCESS || fd < 0) {
++         vkr_log("mem fd export failed (vk ret %d fd %d)", ret, fd);
+          return false;
+       }
++#ifdef __ANDROID__
++      vkr_trace_dma_buf_fd("vk-get-memory-fd", mem->base.id, 0, fd);
++#endif
+    }
+
+    if (fd_type == VIRGL_RESOURCE_FD_DMABUF) {

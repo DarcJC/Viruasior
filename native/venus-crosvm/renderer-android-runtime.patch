@@ -3,19 +3,19 @@ index bba1f6a..a81aff3 100644
 --- a/src/venus/vkr_buffer.c
 +++ b/src/venus/vkr_buffer.c
 @@ -7,6 +7,9 @@
- 
+
  #include "vkr_buffer_gen.h"
  #include "vkr_physical_device.h"
 +#ifdef __ANDROID__
 +#include "venus_gralloc_policy.h"
 +#endif
- 
+
  static void
  vkr_dispatch_vkCreateBuffer(struct vn_dispatch_context *dispatch,
 @@ -37,7 +40,30 @@ vkr_dispatch_vkCreateBuffer(struct vn_dispatch_context *dispatch,
      * vkr_physical_device_init_memory_properties as well.
      */
- 
+
 +#ifdef __ANDROID__
 +   struct vkr_device *dev = vkr_device_from_handle(args->device);
 +   struct vkr_physical_device *physical = dev->physical_device;
@@ -41,20 +41,27 @@ index bba1f6a..a81aff3 100644
     vkr_buffer_create_and_add(dispatch->data, args);
 +#endif
  }
- 
+
  static void
 diff --git a/src/venus/vkr_device_memory.c b/src/venus/vkr_device_memory.c
-index 7d57c7c..edf232f 100644
+index 7d57c7c..3ae16da 100644
 --- a/src/venus/vkr_device_memory.c
 +++ b/src/venus/vkr_device_memory.c
-@@ -13,6 +13,96 @@
+@@ -10,9 +10,103 @@
+ #include "vn_protocol_renderer_transport.h"
+
+ #include "vkr_device_memory_gen.h"
++#include "vkr_buffer.h"
++#include "vkr_image.h"
  #include "vkr_metal_helpers.h"
  #include "vkr_physical_device.h"
- 
+
 +#ifdef __ANDROID__
 +#include "venus_dmaheap.h"
 +#include "venus_gralloc.h"
 +#include "venus_cache_sync.h"
++#include "venus_dma_buf_size_policy.h"
++#include "venus_import_type_policy.h"
 +#include <inttypes.h>
 +#include <fcntl.h>
 +#include <linux/dma-heap.h>
@@ -144,7 +151,174 @@ index 7d57c7c..edf232f 100644
  static bool
  vkr_get_fd_info_from_resource_info(struct vkr_context *ctx,
                                     const VkImportMemoryResourceInfoMESA *res_info,
-@@ -300,6 +390,11 @@ vkr_dispatch_vkAllocateMemory(struct vn_dispatch_context *dispatch,
+@@ -253,12 +347,21 @@ vkr_dispatch_vkAllocateMemory(struct vn_dispatch_context *dispatch,
+    struct vkr_device *dev = vkr_device_from_handle(args->device);
+    struct vkr_physical_device *physical_dev = dev->physical_device;
+
++#ifdef __ANDROID__
++   const vkr_object_id viruaisor_memory_id = vkr_cs_handle_load_id(
++      (const void **)args->pMemory, VK_OBJECT_TYPE_DEVICE_MEMORY);
++#endif
+    VkMemoryAllocateInfo *alloc_info = (VkMemoryAllocateInfo *)args->pAllocateInfo;
+    const uint32_t mem_type_index = alloc_info->memoryTypeIndex;
+    if (unlikely(mem_type_index >= physical_dev->memory_properties.memoryTypeCount)) {
+       args->ret = VK_ERROR_UNKNOWN;
+       return;
+    }
++   const uint32_t property_flags =
++      physical_dev->memory_properties.memoryTypes[mem_type_index].propertyFlags;
++   uint32_t driver_mem_type_index = mem_type_index;
++   if (physical_dev->mem_type_spoof && driver_mem_type_index > 0)
++      driver_mem_type_index--;
+
+    /* translate VkImportMemoryResourceInfoMESA into VkImportMemoryFdInfoKHR in place */
+    VkImportMemoryFdInfoKHR local_import_info = { .fd = -1 };
+@@ -267,11 +370,110 @@ vkr_dispatch_vkAllocateMemory(struct vn_dispatch_context *dispatch,
+       alloc_info, VK_STRUCTURE_TYPE_IMPORT_MEMORY_RESOURCE_INFO_MESA);
+    if (prev_of_res_info) {
+       res_info = (VkImportMemoryResourceInfoMESA *)vkr_pnext_get_next(prev_of_res_info);
++#ifdef __ANDROID__
++      vkr_log("VIRUAISOR_MEMORY_IMPORT_BEGIN object=%" PRIu64
++              " res=%u allocation=%" PRIu64 " type=%u",
++              viruaisor_memory_id, res_info->resourceId,
++              alloc_info->allocationSize, mem_type_index);
++#endif
+       if (!vkr_get_fd_info_from_resource_info(ctx, res_info, &local_import_info)) {
+          args->ret = VK_ERROR_INVALID_EXTERNAL_HANDLE;
+          return;
+       }
+
++#ifdef __ANDROID__
++      if (local_import_info.handleType ==
++             VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT &&
++          dev->proc_table.GetMemoryFdPropertiesKHR) {
++         VkMemoryFdPropertiesKHR fd_props = {
++            .sType = VK_STRUCTURE_TYPE_MEMORY_FD_PROPERTIES_KHR,
++         };
++         const VkResult fd_result = dev->proc_table.GetMemoryFdPropertiesKHR(
++            dev->base.handle.device, local_import_info.handleType,
++            local_import_info.fd, &fd_props);
++         vkr_log("VIRUAISOR_MEMORY_IMPORT_FD_TYPES object=%" PRIu64
++                 " res=%u selected=%u native=%u types=%x vk=%d",
++                 viruaisor_memory_id, res_info->resourceId, mem_type_index,
++                 driver_mem_type_index, fd_props.memoryTypeBits, fd_result);
++
++         if (fd_result == VK_SUCCESS &&
++             physical_dev->properties.vendorID == 0x13b5 &&
++             driver_mem_type_index < 32 &&
++             !(fd_props.memoryTypeBits &
++               (UINT32_C(1) << driver_mem_type_index))) {
++            VkMemoryDedicatedAllocateInfo *dedicated = vkr_find_struct(
++               alloc_info->pNext,
++               VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO);
++            VkMemoryRequirements requirements = {0};
++            const char *resource_kind = "none";
++            if (dedicated && dedicated->image) {
++               struct vkr_image *image = vkr_image_from_handle(dedicated->image);
++               dev->proc_table.GetImageMemoryRequirements(
++                  dev->base.handle.device, image->base.handle.image,
++                  &requirements);
++               resource_kind = "image";
++            } else if (dedicated && dedicated->buffer) {
++               struct vkr_buffer *buffer = vkr_buffer_from_handle(dedicated->buffer);
++               dev->proc_table.GetBufferMemoryRequirements(
++                  dev->base.handle.device, buffer->base.handle.buffer,
++                  &requirements);
++               resource_kind = "buffer";
++            }
++
++            const uint32_t compatible_type_bits =
++               fd_props.memoryTypeBits & requirements.memoryTypeBits;
++            vkr_log("VIRUAISOR_MEMORY_IMPORT_RESOURCE_TYPES object=%" PRIu64
++                    " res=%u kind=%s types=%x compatible=%x required=%x",
++                    viruaisor_memory_id, res_info->resourceId, resource_kind,
++                    requirements.memoryTypeBits, compatible_type_bits,
++                    property_flags);
++
++            VkPhysicalDeviceMemoryProperties native_properties;
++            physical_dev->proc_table.GetPhysicalDeviceMemoryProperties(
++               physical_dev->base.handle.physical_device,
++               &native_properties);
++            struct venus_import_memory_type native_types[VK_MAX_MEMORY_TYPES];
++            for (uint32_t i = 0; i < native_properties.memoryTypeCount; ++i) {
++               native_types[i].property_flags =
++                  native_properties.memoryTypes[i].propertyFlags;
++               native_types[i].heap_index =
++                  native_properties.memoryTypes[i].heapIndex;
++            }
++            const uint32_t remapped_type = venus_import_select_native_type(
++               driver_mem_type_index, compatible_type_bits, property_flags,
++               native_types, native_properties.memoryTypeCount);
++            if (remapped_type == VENUS_IMPORT_TYPE_INVALID) {
++               vkr_log("VIRUAISOR_MEMORY_IMPORT_TYPE_REJECT object=%" PRIu64
++                       " res=%u guest=%u native=%u compatible=%x",
++                       viruaisor_memory_id, res_info->resourceId,
++                       mem_type_index, driver_mem_type_index,
++                       compatible_type_bits);
++               close(local_import_info.fd);
++               args->ret = VK_ERROR_INVALID_EXTERNAL_HANDLE;
++               return;
++            }
++            vkr_log("VIRUAISOR_MEMORY_IMPORT_TYPE_REMAP object=%" PRIu64
++                    " res=%u guest=%u native=%u target=%u compatible=%x",
++                    viruaisor_memory_id, res_info->resourceId, mem_type_index,
++                    driver_mem_type_index, remapped_type,
++                    compatible_type_bits);
++            driver_mem_type_index = remapped_type;
++            const uint64_t requested = alloc_info->allocationSize;
++            const uint64_t padded = venus_dma_buf_export_allocation_size(
++               requested, UINT64_C(64) * 1024);
++            if (!padded) {
++               close(local_import_info.fd);
++               args->ret = VK_ERROR_OUT_OF_DEVICE_MEMORY;
++               return;
++            }
++            if (padded != requested)
++               vkr_log("VIRUAISOR_DMA_BUF_IMPORT_ALLOCATION requested=%" PRIu64
++                       " padded=%" PRIu64, requested, padded);
++            alloc_info->allocationSize = padded;
++         }
++      }
++#endif
++
+       vkr_pnext_set_next(prev_of_res_info, &local_import_info);
+    }
+
+@@ -281,6 +483,24 @@ vkr_dispatch_vkAllocateMemory(struct vn_dispatch_context *dispatch,
+    /* track if driver has requested export allocation */
+    const bool might_export = export_info && export_info->handleTypes;
+
++#ifdef __ANDROID__
++   if (!res_info && might_export &&
++       physical_dev->properties.vendorID == 0x13b5 &&
++       (export_info->handleTypes & VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT)) {
++      const uint64_t requested = alloc_info->allocationSize;
++      const uint64_t padded =
++         venus_dma_buf_export_allocation_size(requested, UINT64_C(64) * 1024);
++      if (!padded) {
++         args->ret = VK_ERROR_OUT_OF_DEVICE_MEMORY;
++         return;
++      }
++      if (padded != requested)
++         vkr_log("VIRUAISOR_DMA_BUF_EXPORT_ALLOCATION requested=%" PRIu64
++                 " padded=%" PRIu64, requested, padded);
++      alloc_info->allocationSize = padded;
++   }
++#endif
++
+    /* XXX Force dma_buf/opaque fd export or gbm bo import until a new extension that
+     * supports direct export from host visible memory
+     *
+@@ -292,14 +512,16 @@ vkr_dispatch_vkAllocateMemory(struct vn_dispatch_context *dispatch,
+     * Skip forcing external if a valid VkImportMemoryResourceInfoMESA is provided, since
+     * the mapping will be directly set up from the existing virgl resource.
+     */
+-   const uint32_t property_flags =
+-      physical_dev->memory_properties.memoryTypes[mem_type_index].propertyFlags;
+-   if (physical_dev->mem_type_spoof && mem_type_index > 0)
+-      alloc_info->memoryTypeIndex = mem_type_index - 1;
++   alloc_info->memoryTypeIndex = driver_mem_type_index;
+
     uint32_t valid_fd_types = 0;
     int udmabuf_fd = -1;
     void *gbm_bo = NULL;
@@ -156,7 +330,7 @@ index 7d57c7c..edf232f 100644
     struct vkr_mtl_shm *mtl_shm = NULL;
     VkExportMemoryAllocateInfo local_export_info;
     VkImportMemoryMetalHandleInfoEXT local_metal_import;
-@@ -387,7 +482,13 @@ vkr_dispatch_vkAllocateMemory(struct vn_dispatch_context *dispatch,
+@@ -387,7 +609,13 @@ vkr_dispatch_vkAllocateMemory(struct vn_dispatch_context *dispatch,
               */
              args->ret = vkr_udmabuf_get_fd_info_from_allocation_info(
                 physical_dev, alloc_info, &udmabuf_fd, &local_import_info);
@@ -171,8 +345,17 @@ index 7d57c7c..edf232f 100644
              args->ret = vkr_gbm_get_fd_info_from_allocation_info(
                 physical_dev, alloc_info, &gbm_bo, &local_import_info);
           }
-@@ -410,6 +511,11 @@ vkr_dispatch_vkAllocateMemory(struct vn_dispatch_context *dispatch,
+@@ -408,8 +636,20 @@ vkr_dispatch_vkAllocateMemory(struct vn_dispatch_context *dispatch,
+
+    struct vkr_device_memory *mem = vkr_device_memory_create_and_add(ctx, args);
     if (!mem) {
++#ifdef __ANDROID__
++      if (res_info)
++         vkr_log("VIRUAISOR_MEMORY_IMPORT_RESULT object=%" PRIu64
++                 " res=%u allocation=%" PRIu64 " type=%u vk=%d",
++                 viruaisor_memory_id, res_info->resourceId,
++                 alloc_info->allocationSize, alloc_info->memoryTypeIndex, args->ret);
++#endif
        if (local_import_info.fd >= 0)
           close(local_import_info.fd);
 +      if (udmabuf_fd >= 0)
@@ -183,7 +366,7 @@ index 7d57c7c..edf232f 100644
        if (gbm_bo)
           vkr_gbm_bo_destroy(gbm_bo);
        vkr_mtl_shm_free(mtl_shm);
-@@ -421,6 +527,7 @@ vkr_dispatch_vkAllocateMemory(struct vn_dispatch_context *dispatch,
+@@ -421,10 +661,18 @@ vkr_dispatch_vkAllocateMemory(struct vn_dispatch_context *dispatch,
     mem->property_flags = property_flags;
     mem->valid_fd_types = valid_fd_types;
     mem->udmabuf_fd = udmabuf_fd;
@@ -191,7 +374,18 @@ index 7d57c7c..edf232f 100644
     mem->gbm_bo = gbm_bo;
     mem->mtl_shm = mtl_shm;
     mem->allocation_size = alloc_info->allocationSize;
-@@ -518,8 +625,13 @@ vkr_context_init_device_memory_dispatch(struct vkr_context *ctx)
+    mem->memory_type_index = alloc_info->memoryTypeIndex;
++#ifdef __ANDROID__
++   if (res_info)
++      vkr_log("VIRUAISOR_MEMORY_IMPORT_RESULT object=%" PRIu64
++              " res=%u allocation=%" PRIu64 " type=%u vk=%d",
++              viruaisor_memory_id, res_info->resourceId,
++              alloc_info->allocationSize, alloc_info->memoryTypeIndex, args->ret);
++#endif
+ }
+
+ static void
+@@ -518,8 +766,13 @@ vkr_context_init_device_memory_dispatch(struct vkr_context *ctx)
     dispatch->dispatch_vkFreeMemory = vkr_dispatch_vkFreeMemory;
     dispatch->dispatch_vkMapMemory = NULL;
     dispatch->dispatch_vkUnmapMemory = NULL;
@@ -205,7 +399,7 @@ index 7d57c7c..edf232f 100644
     dispatch->dispatch_vkGetDeviceMemoryCommitment =
        vkr_dispatch_vkGetDeviceMemoryCommitment;
     dispatch->dispatch_vkGetDeviceMemoryOpaqueCaptureAddress =
-@@ -532,6 +644,9 @@ vkr_context_init_device_memory_dispatch(struct vkr_context *ctx)
+@@ -532,6 +785,9 @@ vkr_context_init_device_memory_dispatch(struct vkr_context *ctx)
  void
  vkr_device_memory_release(struct vkr_device_memory *mem)
  {
@@ -215,7 +409,7 @@ index 7d57c7c..edf232f 100644
     vkr_mtl_shm_free(mem->mtl_shm);
     if (mem->gbm_bo)
        vkr_gbm_bo_destroy(mem->gbm_bo);
-@@ -558,15 +673,14 @@ vkr_device_memory_export_blob(struct vkr_device_memory *mem,
+@@ -558,15 +814,14 @@ vkr_device_memory_export_blob(struct vkr_device_memory *mem,
     uint32_t map_info = VIRGL_RENDERER_MAP_CACHE_NONE;
     if (blob_flags & VIRGL_RENDERER_BLOB_FLAG_USE_MAPPABLE) {
        const bool visible = mem->property_flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
@@ -225,25 +419,45 @@ index 7d57c7c..edf232f 100644
           vkr_log("mem cannot support mappable blob");
           return false;
        }
- 
+
 -      /* XXX guessed */
 -      map_info = (coherent && cached) ? VIRGL_RENDERER_MAP_CACHE_CACHED
 +      /* Paired guest ICD uses explicit noncoherent cache commands for cached mappings. */
 +      map_info = cached ? VIRGL_RENDERER_MAP_CACHE_CACHED
                                        : VIRGL_RENDERER_MAP_CACHE_WC;
     }
- 
+
+@@ -648,7 +903,18 @@ vkr_device_memory_export_blob(struct vkr_device_memory *mem,
+
+    if (fd_type == VIRGL_RESOURCE_FD_DMABUF) {
+       const off_t dma_buf_size = lseek(fd, 0, SEEK_END);
+-      if (dma_buf_size < 0 || (uint64_t)dma_buf_size < blob_size) {
++#ifdef __ANDROID__
++      const bool size_valid = venus_dma_buf_blob_size_valid(
++         dma_buf_size, mem->allocation_size, blob_size, getpagesize());
++      if (size_valid && dma_buf_size <= 0)
++         vkr_log("VIRUAISOR_DMA_BUF_SIZE_FALLBACK probed=%lld allocation=%" PRIu64
++                 " blob=%" PRIu64 " page=%d", (long long)dma_buf_size,
++                 mem->allocation_size, blob_size, getpagesize());
++#else
++      const bool size_valid =
++         dma_buf_size >= 0 && (uint64_t)dma_buf_size >= blob_size;
++#endif
++      if (!size_valid) {
+          vkr_log("mem dma_buf_size %lld < blob_size %" PRIu64, (long long)dma_buf_size,
+                  blob_size);
+          close(fd);
 diff --git a/src/venus/vkr_device_memory.h b/src/venus/vkr_device_memory.h
 index 3259966..9c832fb 100644
 --- a/src/venus/vkr_device_memory.h
 +++ b/src/venus/vkr_device_memory.h
 @@ -26,6 +26,8 @@ struct vkr_device_memory {
- 
+
     /* udmabuf backing non-external mappable memory */
     int udmabuf_fd;
 +   /* Android graphics allocator ownership for a retained DMA-BUF. */
 +   void *android_buffer;
- 
+
     /* Metal buffer backed by POSIX shared memory */
     struct vkr_mtl_shm *mtl_shm;
 diff --git a/src/venus/vkr_renderer.c b/src/venus/vkr_renderer.c
@@ -252,19 +466,19 @@ index 8aae924..3004025 100644
 +++ b/src/venus/vkr_renderer.c
 @@ -10,6 +10,10 @@
  #include "venus_hw.h"
- 
+
  #include "vkr_context.h"
 +#ifdef __ANDROID__
 +#include <dlfcn.h>
 +#include <android/dlext.h>
 +#endif
- 
+
  struct vkr_renderer_state {
     const struct vkr_renderer_callbacks *cbs;
 @@ -73,6 +77,33 @@ vkr_renderer_init(uint32_t flags, const struct vkr_renderer_callbacks *cbs)
     if (cbs->debug_logger)
        virgl_log_set_handler(cbs->debug_logger, NULL, NULL);
- 
+
 +#ifdef __ANDROID__
 +   /* OEM Vulkan dependency owns TLS destructors that outlive its dlclose.
 +    * Preserve code lifetime, never suppress callbacks or delete TLS keys. */
@@ -294,4 +508,4 @@ index 8aae924..3004025 100644
 +
     vkr_state.cbs = cbs;
     list_inithead(&vkr_state.contexts);
- 
+

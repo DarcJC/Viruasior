@@ -9,7 +9,25 @@ target_prefix="$work/android-prefix"
 [[ $(git -C "$work/crosvm" rev-parse HEAD) == c7dd8d6950912fa5e6fde7ec2d1616e0ddc090f8 ]]
 [[ $(git -C "$work/minijail" rev-parse HEAD) == 26ff82bac9c77ef25d0a913ee09ed11ccdfdab78 ]]
 [[ $(git -C "$renderer_work/virglrenderer" rev-parse HEAD) == 07a5bc398dfffdc36ad20a3476348753aa10a322 ]]
-git -C "$renderer_work/virglrenderer" apply --reverse --check "$repo/native/venus-host/0001-destroy-object-mutex-after-objects.patch"
+mutex_patch="$repo/native/venus-host/0001-destroy-object-mutex-after-objects.patch"
+if git -C "$renderer_work/virglrenderer" apply --reverse --check "$mutex_patch" 2>/dev/null; then
+    : # already applied exactly
+else
+    device_source="$renderer_work/virglrenderer/src/venus/vkr_device.c"
+    object_line=$(grep -n 'if (!list_is_empty(&dev->objects))' "$device_source" | head -1 | cut -d: -f1)
+    mutex_line=$(grep -n 'mtx_destroy(&dev->object_mutex)' "$device_source" | head -1 | cut -d: -f1)
+    [[ -n "$object_line" && -n "$mutex_line" && "$mutex_line" -gt "$object_line" ]] || {
+        echo 'object mutex must be destroyed after tracked device objects' >&2
+        exit 1
+    }
+fi
+if git -C "$renderer_work/virglrenderer" apply --reverse --check \
+        "$repo/native/venus-crosvm/android-import-memory-properties.patch" 2>/dev/null; then
+    [[ ${VENUS_CROSVM_IMPORT_FILTER:-0} == 1 && ${VENUS_CROSVM_DISPLAY:-0} == 1 ]] || {
+        echo 'Refusing an implicit import-filter runtime; select the experimental desktop build explicitly.' >&2
+        exit 1
+    }
+fi
 mkdir -p "$target_prefix/lib/pkgconfig"
 sed -e "s|@RENDERER_WORK@|$renderer_work|g" "$repo/native/venus-crosvm/virglrenderer.pc.in" > "$target_prefix/lib/pkgconfig/virglrenderer.pc"
 sed -e "s|@TARGET_PREFIX@|$target_prefix|g" -e "s|@MINIJAIL_SOURCE@|$work/minijail|g" \
@@ -41,15 +59,39 @@ fi
 # Upstream gpu_display emits only -lwayland-client, not its static libffi dependency.
 # Supply the real AArch64 archive at the final binary link, without rebuilding all crates.
 compiler_rt=$("$CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER" --print-libgcc-file-name)
+if [[ ${VENUS_CROSVM_DISPLAY:-0} == 1 ]]; then
+    log_patch="$repo/native/venus-crosvm/android-renderer-logging.patch"
+    git -C "$renderer_work/virglrenderer" apply --reverse --check "$log_patch" 2>/dev/null || \
+        git -C "$renderer_work/virglrenderer" apply "$log_patch"
+    ninja -C "$renderer_work/build-android"
+fi
 renderer_archive_sha=$(sha256sum "$renderer_work/build-android/src/libvirglrenderer.a" \
     "$renderer_work/build-android/src/libvirgl.a" "$renderer_work/build-android/src/mesa/libmesa.a" | cut -d ' ' -f1 | sha256sum | cut -d ' ' -f1)
 [[ -f "$compiler_rt" ]] # libffi's AArch64 closure cache flush needs the NDK builtin.
 trace_args=()
+display_args=()
+features=gpu,virgl_renderer,balloon
+link_metadata="$renderer_archive_sha"
+if [[ ${VENUS_CROSVM_DISPLAY:-0} == 1 ]]; then
+    proto_patch="$repo/native/venus-crosvm/cargo-composite-protos.patch"
+    git apply --reverse --check "$proto_patch" 2>/dev/null || git apply "$proto_patch"
+    bash "$repo/scripts/build-venus-display.sh"
+    # Cargo does not fingerprint archive contents passed through a fixed link-arg path.
+    # Include these bytes in the final crate metadata so every display edit is relinked.
+    link_metadata+="-$(sha256sum "$target_prefix/lib/libvenus_android_display.a" | cut -d ' ' -f1)"
+    # AVF wraps partition images in its small protobuf composite-disk descriptor.
+    # Without this feature the descriptor is silently treated as a tiny raw disk.
+    features+=,android_display,net,composite-disk
+    display_args=(-C "link-arg=$target_prefix/lib/libvenus_android_display.a"
+        -C 'link-arg=-lbinder_ndk' -C 'link-arg=-lnativewindow' -C 'link-arg=-llog'
+        -C "link-arg=$ndk/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_static.a"
+        -C "link-arg=$ndk/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++abi.a")
+fi
 if [[ ${VENUS_CROSVM_TLS_TRACE:-0} == 1 ]]; then
     "$CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER" -std=c11 -Wall -Wextra -Werror -fPIC \
         -c "$repo/native/venus-crosvm/venus_tls_trace.c" -o "$target_prefix/venus_tls_trace.o"
     trace_args=(-C "link-arg=$target_prefix/venus_tls_trace.o" -C 'link-arg=-Wl,--export-dynamic-symbol=pthread_key_create')
 fi
 cargo rustc --locked --release --target aarch64-linux-android --no-default-features \
-    --features gpu,virgl_renderer,balloon --bin crosvm -- -C "link-arg=$target_prefix/lib/libffi.a" \
-    -C "link-arg=$compiler_rt" -C "metadata=$renderer_archive_sha" "${trace_args[@]}"
+    --features "$features" --bin crosvm -- -C "link-arg=$target_prefix/lib/libffi.a" \
+    -C "link-arg=$compiler_rt" -C "metadata=$link_metadata" "${trace_args[@]}" "${display_args[@]}"

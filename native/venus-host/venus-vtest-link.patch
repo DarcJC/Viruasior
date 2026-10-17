@@ -1,0 +1,11 @@
+diff --git a/vtest/meson.build b/vtest/meson.build
+--- a/vtest/meson.build
++++ b/vtest/meson.build
+@@ -49,3 +49,7 @@
+ ]
+
++if host_machine.system() == 'android'
++   vtest_depends += [cc.find_library('log'), cc.find_library('dl')]
++endif
++
+ if with_tracing == 'percetto'

@@ -1,45 +1,144 @@
 diff --git a/src/rutabaga_core.rs b/src/rutabaga_core.rs
-index 6a1b979..0dbdd66 100644
+index 6a1b979..f41f9b4 100644
 --- a/src/rutabaga_core.rs
 +++ b/src/rutabaga_core.rs
-@@ -63,6 +63,9 @@ use crate::snapshot::RutabagaSnapshotWriter;
- use crate::virgl_renderer::VirglRenderer;
- use crate::RutabagaPaths;
- 
+@@ -65,0 +66,3 @@ use crate::RutabagaPaths;
 +#[path = "venus_init_policy.rs"]
 +mod venus_init_policy;
 +
- const RUTABAGA_DEFAULT_WIDTH: u32 = 1280;
- const RUTABAGA_DEFAULT_HEIGHT: u32 = 1024;
- 
-@@ -1475,6 +1478,11 @@ impl RutabagaBuilder {
-         }
- 
-         // Make sure that disabled components are not used as default.
+@@ -707,0 +711,6 @@ impl Rutabaga {
++        if self
++            .components
++            .contains_key(&RutabagaComponentType::Rutabaga2D)
++        {
++            return;
++        }
+@@ -731,0 +741,8 @@ impl Rutabaga {
++            let component_type = if self
++                .components
++                .contains_key(&RutabagaComponentType::Rutabaga2D)
++            {
++                RutabagaComponentType::Rutabaga2D
++            } else {
++                self.default_component
++            };
+@@ -734 +751 @@ impl Rutabaga {
+-                .get_mut(&self.default_component)
++                .get_mut(&component_type)
+@@ -762,0 +780,8 @@ impl Rutabaga {
++        let component_type = if self
++            .components
++            .contains_key(&RutabagaComponentType::Rutabaga2D)
++        {
++            RutabagaComponentType::Rutabaga2D
++        } else {
++            self.default_component
++        };
+@@ -765 +790 @@ impl Rutabaga {
+-            .get_mut(&self.default_component)
++            .get_mut(&component_type)
+@@ -810,5 +835,6 @@ impl Rutabaga {
+-        let component = self
+-            .components
+-            .get_mut(&self.default_component)
+-            .ok_or(RutabagaError::InvalidComponent)?;
+-
++        let component_type = calculate_component(
++            self.resources
++                .get(&resource_id)
++                .ok_or(RutabagaError::InvalidResourceId)?
++                .component_mask,
++        )?;
+@@ -818,0 +845,4 @@ impl Rutabaga {
++        let component = self
++            .components
++            .get_mut(&component_type)
++            .ok_or(RutabagaError::InvalidComponent)?;
+@@ -827,5 +857,6 @@ impl Rutabaga {
+-        let component = self
+-            .components
+-            .get_mut(&self.default_component)
+-            .ok_or(RutabagaError::InvalidComponent)?;
+-
++        let component_type = calculate_component(
++            self.resources
++                .get(&resource_id)
++                .ok_or(RutabagaError::InvalidResourceId)?
++                .component_mask,
++        )?;
+@@ -835,0 +867,4 @@ impl Rutabaga {
++        let component = self
++            .components
++            .get_mut(&component_type)
++            .ok_or(RutabagaError::InvalidComponent)?;
+@@ -843,0 +879,5 @@ impl Rutabaga {
++        let resource = self
++            .resources
++            .remove(&resource_id)
++            .ok_or(RutabagaError::InvalidResourceId)?;
++        let component_type = calculate_component(resource.component_mask)?;
+@@ -846 +886 @@ impl Rutabaga {
+-            .get_mut(&self.default_component)
++            .get_mut(&component_type)
+@@ -849,4 +888,0 @@ impl Rutabaga {
+-        self.resources
+-            .remove(&resource_id)
+-            .ok_or(RutabagaError::InvalidResourceId)?;
+-
+@@ -865,0 +902,6 @@ impl Rutabaga {
++        let component_type = calculate_component(
++            self.resources
++                .get(&resource_id)
++                .ok_or(RutabagaError::InvalidResourceId)?
++                .component_mask,
++        )?;
+@@ -868 +910 @@ impl Rutabaga {
+-            .get(&self.default_component)
++            .get(&component_type)
+@@ -889,0 +932,6 @@ impl Rutabaga {
++        let component_type = calculate_component(
++            self.resources
++                .get(&resource_id)
++                .ok_or(RutabagaError::InvalidResourceId)?
++                .component_mask,
++        )?;
+@@ -892 +940 @@ impl Rutabaga {
+-            .get(&self.default_component)
++            .get(&component_type)
+@@ -903,0 +952,6 @@ impl Rutabaga {
++        let component_type = calculate_component(
++            self.resources
++                .get(&resource_id)
++                .ok_or(RutabagaError::InvalidResourceId)?
++                .component_mask,
++        )?;
+@@ -906 +960 @@ impl Rutabaga {
+-            .get(&self.default_component)
++            .get(&component_type)
+@@ -1477,0 +1532,5 @@ impl RutabagaBuilder {
 +        // This product links only the embedded thread server (no exec/fork mode).
 +        #[cfg(target_os = "android")]
 +        if self.capset_mask == (1 << RUTABAGA_CAPSET_VENUS) && self.server_descriptor.is_none() {
 +            self.virglrenderer_flags = self.virglrenderer_flags.use_render_server(true);
 +        }
-         #[cfg(not(feature = "virgl_renderer"))]
-         if self.default_component == RutabagaComponentType::VirglRenderer {
-             return Err(RutabagaError::InvalidRutabagaBuild);
-@@ -1487,12 +1495,16 @@ impl RutabagaBuilder {
-         if self.default_component != RutabagaComponentType::Rutabaga2D {
-             #[cfg(feature = "virgl_renderer")]
-             if self.default_component == RutabagaComponentType::VirglRenderer {
+@@ -1490 +1549 @@ impl RutabagaBuilder {
 -                if let Ok(virgl) = VirglRenderer::init(
 +                if let Some(virgl) = venus_init_policy::initialization(capset_enabled(RUTABAGA_CAPSET_VENUS), VirglRenderer::init(
-                     self.virglrenderer_flags,
-                     self.fence_handler.clone(),
-                     self.server_descriptor,
-                     self.paths.clone(),
+@@ -1495 +1554,5 @@ impl RutabagaBuilder {
 -                ) {
 +                ))? {
 +                    if capset_enabled(RUTABAGA_CAPSET_VENUS) && virgl.get_capset_info(RUTABAGA_CAPSET_VENUS).1 == 0 {
 +                        return Err(RutabagaError::InvalidRutabagaBuild);
 +                    }
 +                    log::info!("VIRUAISOR_VENUS_RENDERER_READY capset4_size={}", virgl.get_capset_info(RUTABAGA_CAPSET_VENUS).1);
-                     rutabaga_components.insert(RutabagaComponentType::VirglRenderer, virgl);
- 
-                     push_capset(RUTABAGA_CAPSET_VIRGL);
+@@ -1535,0 +1599,10 @@ impl RutabagaBuilder {
++        #[cfg(target_os = "android")]
++        if self.capset_mask == (1 << RUTABAGA_CAPSET_VENUS) {
++            let rutabaga_2d = Rutabaga2D::init(self.fence_handler.clone())?;
++            rutabaga_components.insert(RutabagaComponentType::Rutabaga2D, rutabaga_2d);
++            log::info!("VIRUAISOR_VENUS_2D_SCANOUT_READY");
++        } else if self.default_component == RutabagaComponentType::Rutabaga2D {
++            let rutabaga_2d = Rutabaga2D::init(self.fence_handler.clone())?;
++            rutabaga_components.insert(RutabagaComponentType::Rutabaga2D, rutabaga_2d);
++        }
++        #[cfg(not(target_os = "android"))]

@@ -1,0 +1,245 @@
+diff --git a/src/gallium/drivers/zink/zink_resource.c b/src/gallium/drivers/zink/zink_resource.c
+old mode 100644
+new mode 100755
+index 0e29737..7d77677
+--- a/src/gallium/drivers/zink/zink_resource.c
++++ b/src/gallium/drivers/zink/zink_resource.c
+@@ -937,10 +937,24 @@ allocate_bo(struct zink_screen *screen, const struct pipe_resource *templ,
+             VkMemoryRequirements *reqs, struct zink_resource_object *obj,
+             struct mem_alloc_info *alloc_info)
+ {
++   VkDeviceSize allocation_size = reqs->size;
++   const bool viruaisor_dmabuf_export =
++      !alloc_info->whandle &&
++      !screen->info.have_EXT_image_drm_format_modifier &&
++      screen->info.driver_props.driverID == VK_DRIVER_ID_MESA_VENUS &&
++      screen->info.props.vendorID == 0x13b5 &&
++      (alloc_info->export_types & VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT);
++   if (viruaisor_dmabuf_export) {
++      allocation_size = align64(reqs->size, 64 * 1024);
++      mesa_logi("VIRUAISOR_ZINK_DMABUF_ALLOCATION required=%llu padded=%llu bind=%x",
++                (unsigned long long)reqs->size,
++                (unsigned long long)allocation_size, templ->bind);
++   }
++
+    VkMemoryAllocateInfo mai;
+    mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    mai.pNext = NULL;
+-   mai.allocationSize = reqs->size;
++   mai.allocationSize = allocation_size;
+    enum zink_heap heap = zink_heap_from_domain_flags(alloc_info->flags, alloc_info->aflags);
+    if (templ->flags & PIPE_RESOURCE_FLAG_MAP_COHERENT) {
+       if (!(vk_domain_from_heap(heap) & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))
+@@ -1055,7 +1069,7 @@ allocate_bo(struct zink_screen *screen, const struct pipe_resource *templ,
+             continue;
+
+          mai.memoryTypeIndex = screen->heap_map[heap][i];
+-         obj->bo = zink_bo(zink_bo_create(screen, reqs->size, alignment, heap, mai.pNext ? ZINK_ALLOC_NO_SUBALLOC : 0, mai.memoryTypeIndex, mai.pNext));
++         obj->bo = zink_bo(zink_bo_create(screen, allocation_size, alignment, heap, mai.pNext ? ZINK_ALLOC_NO_SUBALLOC : 0, mai.memoryTypeIndex, mai.pNext));
+       }
+
+       if (obj->bo || heap != ZINK_HEAP_DEVICE_LOCAL_VISIBLE)
+@@ -1289,6 +1303,37 @@ create_image(struct zink_screen *screen, struct zink_resource_object *obj,
+    }
+    init_ici(screen, &ici, templ, templ->bind, ici_modifier_count);
+
++   /* The app-private Android Venus renderer allocates scanout backing from an
++    * AHardwareBuffer DMA-BUF. Without DRM modifier support, an optimal image
++    * with the generic OPAQUE_FD handle is not interoperable with that backing.
++    * Keep the scanout on the well-defined linear DMA-BUF path instead.
++    */
++   const bool viruaisor_scanout_dmabuf =
++      !alloc_info->whandle &&
++      !screen->info.have_EXT_image_drm_format_modifier &&
++      screen->info.driver_props.driverID == VK_DRIVER_ID_MESA_VENUS &&
++      screen->info.props.vendorID == 0x13b5 &&
++      (templ->bind & (PIPE_BIND_SHARED | PIPE_BIND_SCANOUT)) ==
++         (PIPE_BIND_SHARED | PIPE_BIND_SCANOUT);
++   const bool viruaisor_import_dmabuf =
++      alloc_info->whandle &&
++      alloc_info->whandle->modifier == DRM_FORMAT_MOD_INVALID &&
++      !screen->info.have_EXT_image_drm_format_modifier &&
++      screen->info.driver_props.driverID == VK_DRIVER_ID_MESA_VENUS &&
++      screen->info.props.vendorID == 0x13b5 &&
++      (templ->bind & ZINK_BIND_DMABUF);
++   if (viruaisor_scanout_dmabuf) {
++      ici.tiling = VK_IMAGE_TILING_LINEAR;
++   } else if (viruaisor_import_dmabuf) {
++      /* DMA-BUF dedicated imports must use image creation parameters that are
++       * compatible with the exporting shared image. Zink marks the exporter
++       * mutable, so preserve that flag on the matching linear import image.
++       */
++      ici.tiling = VK_IMAGE_TILING_LINEAR;
++      ici.flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
++      mesa_logi("VIRUAISOR_ZINK_LINEAR_IMPORT_COMPATIBLE_FLAGS flags=%x", ici.flags);
++   }
++
+    bool success = false;
+    uint64_t mod = eval_ici(screen, &ici, templ, templ->bind, ici_modifier_count, ici_modifiers, &success);
+    if (ici.format == VK_FORMAT_A8_UNORM_KHR && !success) {
+@@ -1318,12 +1363,24 @@ create_image(struct zink_screen *screen, struct zink_resource_object *obj,
+
+    obj->render_target = (ici.usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) != 0;
+
++   if (viruaisor_scanout_dmabuf) {
++      alloc_info->external = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
++      alloc_info->export_types = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
++      mesa_logi("VIRUAISOR_ZINK_LINEAR_SCANOUT_EXPORT bind=%x", templ->bind);
++   }
++
+    if (ici.tiling == VK_IMAGE_TILING_OPTIMAL) {
+       alloc_info->external &= ~VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
+       alloc_info->export_types &= ~VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
+    }
+
+-   if (alloc_info->shared || alloc_info->external) {
++   /* Mali rejects a linear scanout image when the DMA-BUF handle type is
++    * advertised at image creation time. Keep the allocation exportable, but
++    * create the image without VkExternalMemoryImageCreateInfo. Venus supports
++    * binding exportable memory to such an image (see vkr_image.c).
++    */
++   if ((alloc_info->shared || alloc_info->external) &&
++       !viruaisor_scanout_dmabuf && !viruaisor_import_dmabuf) {
+       emici.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO;
+       emici.pNext = ici.pNext;
+       emici.handleTypes = alloc_info->export_types;
+@@ -1367,6 +1424,29 @@ create_image(struct zink_screen *screen, struct zink_resource_object *obj,
+       ici.pNext = &emici;
+    }
+
++   if (viruaisor_scanout_dmabuf)
++      mesa_logi("VIRUAISOR_ZINK_LINEAR_SCANOUT_ALLOCATION_ONLY");
++   else if (viruaisor_import_dmabuf)
++      mesa_logi("VIRUAISOR_ZINK_LINEAR_IMPORT_ALLOCATION_ONLY");
++
++   const bool viruaisor_trace_image =
++      !screen->info.have_EXT_image_drm_format_modifier &&
++      screen->info.driver_props.driverID == VK_DRIVER_ID_MESA_VENUS &&
++      screen->info.props.vendorID == 0x13b5 &&
++      (alloc_info->whandle || alloc_info->external || alloc_info->shared ||
++       modifiers_count || (templ->bind & (PIPE_BIND_SHARED | PIPE_BIND_SCANOUT | ZINK_BIND_DMABUF)));
++   if (viruaisor_trace_image) {
++      mesa_logi("VIRUAISOR_ZINK_IMAGE_CREATE tiling=%u modifiers=%d mod=%llx "
++                "whandle=%u whmod=%llx stride=%u bind=%x external=%x export=%x "
++                "shared=%u flags=%x usage=%x",
++                ici.tiling, modifiers_count, (unsigned long long)mod,
++                alloc_info->whandle != NULL,
++                (unsigned long long)(alloc_info->whandle ? alloc_info->whandle->modifier : DRM_FORMAT_MOD_INVALID),
++                alloc_info->whandle ? alloc_info->whandle->stride : 0,
++                templ->bind, alloc_info->external, alloc_info->export_types,
++                alloc_info->shared, ici.flags, ici.usage);
++   }
++
+    if (linear)
+       *linear = ici.tiling == VK_IMAGE_TILING_LINEAR;
+
+@@ -2006,27 +2086,40 @@ zink_resource_from_handle(struct pipe_screen *pscreen,
+                  unsigned usage)
+ {
+ #ifdef ZINK_USE_DMABUF
++   struct zink_screen *screen = zink_screen(pscreen);
+    if (whandle->modifier != DRM_FORMAT_MOD_INVALID &&
+-       !zink_screen(pscreen)->info.have_EXT_image_drm_format_modifier)
++       !screen->info.have_EXT_image_drm_format_modifier)
+       return NULL;
+
++   const bool viruaisor_linear_dmabuf =
++      whandle->modifier == DRM_FORMAT_MOD_INVALID &&
++      !screen->info.have_EXT_image_drm_format_modifier &&
++      screen->info.driver_props.driverID == VK_DRIVER_ID_MESA_VENUS &&
++      screen->info.props.vendorID == 0x13b5;
++
+    struct pipe_resource templ2 = *templ;
+    if (templ->format == PIPE_FORMAT_NONE)
+       templ2.format = whandle->format;
+
+    uint64_t modifier = DRM_FORMAT_MOD_LINEAR;
+-   int modifier_count = 1;
++   int modifier_count = viruaisor_linear_dmabuf ? 0 : 1;
+    if (whandle->modifier != DRM_FORMAT_MOD_INVALID)
+       modifier = whandle->modifier;
+    else {
+-      if (!zink_screen(pscreen)->driver_workarounds.can_do_invalid_linear_modifier) {
++      if (!screen->driver_workarounds.can_do_invalid_linear_modifier &&
++          !viruaisor_linear_dmabuf) {
+          mesa_loge("zink: display server doesn't support DRI3 modifiers and driver can't handle INVALID<->LINEAR!");
+          return NULL;
+       }
+-      whandle->modifier = modifier;
++      if (viruaisor_linear_dmabuf)
++         mesa_logi("VIRUAISOR_ZINK_LINEAR_DMABUF_IMPORT stride=%u", whandle->stride);
++      else
++         whandle->modifier = modifier;
+    }
+    templ2.bind |= ZINK_BIND_DMABUF;
+-   struct pipe_resource *pres = resource_create(pscreen, &templ2, whandle, usage, &modifier, modifier_count, NULL, NULL);
++   struct pipe_resource *pres = resource_create(pscreen, &templ2, whandle, usage,
++                                                modifier_count ? &modifier : NULL,
++                                                modifier_count, NULL, NULL);
+    if (pres) {
+       struct zink_resource *res = zink_resource(pres);
+       if (pres->target != PIPE_BUFFER)
+diff --git a/src/gallium/drivers/zink/zink_screen.c b/src/gallium/drivers/zink/zink_screen.c
+old mode 100644
+new mode 100755
+index bc0cc58..a3bb4fd
+--- a/src/gallium/drivers/zink/zink_screen.c
++++ b/src/gallium/drivers/zink/zink_screen.c
+@@ -764,6 +764,41 @@ zink_init_screen_caps(struct zink_screen *screen)
+
+    u_init_pipe_screen_caps(&screen->base, screen->is_cpu ? 0 : 1);
+
++   /* The private Android Venus transport can import only a subset of native
++    * memory types. A coherent heap elsewhere in the device does not imply
++    * that an upload buffer can use it. Let Gallium uploaders flush explicitly
++    * when the actual buffer requirements contain no coherent visible type.
++    */
++   if (screen->info.driver_props.driverID == VK_DRIVER_ID_MESA_VENUS &&
++       screen->info.props.vendorID == 0x13b5) {
++      VkBufferCreateInfo info = {
++         .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
++         .size = 65536,
++         .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
++                  VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT |
++                  VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
++                  VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
++                  VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
++         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
++      };
++      VkBuffer buffer = VK_NULL_HANDLE;
++      VkMemoryRequirements requirements = {0};
++      caps->buffer_map_persistent_coherent = false;
++      if (VKSCR(CreateBuffer)(screen->dev, &info, NULL, &buffer) == VK_SUCCESS) {
++         VKSCR(GetBufferMemoryRequirements)(screen->dev, buffer, &requirements);
++         VKSCR(DestroyBuffer)(screen->dev, buffer, NULL);
++         const VkMemoryPropertyFlags required = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
++                                                VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
++         for (unsigned i = 0; i < screen->info.mem_props.memoryTypeCount; i++) {
++            if ((requirements.memoryTypeBits & BITFIELD_BIT(i)) &&
++                (screen->info.mem_props.memoryTypes[i].propertyFlags & required) == required)
++               caps->buffer_map_persistent_coherent = true;
++         }
++      }
++      mesa_logi("VIRUAISOR_ZINK_BUFFER_COHERENCE types=%x persistent_coherent=%u",
++                requirements.memoryTypeBits, caps->buffer_map_persistent_coherent);
++   }
++
+    caps->null_textures = screen->info.rb_image_feats.robustImageAccess;
+    /* support OVR_multiview and OVR_multiview2 */
+    caps->multiview = screen->info.have_vulkan13 ? 2 * screen->info.feats11.multiview : 0;
+@@ -3394,6 +3429,15 @@ zink_internal_create_screen(const struct pipe_screen_config *config, int64_t dev
+       goto fail;
+    }
+
++   /* The Venus host currently rejects the explicit plane layouts generated
++    * for the DRM modifier image path. Keep Vulkan/Zink rendering enabled and
++    * use the supported linear/optimal image paths for guest scanout instead.
++    */
++   if (debug_get_bool_option("VIRUAISOR_ZINK_DISABLE_DRM_MODIFIERS", false)) {
++      screen->info.have_EXT_image_drm_format_modifier = false;
++      mesa_logi("VIRUAISOR_ZINK_DRM_MODIFIERS=disabled");
++   }
++
+    if (zink_set_driver_strings(screen)) {
+       mesa_loge("ZINK: failed to set driver strings\n");
+       goto fail;

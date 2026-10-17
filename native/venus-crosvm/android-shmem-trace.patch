@@ -1,0 +1,132 @@
+diff --git a/src/venus/vkr_context.c b/src/venus/vkr_context.c
+index 4cc0172..660c04e 100644
+--- a/src/venus/vkr_context.c
++++ b/src/venus/vkr_context.c
+@@ -5,6 +5,7 @@
+
+ #include "vkr_context.h"
+
++#include <errno.h>
+ #include <sys/mman.h>
+ #include <sys/types.h>
+ #include <unistd.h>
+@@ -293,6 +294,13 @@ vkr_context_create_resource_from_shm(struct vkr_context *ctx,
+    int fd = os_create_anonymous_file(alloc_size, "vkr-shmem");
+    if (fd < 0)
+       return false;
++   char fd_path[64], fd_target[256];
++   snprintf(fd_path, sizeof(fd_path), "/proc/self/fd/%d", fd);
++   ssize_t fd_length = readlink(fd_path, fd_target, sizeof(fd_target) - 1);
++   if (fd_length < 0) fd_length = 0;
++   fd_target[fd_length] = 0;
++   vkr_log("VIRUAISOR_SHMEM_CREATED res=%u fd=%d size=%llu name=%s",
++           res_id, fd, (unsigned long long)alloc_size, fd_target);
+
+    void *mmap_ptr = mmap(NULL, alloc_size, PROT_WRITE | PROT_READ, MAP_SHARED, fd, 0);
+    if (mmap_ptr == MAP_FAILED) {
+@@ -326,35 +334,63 @@ vkr_context_create_resource_from_device_memory(struct vkr_context *ctx,
+ {
+    assert(!vkr_context_get_resource(ctx, res_id));
+
+-   struct vkr_device_memory *mem = vkr_context_get_object(ctx, blob_id);
+-   if (!mem || mem->base.type != VK_OBJECT_TYPE_DEVICE_MEMORY)
++   /* Resource creation runs on the server thread while vkFreeMemory can run on
++    * a ring thread. Keep the object table lock until independent fd copies
++    * have been made so vkFreeMemory cannot release the backing allocation.
++    */
++   mtx_lock(&ctx->object_mutex);
++   const struct hash_entry *entry = _mesa_hash_table_search(ctx->object_table, &blob_id);
++   struct vkr_device_memory *mem = likely(entry) ? entry->data : NULL;
++   if (!mem || mem->base.type != VK_OBJECT_TYPE_DEVICE_MEMORY) {
++      mtx_unlock(&ctx->object_mutex);
++      vkr_log("VIRUAISOR_BLOB_EXPORT_REJECT res=%u blob=%" PRIu64
++              " reason=memory-object", res_id, blob_id);
+       return false;
++   }
+
+    struct virgl_context_blob blob;
+-   if (!vkr_device_memory_export_blob(mem, blob_size, blob_flags, &blob))
++   if (!vkr_device_memory_export_blob(mem, blob_size, blob_flags, &blob)) {
++      mtx_unlock(&ctx->object_mutex);
++      vkr_log("VIRUAISOR_BLOB_EXPORT_REJECT res=%u blob=%" PRIu64
++              " reason=device-memory", res_id, blob_id);
+       return false;
++   }
+
+    /* If memory might get exported, store a dup'ed fd in vkr_resource for:
+     * - vkAllocateMemory for dma_buf import
+     * - vkGetMemoryFdPropertiesKHR for dma_buf fd properties query
+     */
++   const bool might_export = mem->might_export;
+    int res_fd = -1;
+-   if (mem->might_export) {
++   if (might_export) {
+       res_fd = os_dupfd_cloexec(blob.u.fd);
+       if (res_fd < 0) {
++         const int dup_errno = errno;
++         mtx_unlock(&ctx->object_mutex);
++         vkr_log("VIRUAISOR_BLOB_EXPORT_REJECT res=%u blob=%" PRIu64
++                 " reason=dup fd=%d errno=%d", res_id, blob_id,
++                 blob.u.fd, dup_errno);
+          close(blob.u.fd);
+          return false;
+       }
+    }
++   mtx_unlock(&ctx->object_mutex);
+
+    if (!vkr_context_import_resource_internal(ctx, res_id, blob_size, blob.type, res_fd,
+                                              NULL)) {
++      vkr_log("VIRUAISOR_BLOB_EXPORT_REJECT res=%u blob=%" PRIu64
++              " reason=resource-table fd=%d retained=%d", res_id, blob_id,
++              blob.u.fd, res_fd);
+       if (res_fd >= 0)
+          close(res_fd);
+       close(blob.u.fd);
+       return false;
+    }
+
++   vkr_log("VIRUAISOR_BLOB_EXPORT_READY res=%u blob=%" PRIu64
++           " size=%" PRIu64 " type=%u fd=%d retained=%d might_export=%u",
++           res_id, blob_id, blob_size, blob.type, blob.u.fd, res_fd,
++           might_export);
+    *out_blob = blob;
+
+    return true;
+diff --git a/src/venus/vkr_device_memory.c b/src/venus/vkr_device_memory.c
+index 3ae16da..dc68a5a 100644
+--- a/src/venus/vkr_device_memory.c
++++ b/src/venus/vkr_device_memory.c
+@@ -680,12 +680,32 @@ vkr_dispatch_vkFreeMemory(struct vn_dispatch_context *dispatch,
+                           struct vn_command_vkFreeMemory *args)
+ {
+    TRACE_FUNC();
++   struct vkr_context *ctx = dispatch->data;
+    struct vkr_device_memory *mem = vkr_device_memory_from_handle(args->memory);
+    if (!mem)
+       return;
+
++   /* Detach under the same lock used by server-side blob export. Once the
++    * entry is gone no new export can observe mem, and any export already in
++    * progress has finished duplicating its fds before this lock is acquired.
++    */
++   mtx_lock(&ctx->object_mutex);
++   struct hash_entry *entry = _mesa_hash_table_search(ctx->object_table, &mem->base.id);
++   if (!entry || entry->data != mem) {
++      mtx_unlock(&ctx->object_mutex);
++      return;
++   }
++   _mesa_hash_table_remove(ctx->object_table, entry);
++   mtx_unlock(&ctx->object_mutex);
++
++   struct vkr_device *dev = vkr_device_from_handle(args->device);
+    vkr_device_memory_release(mem);
+-   vkr_device_memory_destroy_and_remove(dispatch->data, args);
++   vkr_device_memory_destroy_driver_handle(ctx, args);
++
++   mtx_lock(&dev->object_mutex);
++   list_del(&mem->base.track_head);
++   mtx_unlock(&dev->object_mutex);
++   free(mem);
+ }
+
+ static void

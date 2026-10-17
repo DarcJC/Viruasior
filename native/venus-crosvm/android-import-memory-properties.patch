@@ -1,0 +1,23 @@
+diff --git a/src/venus/vkr_physical_device.c b/src/venus/vkr_physical_device.c
+--- a/src/venus/vkr_physical_device.c
++++ b/src/venus/vkr_physical_device.c
+@@ -9,7 +9,10 @@
+
+ #include "vkr_context.h"
+ #include "vkr_device.h"
+ #include "vkr_instance.h"
++#ifdef __ANDROID__
++#include "venus_android_memory_properties.h"
++#endif
+
+ #ifdef HAVE_LINUX_UDMABUF_H
+ #include <fcntl.h>
+@@ -172,5 +175,8 @@
+
+    VkPhysicalDevice handle = physical_dev->base.handle.physical_device;
+    vk->GetPhysicalDeviceMemoryProperties(handle, &physical_dev->memory_properties);
++#ifdef __ANDROID__
++   vkr_android_limit_memory_properties(physical_dev);
++#endif
+
+    if (!VKR_DEBUG(NO_MEM_TYPE_SPOOF)) {

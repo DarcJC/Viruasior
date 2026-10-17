@@ -1,0 +1,291 @@
+diff --git a/gpu_display/src/gpu_display_android.rs b/gpu_display/src/gpu_display_android.rs
+index d7f8172..01d927b 100644
+--- a/gpu_display/src/gpu_display_android.rs
++++ b/gpu_display/src/gpu_display_android.rs
+@@ -18,9 +18,11 @@ use std::sync::RwLock;
+
+ use anyhow::bail;
+ use base::error;
++use base::info;
+ use base::AsRawDescriptor;
+ use base::Event;
+ use base::RawDescriptor;
++use base::SafeDescriptor;
+ use base::VolatileSlice;
+ use rutabaga_gfx::AhbInfo;
+ use sync::Waitable;
+@@ -127,6 +129,12 @@ extern "C" {
+         _surface: *mut AndroidDisplaySurface,
+         ahb_info: *const AHardwareBufferInfo,
+     );
++
++    fn android_display_flip_to_dmabuf(
++        ctx: *mut AndroidDisplayContext,
++        surface: *mut AndroidDisplaySurface,
++        info: *const DmabufFrameInfo,
++    ) -> i32;
+ }
+
+ unsafe extern "C" fn error_callback(message: *const c_char) {
+@@ -185,13 +193,35 @@ pub struct AHardwareBufferInfo {
+     pub metadata_ptr: *const u8,
+ }
+
++#[repr(C)]
++pub struct DmabufFrameInfo {
++    pub fd: i32,
++    pub offset: u32,
++    pub stride: u32,
++    pub width: u32,
++    pub height: u32,
++    pub fourcc: u32,
++}
++
++enum AndroidDisplayImport {
++    AHardwareBuffer(AhbInfo),
++    Dmabuf {
++        descriptor: SafeDescriptor,
++        offset: u32,
++        stride: u32,
++        width: u32,
++        height: u32,
++        fourcc: u32,
++    },
++}
++
+ // The key is an import id.
+-type AHardwareBufferImportMap = HashMap<u32, AhbInfo>;
++type AndroidDisplayImportMap = HashMap<u32, AndroidDisplayImport>;
+
+ struct AndroidSurface {
+     context: Rc<AndroidDisplayContextWrapper>,
+     surface: NonNull<AndroidDisplaySurface>,
+-    ahb_import_map: Arc<RwLock<AHardwareBufferImportMap>>,
++    import_map: Arc<RwLock<AndroidDisplayImportMap>>,
+ }
+
+ impl GpuDisplaySurface for AndroidSurface {
+@@ -231,28 +261,67 @@ impl GpuDisplaySurface for AndroidSurface {
+         _extra_info: Option<FlipToExtraInfo>,
+     ) -> anyhow::Result<Waitable> {
+         {
+-            let ahb_import_map = self.ahb_import_map.read().expect("failed to get a lock");
+-            let ahb = ahb_import_map
++            let import_map = self.import_map.read().expect("failed to get a lock");
++            let imported = import_map
+                 .get(&import_id)
+                 .ok_or(GpuDisplayError::InvalidImportId)?;
+-            let fds: Vec<i32> = ahb.fds.iter().map(|fd| fd.as_fd().as_raw_fd()).collect();
+-
+-            let info = AHardwareBufferInfo {
+-                num_fds: fds.len(),
+-                fds_ptr: fds.as_ptr(),
+-                metadata_len: ahb.metadata.len(),
+-                metadata_ptr: ahb.metadata.as_ptr(),
+-            };
+-            // SAFETY:
+-            // Safe because the `AHardwareBufferInfo` outlives the call, and
+-            // `android_display_flip_to` does not retain the pointer.
+-            unsafe {
+-                android_display_flip_to(
+-                    self.context.0.as_ptr(),
+-                    self.surface.as_ptr(),
+-                    &info as *const AHardwareBufferInfo,
+-                )
+-            };
++            match imported {
++                AndroidDisplayImport::AHardwareBuffer(ahb) => {
++                    let fds: Vec<i32> = ahb.fds.iter().map(|fd| fd.as_fd().as_raw_fd()).collect();
++                    let info = AHardwareBufferInfo {
++                        num_fds: fds.len(),
++                        fds_ptr: fds.as_ptr(),
++                        metadata_len: ahb.metadata.len(),
++                        metadata_ptr: ahb.metadata.as_ptr(),
++                    };
++                    // SAFETY: the borrowed import metadata outlives the call.
++                    unsafe {
++                        android_display_flip_to(
++                            self.context.0.as_ptr(),
++                            self.surface.as_ptr(),
++                            &info as *const AHardwareBufferInfo,
++                        )
++                    };
++                }
++                AndroidDisplayImport::Dmabuf {
++                    descriptor,
++                    offset,
++                    stride,
++                    width,
++                    height,
++                    fourcc,
++                } => {
++                    info!(
++                        "VIRUAISOR_DISPLAY_FLIP import_id={} fd={} offset={} stride={} width={} height={} fourcc={:#x}",
++                        import_id,
++                        descriptor.as_raw_descriptor(),
++                        offset,
++                        stride,
++                        width,
++                        height,
++                        fourcc
++                    );
++                    let info = DmabufFrameInfo {
++                        fd: descriptor.as_raw_descriptor(),
++                        offset: *offset,
++                        stride: *stride,
++                        width: *width,
++                        height: *height,
++                        fourcc: *fourcc,
++                    };
++                    // SAFETY: the descriptor and metadata outlive the call.
++                    let success = unsafe {
++                        android_display_flip_to_dmabuf(
++                            self.context.0.as_ptr(),
++                            self.surface.as_ptr(),
++                            &info as *const DmabufFrameInfo,
++                        )
++                    };
++                    if success == 0 {
++                        bail!("Android DMA-BUF scanout failed");
++                    }
++                }
++            }
+         }
+         Ok(Waitable::signaled())
+     }
+@@ -263,7 +332,7 @@ pub struct DisplayAndroid {
+     /// This event is never triggered and is used solely to fulfill AsRawDescriptor.
+     event: Event,
+     // The key is a surface id.
+-    surface_ahbs_map: HashMap<u32, Arc<RwLock<AHardwareBufferImportMap>>>,
++    surface_imports_map: HashMap<u32, Arc<RwLock<AndroidDisplayImportMap>>>,
+ }
+
+ impl DisplayAndroid {
+@@ -279,7 +348,7 @@ impl DisplayAndroid {
+         Ok(DisplayAndroid {
+             context: context.into(),
+             event,
+-            surface_ahbs_map: HashMap::new(),
++            surface_imports_map: HashMap::new(),
+         })
+     }
+ }
+@@ -304,17 +373,17 @@ impl DisplayT for DisplayAndroid {
+             )
+         })
+         .ok_or(GpuDisplayError::CreateSurface)?;
+-        let ahb_import_map = self.surface_ahbs_map.entry(surface_id).or_default();
++        let import_map = self.surface_imports_map.entry(surface_id).or_default();
+
+         Ok(Box::new(AndroidSurface {
+             context: self.context.clone(),
+             surface,
+-            ahb_import_map: Arc::clone(ahb_import_map),
++            import_map: Arc::clone(import_map),
+         }))
+     }
+
+     fn release_surface(&mut self, surface_id: u32) {
+-        self.surface_ahbs_map.remove(&surface_id);
++        self.surface_imports_map.remove(&surface_id);
+     }
+
+     fn import_resource(
+@@ -323,31 +392,62 @@ impl DisplayT for DisplayAndroid {
+         surface_id: u32,
+         external_display_resource: DisplayExternalResourceImport,
+     ) -> anyhow::Result<()> {
+-        let DisplayExternalResourceImport::AHardwareBuffer { info } = external_display_resource
+-        else {
+-            bail!("gpu_display_android only supports AHardwareBufferInfo imports");
++        let imported = match external_display_resource {
++            DisplayExternalResourceImport::AHardwareBuffer { info } => {
++                AndroidDisplayImport::AHardwareBuffer(info)
++            }
++            DisplayExternalResourceImport::Dmabuf {
++                descriptor,
++                offset,
++                stride,
++                width,
++                height,
++                fourcc,
++                ..
++            } => {
++                info!(
++                    "VIRUAISOR_DISPLAY_IMPORT import_id={} surface_id={} fd={} offset={} stride={} width={} height={} fourcc={:#x}",
++                    import_id,
++                    surface_id,
++                    descriptor.as_raw_descriptor(),
++                    offset,
++                    stride,
++                    width,
++                    height,
++                    fourcc
++                );
++                AndroidDisplayImport::Dmabuf {
++                    descriptor: SafeDescriptor::try_from(descriptor)?,
++                    offset,
++                    stride,
++                    width,
++                    height,
++                    fourcc,
++                }
++            }
++            _ => bail!("gpu_display_android received an unsupported import"),
+         };
+
+         {
+-            let mut ahbs = self
+-                .surface_ahbs_map
++            let mut imports = self
++                .surface_imports_map
+                 .entry(surface_id)
+                 .or_default()
+                 .write()
+                 .expect("failed to get a lock");
+-            ahbs.insert(import_id, info);
++            imports.insert(import_id, imported);
+         }
+         Ok(())
+     }
+
+     fn release_import(&mut self, surface_id: u32, import_id: u32) {
+-        let mut ahbs = self
+-            .surface_ahbs_map
++        let mut imports = self
++            .surface_imports_map
+             .entry(surface_id)
+             .or_default()
+             .write()
+             .expect("failed to get a lock");
+-        ahbs.remove(&import_id);
++        imports.remove(&import_id);
+     }
+ }
+
+diff --git a/gpu_display/src/gpu_display_android_stub.rs b/gpu_display/src/gpu_display_android_stub.rs
+index d63fa7b..4b28cc2 100644
+--- a/gpu_display/src/gpu_display_android_stub.rs
++++ b/gpu_display/src/gpu_display_android_stub.rs
+@@ -14,6 +14,7 @@ use crate::gpu_display_android::AHardwareBufferInfo;
+ use crate::gpu_display_android::ANativeWindow_Buffer;
+ use crate::gpu_display_android::AndroidDisplayContext;
+ use crate::gpu_display_android::AndroidDisplaySurface;
++use crate::gpu_display_android::DmabufFrameInfo;
+ use crate::gpu_display_android::ErrorCallback;
+
+ #[no_mangle]
+@@ -77,3 +78,12 @@ extern "C" fn android_display_flip_to(
+ ) {
+     unimplemented!();
+ }
++
++#[no_mangle]
++extern "C" fn android_display_flip_to_dmabuf(
++    _ctx: *mut AndroidDisplayContext,
++    _surface: *mut AndroidDisplaySurface,
++    _info: *const DmabufFrameInfo,
++) -> i32 {
++    unimplemented!();
++}

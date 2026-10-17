@@ -1,6 +1,12 @@
 #include "venus_gralloc_policy.h"
 #include <assert.h>
 int main(void) {
+    assert(venus_gralloc_export_backing_required_on_android(false, true));
+    assert(!venus_gralloc_export_backing_required_on_android(true, true));
+    assert(!venus_gralloc_export_backing_required_on_android(false, false));
+    assert(venus_gralloc_preferred_on_android(false, true));
+    assert(venus_gralloc_preferred_on_android(false, false));
+    assert(!venus_gralloc_preferred_on_android(true, true));
     assert(venus_gralloc_buffer_external(0x13b5, 1024, 0, 0x20, false, true));
     assert(!venus_gralloc_buffer_external(0x13b5, 1024, 0, 0x20, true, true));
     assert(!venus_gralloc_buffer_external(0x13b5, 1024, 0, 0x20, false, false));

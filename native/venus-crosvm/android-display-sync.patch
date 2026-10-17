@@ -1,0 +1,359 @@
+--- a/src/venus/vkr_renderer.c
++++ b/src/venus/vkr_renderer.c
+@@ -10,6 +10,7 @@
+ #include "venus_hw.h"
+
+ #include "vkr_context.h"
++#include "vkr_ring.h"
+ #ifdef __ANDROID__
+ #include <dlfcn.h>
+ #include <android/dlext.h>
+@@ -161,6 +162,92 @@
+    return true;
+ }
+
++struct vkr_display_ring_snapshot {
++   struct vkr_ring *ring;
++   uint32_t tail;
++};
++
++struct vkr_renderer_wait {
++   struct vkr_context *ctx;
++   uint32_t ctx_id;
++   unsigned ring_count;
++   struct vkr_display_ring_snapshot rings[];
++};
++
++struct vkr_renderer_wait *
++vkr_renderer_prepare_wait_idle(uint32_t ctx_id)
++{
++   TRACE_FUNC();
++
++   struct vkr_context *ctx = vkr_renderer_lookup_context(ctx_id);
++   if (!ctx)
++      return NULL;
++
++   unsigned ring_count = 0;
++   mtx_lock(&ctx->ring_mutex);
++   list_for_each_entry (struct vkr_ring, ring, &ctx->rings, head)
++      ring_count++;
++
++   struct vkr_renderer_wait *wait =
++      calloc(1, sizeof(*wait) + ring_count * sizeof(wait->rings[0]));
++   if (!wait) {
++      mtx_unlock(&ctx->ring_mutex);
++      return NULL;
++   }
++
++   wait->ctx = ctx;
++   wait->ctx_id = ctx_id;
++   wait->ring_count = ring_count;
++   unsigned ring_index = 0;
++   list_for_each_entry (struct vkr_ring, ring, &ctx->rings, head) {
++      wait->rings[ring_index].ring = ring;
++      wait->rings[ring_index].tail =
++         atomic_load_explicit(ring->control.tail, memory_order_acquire);
++      ring_index++;
++   }
++   mtx_unlock(&ctx->ring_mutex);
++   return wait;
++}
++
++bool
++vkr_renderer_finish_wait_idle(struct vkr_renderer_wait *wait)
++{
++   TRACE_FUNC();
++   if (!wait)
++      return false;
++
++   /* VIRUAISOR_DISPLAY_SYNC_BOUNDED_RING_DRAIN
++    * prepare runs under renderer_mutex, keeping context lookup and ring
++    * snapshot consistent.  finish runs after that mutex is released because
++    * a ring can need to submit a round-trip command before advancing its head.
++    */
++   for (unsigned i = 0; i < wait->ring_count; i++) {
++      struct vkr_ring *ring = wait->rings[i].ring;
++      const uint32_t tail = wait->rings[i].tail;
++      vkr_ring_notify(ring);
++      bool drained = false;
++      if (!vkr_context_wait_ring_seqno_timeout(wait->ctx, ring, tail,
++                                               5000000, &drained)) {
++         vkr_log("VIRUAISOR_DISPLAY_SYNC_RING_FAILED ctx=%u ring=%" PRIu64
++                 " tail=%u", wait->ctx_id, ring->id, tail);
++         free(wait);
++         return false;
++      }
++      if (!drained)
++         vkr_log("VIRUAISOR_DISPLAY_SYNC_DEFERRED ctx=%u ring=%" PRIu64
++                 " head=%u tail=%u", wait->ctx_id, ring->id,
++                 vkr_ring_load_head(ring), tail);
++   }
++
++   /* DMA_BUF_IOCTL_SYNC(START|READ) waits for the exporter's implicit fence.
++    * Do not call vkDeviceWaitIdle or block queue submission here.
++    */
++   vkr_log("VIRUAISOR_DISPLAY_SYNC_READY ctx=%u rings=%u",
++           wait->ctx_id, wait->ring_count);
++   free(wait);
++   return true;
++}
++
+ void
+ vkr_renderer_destroy_context(uint32_t ctx_id)
+ {
+--- a/src/venus/vkr_renderer.h
++++ b/src/venus/vkr_renderer.h
+@@ -41,6 +41,14 @@
+                             uint32_t nlen,
+                             const char *name);
+
++struct vkr_renderer_wait;
++
++struct vkr_renderer_wait *
++vkr_renderer_prepare_wait_idle(uint32_t ctx_id);
++
++bool
++vkr_renderer_finish_wait_idle(struct vkr_renderer_wait *wait);
++
+ void
+ vkr_renderer_destroy_context(uint32_t ctx_id);
+
+--- a/src/virgl_context.h
++++ b/src/virgl_context.h
+@@ -114,6 +114,9 @@
+                      const void *buffer,
+                      size_t size);
+
++   /* Wait until all renderer work submitted to this context is host-visible. */
++   int (*wait_idle)(struct virgl_context *ctx);
++
+    /*
+     * Return an fd that is readable whenever there is any signaled fence in
+     * any queue, or -1 if not supported.
+--- a/src/virglrenderer.c
++++ b/src/virglrenderer.c
+@@ -814,6 +814,15 @@
+    return true;
+ }
+
++int virgl_renderer_context_wait_idle(uint32_t ctx_id)
++{
++   TRACE_FUNC();
++   struct virgl_context *ctx = virgl_context_lookup(ctx_id);
++   if (!ctx || !ctx->wait_idle)
++      return -EOPNOTSUPP;
++   return ctx->wait_idle(ctx);
++}
++
+ void virgl_renderer_poll(void)
+ {
+    TRACE_FUNC();
+--- a/src/virglrenderer.h
++++ b/src/virglrenderer.h
+@@ -457,6 +457,7 @@
+                                                      uint32_t ring_idx,
+                                                      uint64_t fence_id);
+
++VIRGL_EXPORT int virgl_renderer_context_wait_idle(uint32_t ctx_id);
+ VIRGL_EXPORT void virgl_renderer_context_poll(uint32_t ctx_id); /* force fences */
+ VIRGL_EXPORT int virgl_renderer_context_get_poll_fd(uint32_t ctx_id);
+
+--- a/src/proxy/proxy_context.c
++++ b/src/proxy/proxy_context.c
+@@ -284,6 +284,26 @@
+
+    assert(!(proxy_renderer.flags & VIRGL_RENDERER_ASYNC_FENCE_CB));
+    return ctx->sync_thread.fence_eventfd;
++}
++
++static int
++proxy_context_wait_idle(struct virgl_context *base)
++{
++   struct proxy_context *ctx = (struct proxy_context *)base;
++   const struct render_context_op_wait_idle_request req = {
++      .header.op = RENDER_CONTEXT_OP_WAIT_IDLE,
++   };
++   if (!proxy_socket_send_request(&ctx->socket, &req, sizeof(req))) {
++      proxy_log("failed to request display synchronization for ctx %u", base->ctx_id);
++      return -1;
++   }
++
++   struct render_context_op_wait_idle_reply reply;
++   if (!proxy_socket_receive_reply(&ctx->socket, &reply, sizeof(reply)) || !reply.ok) {
++      proxy_log("display synchronization failed for ctx %u", base->ctx_id);
++      return -1;
++   }
++   return 0;
+ }
+
+ static int
+@@ -581,6 +601,7 @@
+    ctx->base.transfer_3d = proxy_context_transfer_3d;
+    ctx->base.get_blob = proxy_context_get_blob;
+    ctx->base.submit_cmd = proxy_context_submit_cmd;
++   ctx->base.wait_idle = proxy_context_wait_idle;
+
+    ctx->base.get_fencing_fd = proxy_context_get_fencing_fd;
+    ctx->base.retire_fences = proxy_context_retire_fences;
+--- a/server/render_protocol.h
++++ b/server/render_protocol.h
+@@ -39,6 +39,7 @@
+    RENDER_CONTEXT_OP_DESTROY_RESOURCE,
+    RENDER_CONTEXT_OP_SUBMIT_CMD,
+    RENDER_CONTEXT_OP_SUBMIT_FENCE,
++   RENDER_CONTEXT_OP_WAIT_IDLE,
+
+    RENDER_CONTEXT_OP_COUNT,
+ };
+@@ -200,6 +201,14 @@
+  *
+  * This roughly corresponds to virgl_renderer_context_create_fence.
+  */
++struct render_context_op_wait_idle_request {
++   struct render_context_op_header header;
++};
++
++struct render_context_op_wait_idle_reply {
++   bool ok;
++};
++
+ struct render_context_op_submit_fence_request {
+    struct render_context_op_header header;
+    uint32_t flags; /* VIRGL_RENDERER_FENCE_FLAG_* */
+@@ -217,6 +226,7 @@
+    struct render_context_op_destroy_resource_request destroy_resource;
+    struct render_context_op_submit_cmd_request submit_cmd;
+    struct render_context_op_submit_fence_request submit_fence;
++   struct render_context_op_wait_idle_request wait_idle;
+ };
+
+ #ifdef __APPLE__
+--- a/server/render_context.c
++++ b/server/render_context.c
+@@ -46,6 +46,18 @@
+ }
+
+ static bool
++render_context_dispatch_wait_idle(struct render_context *ctx,
++                                  UNUSED const union render_context_op_request *request,
++                                  UNUSED const int *fds,
++                                  UNUSED int fd_count)
++{
++   const struct render_context_op_wait_idle_reply reply = {
++      .ok = render_state_wait_idle(ctx->ctx_id),
++   };
++   return render_socket_send_reply(&ctx->socket, &reply, sizeof(reply));
++}
++
++static bool
+ render_context_dispatch_submit_fence(struct render_context *ctx,
+                                      const union render_context_op_request *request,
+                                      UNUSED const int *fds,
+@@ -215,6 +227,7 @@
+       RENDER_CONTEXT_DISPATCH(DESTROY_RESOURCE, destroy_resource, 0),
+       RENDER_CONTEXT_DISPATCH(SUBMIT_CMD, submit_cmd, 0),
+       RENDER_CONTEXT_DISPATCH(SUBMIT_FENCE, submit_fence, 0),
++      RENDER_CONTEXT_DISPATCH(WAIT_IDLE, wait_idle, 0),
+ #undef RENDER_CONTEXT_DISPATCH
+    };
+
+--- a/server/render_state.c
++++ b/server/render_state.c
+@@ -205,6 +205,17 @@
+ {
+    SCOPE_LOCK_RENDERER();
+    return vkr_renderer_submit_cmd(ctx_id, cmd, size);
++}
++
++bool
++render_state_wait_idle(uint32_t ctx_id)
++{
++   struct vkr_renderer_wait *wait;
++   {
++      SCOPE_LOCK_RENDERER();
++      wait = vkr_renderer_prepare_wait_idle(ctx_id);
++   }
++   return vkr_renderer_finish_wait_idle(wait);
+ }
+
+ bool
+--- a/server/render_state.h
++++ b/server/render_state.h
+@@ -27,6 +27,9 @@
+ render_state_submit_cmd(uint32_t ctx_id, void *cmd, uint32_t size);
+
+ bool
++render_state_wait_idle(uint32_t ctx_id);
++
++bool
+ render_state_submit_fence(uint32_t ctx_id,
+                           uint32_t flags,
+                           uint64_t ring_idx,
+--- a/src/venus/vkr_context.h
++++ b/src/venus/vkr_context.h
+@@ -257,7 +257,14 @@
+ vkr_context_wait_ring_seqno(struct vkr_context *ctx,
+                             struct vkr_ring *ring,
+                             uint64_t ring_seqno);
+
++bool
++vkr_context_wait_ring_seqno_timeout(struct vkr_context *ctx,
++                                    struct vkr_ring *ring,
++                                    uint64_t ring_seqno,
++                                    uint64_t timeout_ns,
++                                    bool *out_reached);
++
+ void
+ vkr_context_add_instance(struct vkr_context *ctx,
+                          struct vkr_instance *instance,
+--- a/src/venus/vkr_context.c
++++ b/src/venus/vkr_context.c
+@@ -566,6 +566,48 @@
+    return a;
+ }
+
++bool
++vkr_context_wait_ring_seqno_timeout(struct vkr_context *ctx,
++                                    struct vkr_ring *ring,
++                                    uint64_t ring_seqno,
++                                    uint64_t timeout_ns,
++                                    bool *out_reached)
++{
++   TRACE_FUNC();
++   assert(out_reached);
++
++   struct timespec abs_ts;
++   if (!timespec_get(&abs_ts, TIME_UTC))
++      return false;
++   const struct timespec timeout = {
++      .tv_sec = timeout_ns / 1000000000ull,
++      .tv_nsec = timeout_ns % 1000000000ull,
++   };
++   abs_ts = timespec_add(abs_ts, timeout);
++
++   bool ok = true;
++   mtx_lock(&ctx->wait_ring.mutex);
++   ctx->wait_ring.id = ring->id;
++   ctx->wait_ring.seqno = ring_seqno;
++   while (!vkr_context_get_fatal(ctx) &&
++          !vkr_seqno_ge(vkr_ring_load_head(ring), ring_seqno)) {
++      const int ret = cnd_timedwait(&ctx->wait_ring.cond,
++                                    &ctx->wait_ring.mutex, &abs_ts);
++      /* Mesa's POSIX C11 shim maps ETIMEDOUT to thrd_busy.  Accept both
++       * values because other C11 implementations use thrd_timeout. */
++      if (ret == thrd_timeout || ret == thrd_busy)
++         break;
++      if (ret != thrd_success) {
++         ok = false;
++         break;
++      }
++   }
++   *out_reached = vkr_seqno_ge(vkr_ring_load_head(ring), ring_seqno);
++   ctx->wait_ring.id = 0;
++   mtx_unlock(&ctx->wait_ring.mutex);
++   return ok && !vkr_context_get_fatal(ctx);
++}
++
+ static int
+ vkr_context_ring_monitor_thread(void *arg)
+ {

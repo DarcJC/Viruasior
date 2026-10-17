@@ -2,8 +2,10 @@
 set -euo pipefail
 
 ADB=${ADB:-/c/Tools/Android/platform-tools/adb.exe}
+NODE=${NODE:-node}
 TIMEOUT=${1:-180}
 [[ "$TIMEOUT" =~ ^[1-9][0-9]*$ ]] || { echo "Timeout must be a positive integer" >&2; exit 2; }
+REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 # Avoid Git Bash's conversion of remote /data and /sdcard paths to Windows paths.
 export MSYS_NO_PATHCONV=1
 OUT=".pi/device-debug/root-direct-$(date +%Y%m%d-%H%M%S)"
@@ -54,30 +56,67 @@ capture() {
 
 attached=false
 desktop=false
+gpu=false
+plasma=false
+frame=false
+synced=false
+nonblack=false
+fatal_pattern='bootstrap failed|binding timed out|attach failed|operation exceeded|status=Crashed|GPU_DRAW_READBACK_FAIL|VIRUAISOR_DISPLAY_SYNC_(RING|DEVICE)_FAILED|KWin hardware compositing did not become ready|MESA: error: ZINK: .* failed|AddScreen/ScreenInit failed|failed to bind extensions|couldn.t get display device|glamor initialization failed'
 deadline=$((SECONDS + TIMEOUT))
 while (( SECONDS < deadline )); do
-    $ADB logcat -d -T "$START" -s ViruaisorRootDisplay ViruaisorState > "$OUT/progress.txt"
-    if grep -Eq 'bootstrap failed|binding timed out|attach failed|operation exceeded|status=Crashed' "$OUT/progress.txt"; then
+    $ADB logcat -d -T "$START" -s ViruaisorRootDisplay ViruaisorState ViruaisorVenusDisplay ViruaisorVenusRenderer virtmgr > "$OUT/progress.txt"
+    if grep -Eq "$fatal_pattern" "$OUT/progress.txt"; then
         capture
         echo "FAIL: root display/VM error. Evidence: $OUT" >&2
         exit 1
     fi
     if grep -q 'Root Direct Surface attached' "$OUT/progress.txt"; then attached=true; fi
     if grep -q 'Guest agent ready; desktop requested' "$OUT/progress.txt"; then desktop=true; fi
-    if $attached && $desktop; then
+    if grep -q 'GPU_DRAW_READBACK_PASS' "$OUT/progress.txt"; then gpu=true; fi
+    if grep -q 'VIRUAISOR_PLASMA_HARDWARE_READY=true' "$OUT/progress.txt"; then
+        plasma=true
+        # This marker is emitted only after Plasma was requested and KWin's
+        # hardware compositor became ready. It is stronger evidence than the
+        # earlier app-side request log, which logcat may rotate or miss.
+        desktop=true
+    fi
+    if grep -Eq 'FRAME_POSTED count=[1-9][0-9]*' "$OUT/progress.txt"; then frame=true; fi
+    if awk '
+        /VIRUAISOR_PLASMA_HARDWARE_READY=true/ { ready=1 }
+        ready && /VIRUAISOR_DISPLAY_SYNC_READY/ && /rings=[1-9][0-9]*/ && $0 !~ /devices=/ { sync=1 }
+        ready && sync && /FRAME_SOURCE .*path=dmabuf-sync-mmap/ {
+            colored=opaque=0
+            for (i=1; i<=NF; i++) {
+                if ($i ~ /^colored=/) { split($i,a,"="); colored=a[2]+0 }
+                if ($i ~ /^opaque=/) { split($i,a,"="); opaque=a[2]+0 }
+            }
+            if (colored >= 10000 && opaque >= 500000) { found=1; exit }
+        }
+        END { exit !found }
+    ' "$OUT/progress.txt"; then
+        synced=true
+        nonblack=true
+    fi
+    if $attached && $desktop && $gpu && $plasma && $frame && $synced && $nonblack; then
         capture
         if ! cmp -s "$OUT/policy-before.txt" "$OUT/policy-after.txt"; then
             echo "FAIL: policy snapshot changed; inspect $OUT (script made no policy changes)" >&2
             exit 1
         fi
         grep -q 'Enforcing' "$OUT/policy-after.txt" || { echo "FAIL: SELinux not Enforcing" >&2; exit 1; }
-        echo "PASS: Surface attached and guest desktop requested; policy snapshot unchanged."
-        echo "NOT YET PROVEN: guest frames visible. Inspect $OUT/screen.png and compositor logs."
+        if ! (cd "$REPO" && "$NODE" scripts/assert-manjaro-desktop.cjs -) \
+            < "$OUT/logcat.txt" > "$OUT/manjaro-desktop-report.json"; then
+            cat "$OUT/manjaro-desktop-report.json" >&2
+            echo "FAIL: strict Manjaro/Venus desktop evidence did not pass. Evidence: $OUT" >&2
+            exit 1
+        fi
+        echo "PASS: Venus shader readback, KWin hardware compositing, renderer synchronization and a post-ready non-black Direct Surface frame verified; policy snapshot unchanged."
+        echo "VISUAL CHECK REQUIRED: inspect $OUT/screen.png for the expected Plasma desktop."
         echo "Evidence: $OUT"
         exit 0
     fi
     sleep 1
 done
 capture
-echo "FAIL: timeout; Surface attached=$attached, desktop requested=$desktop. Evidence: $OUT" >&2
+echo "FAIL: timeout; Surface attached=$attached, desktop requested=$desktop, GPU readback=$gpu, Plasma hardware=$plasma, frame posted=$frame, renderer synchronized=$synced, post-ready non-black=$nonblack. Evidence: $OUT" >&2
 exit 1

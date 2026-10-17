@@ -1,0 +1,27 @@
+#!/bin/sh
+set -eu
+if [ "${1:-}" != --session ]; then
+    exec dbus-run-session -- "$0" --session
+fi
+startplasma-x11 &
+plasma_pid=$!
+trap 'kill "$plasma_pid" 2>/dev/null || true' EXIT HUP INT TERM
+report="$XDG_RUNTIME_DIR/viruaisor-kwin.txt"
+count=0
+while [ "$count" -lt 60 ]; do
+    kill -0 "$plasma_pid" || exit 1
+    if qdbus org.kde.KWin /KWin supportInformation > "$report" 2>/dev/null &&
+        grep -q 'Compositing is active' "$report" &&
+        grep -Eq 'Compositing Type: OpenGL' "$report" &&
+        grep -Eqi 'OpenGL renderer string:.*zink.*mali' "$report"; then
+        cat "$report"
+        echo 'VIRUAISOR_PLASMA_HARDWARE_READY=true'
+        wait "$plasma_pid"
+        exit $?
+    fi
+    sleep 1
+    count=$((count+1))
+done
+cat "$report" >&2
+echo 'KWin hardware compositing did not become ready; refusing desktop success' >&2
+exit 1

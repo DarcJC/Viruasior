@@ -1,0 +1,53 @@
+diff --git a/src/venus/vkr_physical_device.h b/src/venus/vkr_physical_device.h
+--- a/src/venus/vkr_physical_device.h
++++ b/src/venus/vkr_physical_device.h
+@@ -34,6 +34,7 @@
+    bool EXT_metal_objects;
+
+    VkPhysicalDeviceMemoryProperties memory_properties;
++   uint32_t android_import_type_bits;
+    bool mem_type_spoof;
+    VkPhysicalDeviceIDProperties id_properties;
+    bool is_dma_buf_fd_export_supported;
+diff --git a/src/venus/vkr_buffer.c b/src/venus/vkr_buffer.c
+--- a/src/venus/vkr_buffer.c
++++ b/src/venus/vkr_buffer.c
+@@ -83,6 +83,12 @@
+
+    vn_replace_vkGetBufferMemoryRequirements_args_handle(args);
+    vk->GetBufferMemoryRequirements(args->device, args->buffer, args->pMemoryRequirements);
++#ifdef __ANDROID__
++   if (dev->physical_device->properties.vendorID == 0x13b5) {
++      vkr_log("VIRUAISOR_BUFFER_IMPORT_TYPES native=%x import=%x", args->pMemoryRequirements->memoryTypeBits, dev->physical_device->android_import_type_bits);
++      args->pMemoryRequirements->memoryTypeBits &= dev->physical_device->android_import_type_bits;
++   }
++#endif
+    vkr_physical_device_mem_type_spoof(dev->physical_device,
+                                       &args->pMemoryRequirements->memoryTypeBits);
+ }
+@@ -97,6 +103,12 @@
+
+    vn_replace_vkGetBufferMemoryRequirements2_args_handle(args);
+    vk->GetBufferMemoryRequirements2(args->device, args->pInfo, args->pMemoryRequirements);
++#ifdef __ANDROID__
++   if (dev->physical_device->properties.vendorID == 0x13b5) {
++      vkr_log("VIRUAISOR_BUFFER_IMPORT_TYPES native=%x import=%x", args->pMemoryRequirements->memoryRequirements.memoryTypeBits, dev->physical_device->android_import_type_bits);
++      args->pMemoryRequirements->memoryRequirements.memoryTypeBits &= dev->physical_device->android_import_type_bits;
++   }
++#endif
+    vkr_physical_device_mem_type_spoof(
+       dev->physical_device,
+       &args->pMemoryRequirements->memoryRequirements.memoryTypeBits);
+@@ -173,6 +185,12 @@
+    vn_replace_vkGetDeviceBufferMemoryRequirements_args_handle(args);
+    vk->GetDeviceBufferMemoryRequirements(args->device, args->pInfo,
+                                          args->pMemoryRequirements);
++#ifdef __ANDROID__
++   if (dev->physical_device->properties.vendorID == 0x13b5) {
++      vkr_log("VIRUAISOR_BUFFER_IMPORT_TYPES native=%x import=%x", args->pMemoryRequirements->memoryRequirements.memoryTypeBits, dev->physical_device->android_import_type_bits);
++      args->pMemoryRequirements->memoryRequirements.memoryTypeBits &= dev->physical_device->android_import_type_bits;
++   }
++#endif
+    vkr_physical_device_mem_type_spoof(
+       dev->physical_device,
+       &args->pMemoryRequirements->memoryRequirements.memoryTypeBits);

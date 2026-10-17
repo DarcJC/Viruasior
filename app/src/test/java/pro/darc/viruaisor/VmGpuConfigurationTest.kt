@@ -8,6 +8,15 @@ import pro.darc.viruaisor.vm.VmGpuConfiguration
 import pro.darc.viruaisor.vm.VmGpuProfile
 
 class VmGpuConfigurationTest {
+    @Test fun venusRequiresItsVulkanCapsetAndNeverEnablesSoftwareFallback() {
+        val calls = mutableMapOf<String, Any>()
+        VmGpuConfiguration.apply(VmGpuProfile.VENUS) { method, value -> calls[method] = value }
+        assertEquals("virglrenderer", calls["setBackend"])
+        assertEquals(true, calls["setRendererUseVulkan"])
+        assertEquals(false, calls["setRendererUseEgl"])
+        assertEquals(false, calls["setRendererUseGles"])
+        assertEquals(listOf("venus"), (calls["setContextTypes"] as? Array<*>)?.toList())
+    }
     @Test fun gfxstreamKeepsTheCompatibleGlCompositorAndRequestsVulkanCapsets() {
         val calls = mutableListOf<Pair<String, Any>>()
         VmGpuConfiguration.apply(VmGpuProfile.GFXSTREAM) { method, value -> calls += method to value }

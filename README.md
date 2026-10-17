@@ -6,6 +6,13 @@ keeps VM lifecycle ownership in `VmService`, and controls guest services over vs
 
 ## Current scope and limitations
 
+- A Manjaro ARM / Plasma 5.27 bundle with a paired Venus ICD is installed. On the test device,
+  Manjaro boots, Venus enumerates the Mali GPU and Direct Surface attaches. Zink/EGL currently
+  hits a Venus ring timeout in the initial build. An import-compatible memory path and private
+  Zink 25 now pass real Mali shader readbacks in a rootless app-private diagnostic; the updated
+  AVF desktop, Surface frames and input qualification remain pending. See
+  [Manjaro preparation and device checklist](docs/manjaro-plasma-preparation.md).
+
 - A single VM bundle is imported into app-private `filesDir/vms/default/` storage.
 - Guests boot headlessly to `multi-user.target`; desktop services start only on an explicit
   `START_DESKTOP` request after the Android Surface is ready.
@@ -20,9 +27,9 @@ keeps VM lifecycle ownership in `VmService`, and controls guest services over vs
   The check is read-only and does not change SELinux, grant AVF permissions, or elevate the app process.
 - Custom VMs require AVF support, `MANAGE_VIRTUAL_MACHINE`, `USE_CUSTOM_VIRTUAL_MACHINE`, and
   appropriate hidden-API access. Installation alone (or granting a root child) does not grant this access.
-- The experimental Direct Surface adapter is additionally SELinux-gated. It does not work for a
-  normal user-installed app on the current test device; graphical presentation requires platform
-  policy integration or a separate streaming Display backend.
+- The ordinary Direct Surface adapter is SELinux-gated on the test device. A narrow root helper
+  can attach a root-owned queue while VM lifecycle and input remain under the application UID.
+  Surface attachment alone does not qualify visible guest frames.
 - The current Ferrochrome kernel has virtio GPU/DRM support built in. A module blacklist cannot
   prevent its early DRM probing; strict deferred probing requires a modular kernel or host-side
   GPU hotplug.

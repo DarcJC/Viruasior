@@ -11,6 +11,8 @@ struct desktop_mapping {
 };
 
 static const struct desktop_mapping mappings[] = {
+    {"START_DESKTOP venus", "start", "avf-plasma.service", false},
+    {"STOP_DESKTOP venus", "stop", "avf-plasma.service", false},
     {"START_DESKTOP", "start", "avf-desktop@2d.service", false},
     {"START_DESKTOP 2d", "start", "avf-desktop@2d.service", false},
     {"START_DESKTOP gfxstream", "start", "avf-desktop@gfxstream.service", false},

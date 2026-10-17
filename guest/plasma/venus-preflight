@@ -1,0 +1,14 @@
+#!/bin/sh
+set -eu
+test "$(id -u)" = 1000
+test -r /dev/dri/renderD128 && test -w /dev/dri/renderD128
+report="$XDG_RUNTIME_DIR/viruaisor-venus-vulkan.txt"
+vulkaninfo --summary > "$report" 2>&1
+cat "$report"
+grep -Eq 'driverID.*MESA_VENUS|driverName.*venus' "$report"
+grep -qi mali "$report"
+if grep -Eqi 'llvmpipe|lavapipe|softpipe|swiftshader' "$report"; then
+    echo 'Software Vulkan renderer rejected' >&2
+    exit 1
+fi
+exec python3 /opt/viruaisor/guest-gpu-draw-probe.py --venus

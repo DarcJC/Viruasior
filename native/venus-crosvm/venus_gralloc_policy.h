@@ -2,6 +2,13 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
+static inline bool venus_gralloc_preferred_on_android(bool force_udmabuf_import, bool gbm_available) {
+    (void)gbm_available;
+    return !force_udmabuf_import;
+}
+static inline bool venus_gralloc_export_backing_required_on_android(bool force_udmabuf_import, bool export_requested) {
+    return export_requested && !force_udmabuf_import;
+}
 static inline bool venus_gralloc_buffer_external(uint32_t vendor, uint64_t bytes, uint32_t flags, uint32_t usage, bool already_external, bool importable) {
     return vendor == 0x13b5 && bytes > 0 && bytes <= 64*1024*1024 && !flags &&
         (usage & 0x20) && !already_external && importable;

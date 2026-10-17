@@ -1,0 +1,29 @@
+diff --git a/meson.build b/meson.build
+--- a/meson.build
++++ b/meson.build
+@@ -489,5 +489,5 @@
+ subdir('src')
+-if with_vrend and not with_host_windows
++if (with_vrend or with_venus) and not with_host_windows
+    subdir('vtest')
+ endif
+
+diff --git a/vtest/vtest_main.c b/vtest/vtest_main.c
+--- a/vtest/vtest_main.c
++++ b/vtest/vtest_main.c
+@@ -24,7 +24,15 @@
+  **************************************************************************/
+
+ #include "vtest_server.h"
++#ifdef __ANDROID__
++#include <dlfcn.h>
++#endif
+
+ int main(int argc, char** argv) {
++#ifdef __ANDROID__
++    /* Match the qualified standalone app worker's TLS code lifetime. */
++    void *crypto = dlopen("/system/lib64/libcrypto.so", RTLD_NOW | RTLD_LOCAL | RTLD_NODELETE);
++    if (!crypto) return 1;
++#endif
+     return vtest_main(argc, argv);
+ }

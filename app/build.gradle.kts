@@ -36,6 +36,7 @@ android {
     packaging {
         jniLibs.useLegacyPackaging = true // Extract the bounded native Venus worker into the executable library directory.
         jniLibs.keepDebugSymbols += "**/libvenus_crosvm.so" // Preserve the reviewed executable SHA-256.
+        jniLibs.keepDebugSymbols += "**/libvenus_desktop_crosvm.so"
     }
 }
 

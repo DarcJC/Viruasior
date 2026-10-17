@@ -1,0 +1,37 @@
+--- a/src/generated/virgl_renderer_bindings.rs
++++ b/src/generated/virgl_renderer_bindings.rs
+@@ -494,0 +495,3 @@
++    pub fn virgl_renderer_context_wait_idle(ctx_id: u32) -> ::std::os::raw::c_int;
++}
++extern "C" {
+--- a/src/rutabaga_core.rs
++++ b/src/rutabaga_core.rs
+@@ -206,0 +207,5 @@
++
++    /// Wait for renderer work that must be visible to an external display consumer.
++    fn display_flush(&self) -> RutabagaResult<()> {
++        Ok(())
++    }
+@@ -950,0 +956,8 @@
++    pub fn display_flush(&self) -> RutabagaResult<()> {
++        let component = self
++            .components
++            .get(&self.default_component)
++            .ok_or(RutabagaError::InvalidComponent)?;
++        component.display_flush()
++    }
++
+--- a/src/virgl_renderer.rs
++++ b/src/virgl_renderer.rs
+@@ -649,0 +650,11 @@
++    fn display_flush(&self) -> RutabagaResult<()> {
++        let renderer_ids = context_ids().active_renderer_ids();
++        for renderer_ctx_id in renderer_ids {
++            // SAFETY: context ids are allocated only after successful renderer creation and
++            // remain active until the context object is dropped.
++            let ret = unsafe { virgl_renderer_context_wait_idle(renderer_ctx_id) };
++            ret_to_res(ret)?;
++        }
++        Ok(())
++    }
++

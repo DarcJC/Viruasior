@@ -4,6 +4,13 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class RootOverlayAuthorizationTest {
+    @Test fun desktopLeaseHasASeparateCapabilityAndExactMode() {
+        val token = "0123456789abcdef0123456789abcdef"
+        assertTrue(RootOverlayAuthorization.validRequest(token, "venus-desktop"))
+        assertEquals(4, RootOverlayAuthorization.transactionFor("venus-desktop"))
+        RootOverlayAuthorization(10278).enforce(10278, 4)
+        assertFalse(RootOverlayAuthorization.validRequest(token, "venus-desktop arbitrary-path"))
+    }
     @Test fun stockExecutionIsASeparateFixedCapability() {
         val token = "0123456789abcdef0123456789abcdef"
         assertTrue(RootOverlayAuthorization.validRequest(token, "stock-exec"))

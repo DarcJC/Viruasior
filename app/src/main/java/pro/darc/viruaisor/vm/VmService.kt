@@ -10,6 +10,7 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.net.Uri
 import android.os.IBinder
+import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.CoroutineScope
@@ -20,6 +21,9 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import pro.darc.viruaisor.gpu.VenusDesktopLease
 import pro.darc.viruaisor.MainActivity
 import pro.darc.viruaisor.R
 import pro.darc.viruaisor.display.InputBackendRegistry
@@ -32,8 +36,10 @@ class VmService : Service() {
     private var bundle: VmBundle? = null
     private var readinessJob: Job? = null
     private var desktopRequested = false
-    private var desktopStarted = false
+    private val desktopStartGate = DesktopStartGate()
     private var foreground = false
+    private var venusLease: VenusDesktopLease? = null
+    private val lifecycleMutex=Mutex()
 
     override fun onCreate() {
         super.onCreate()
@@ -43,7 +49,7 @@ class VmService : Service() {
             scope.launch { command.run() }
             Unit
         }
-        engine = AvfVmEngine(this, executor, ::onEngineEvent)
+        engine = AvfVmEngine(this, executor, ::onEngineEvent) { venusLease?.active == true }
         InputBackendRegistry.bind(engine)
         controlClient = VsockControlClient(engine)
         scope.launch {
@@ -58,17 +64,25 @@ class VmService : Service() {
         when (intent?.action) {
             ACTION_IMPORT -> {
                 val uri = intent.data
-                if (uri == null) fail("No VM bundle was selected.") else scope.launch { importBundle(uri) }
+                if (uri == null) fail("No VM bundle was selected.") else scope.launch { lifecycleMutex.withLock { importBundle(uri) } }
             }
-            ACTION_START -> scope.launch { startVm() }
-            ACTION_STOP -> scope.launch { stopVm() }
+            ACTION_IMPORT_PREPARED -> scope.launch {
+                lifecycleMutex.withLock {
+                    val file=getExternalFilesDir(null)?.resolve(PREPARED_BUNDLE_NAME)
+                    if (file?.isFile == true) importBundle(Uri.fromFile(file))
+                    else fail("Prepared Manjaro bundle is missing.")
+                }
+            }
+            ACTION_START -> scope.launch { lifecycleMutex.withLock { startVm() } }
+            ACTION_STOP -> scope.launch { lifecycleMutex.withLock { stopVm() } }
             ACTION_SURFACE_READY -> scope.launch {
                 desktopRequested = true
                 startDesktopIfReady()
             }
             ACTION_SURFACE_GONE -> scope.launch {
                 desktopRequested = false
-                stopDesktopIfStarted()
+                // Detaching Android's window must preserve the user's Linux session.
+                // Explicit VM Stop still stops the desktop before guest shutdown.
             }
             ACTION_DEBUG_CONSOLE -> scope.launch {
                 runCatching { engine.sendConsoleInput(intent.getStringExtra(EXTRA_TEXT).orEmpty()) }
@@ -86,6 +100,10 @@ class VmService : Service() {
         readinessJob?.cancel()
         InputBackendRegistry.unbind(engine)
         engine.clearCallback()
+        venusLease?.let { lease ->
+            venusLease=null
+            Thread({ engine.requestHardStop(); runCatching { engine.closeStopped() }; lease.close() },"venus-session-dispose").start()
+        }
         scope.cancel()
         super.onDestroy()
     }
@@ -103,6 +121,13 @@ class VmService : Service() {
 
         VmRuntime.setImporting()
         updateNotification("Importing VM bundle")
+        // A foreground service alone does not keep the CPU awake with the screen locked.
+        // Hold only a bounded, application-owned partial lock during disk extraction.
+        val wakeLock=getSystemService(PowerManager::class.java).newWakeLock(
+            PowerManager.PARTIAL_WAKE_LOCK,"$packageName:bundle-import",
+        )
+        wakeLock.acquire(IMPORT_WAKE_TIMEOUT_MS)
+        Log.i(TAG,"IMPORT_WAKE_ACQUIRED timeoutMs=$IMPORT_WAKE_TIMEOUT_MS")
         try {
             withContext(Dispatchers.IO) {
                 engine.deleteDefinition()
@@ -114,6 +139,9 @@ class VmService : Service() {
         } catch (error: Throwable) {
             fail("Import failed: ${error.rootMessage()}")
             return
+        } finally {
+            if (wakeLock.isHeld) wakeLock.release()
+            Log.i(TAG,"IMPORT_WAKE_RELEASED")
         }
         finishForegroundIfIdle()
     }
@@ -134,10 +162,32 @@ class VmService : Service() {
         if (state.isActive) return
 
         bundle = selectedBundle
-        desktopStarted = false
+        desktopStartGate.reset()
         VmRuntime.setStatus(VmStatus.Starting, "VM starting")
         updateNotification("VM starting")
-        engine.start(selectedBundle)
+        try {
+            if (selectedBundle.gpuProfile == VmGpuProfile.VENUS) {
+                val lease=VenusDesktopLease(this) { error ->
+                    scope.launch {
+                        lifecycleMutex.withLock {
+                            engine.requestHardStop()
+                            runCatching { engine.closeStopped() }
+                            closeVenusLease()
+                            fail("Venus runtime lost: ${error.rootMessage()}")
+                        }
+                    }
+                }
+                venusLease=lease
+                lease.open()
+            }
+            check(engine.start(selectedBundle)) { "AVF startup failed" }
+            venusLease?.verifyExecution()
+        } catch (error: Throwable) {
+            engine.requestHardStop()
+            runCatching { engine.closeStopped() }
+            closeVenusLease()
+            fail("VM startup failed: ${error.rootMessage()}")
+        }
     }
 
     private suspend fun stopVm() {
@@ -148,14 +198,14 @@ class VmService : Service() {
         VmRuntime.setStatus(VmStatus.Stopping, "Requesting guest shutdown over vsock")
         updateNotification("VM stopping")
         val desktopStopCompleted = runCatching {
-            VmStopSequence.stopDesktopIfStarted(desktopStarted) {
+            VmStopSequence.stopDesktopIfStarted(desktopStartGate.started) {
                 requireNotNull(selectedBundle) { "The active bundle metadata is unavailable." }
                 controlClient.stopDesktop(selectedBundle.vsockPort, selectedBundle.gpuProfile)
             }
         }.onFailure { error ->
             Log.w(TAG, "desktop stop before shutdown failed", error)
         }.getOrDefault(false)
-        if (desktopStopCompleted) desktopStarted = false
+        if (desktopStopCompleted) desktopStartGate.reset()
         val standardAgentSent = engine.requestGuestAgentShutdown()
         val rawVsockSent = !standardAgentSent && runCatching {
             requireNotNull(selectedBundle) { "The active bundle metadata is unavailable." }
@@ -192,7 +242,16 @@ class VmService : Service() {
                     scope.launch { startDesktopIfReady() }
                 }
             }
-            is VmEngineEvent.Error -> fail("VM error: ${event.message}")
+            is VmEngineEvent.Error -> {
+                if (venusLease == null) fail("VM error: ${event.message}") else scope.launch {
+                    lifecycleMutex.withLock {
+                        engine.requestHardStop()
+                        runCatching { engine.closeStopped() }
+                        closeVenusLease()
+                        fail("VM error: ${event.message}")
+                    }
+                }
+            }
             is VmEngineEvent.Stopped -> {
                 readinessJob?.cancel()
                 if (event.expected) {
@@ -201,7 +260,7 @@ class VmService : Service() {
                     val reason = stopReason(event.reason)
                     VmRuntime.setStatus(VmStatus.Crashed(reason), "VM crashed: $reason")
                 }
-                finishForegroundIfIdle()
+                scope.launch { lifecycleMutex.withLock { closeVenusLease(); finishForegroundIfIdle() } }
             }
         }
     }
@@ -232,15 +291,17 @@ class VmService : Service() {
     }
 
     private fun startDesktopIfReady() {
-        if (!desktopRequested || desktopStarted) return
+        if (!desktopRequested) return
         if (VmRuntime.state.value.status !is VmStatus.GuestAgentReady) return
         val selectedBundle = bundle ?: return
+        if (!desktopStartGate.tryBegin()) return
         runCatching { controlClient.startDesktop(selectedBundle.vsockPort, selectedBundle.gpuProfile) }
             .onSuccess {
-                desktopStarted = true
+                desktopStartGate.succeeded()
                 VmRuntime.setStatus(VmStatus.GuestAgentReady, "Guest agent ready; desktop requested")
             }
             .onFailure { error ->
+                desktopStartGate.failed()
                 VmRuntime.setStatus(
                     VmStatus.GuestAgentReady,
                     "Guest agent ready; desktop start failed: ${error.rootMessage()}",
@@ -248,11 +309,10 @@ class VmService : Service() {
             }
     }
 
-    private fun stopDesktopIfStarted() {
-        if (!desktopStarted) return
-        val selectedBundle = bundle ?: return
-        runCatching { controlClient.stopDesktop(selectedBundle.vsockPort, selectedBundle.gpuProfile) }
-        desktopStarted = false
+    private fun closeVenusLease() {
+        val lease=venusLease ?: return
+        venusLease=null
+        lease.close()
     }
 
     private fun fail(message: String) {
@@ -280,6 +340,7 @@ class VmService : Service() {
     }
 
     private fun finishForegroundIfIdle() {
+        if (venusLease != null) return // Teardown must finish before the owning service is destroyed.
         val status = VmRuntime.state.value.status
         if (status is VmStatus.Starting || status is VmStatus.Running ||
             status is VmStatus.GuestAgentReady || status is VmStatus.Stopping ||
@@ -333,6 +394,8 @@ class VmService : Service() {
     companion object {
         private const val TAG = "ViruaisorService"
         private const val ACTION_IMPORT = "pro.darc.viruaisor.action.IMPORT_VM"
+        private const val ACTION_IMPORT_PREPARED = "pro.darc.viruaisor.action.IMPORT_PREPARED_MANJARO"
+        const val PREPARED_BUNDLE_NAME = "manjaro-plasma-venus.zip"
         private const val ACTION_START = "pro.darc.viruaisor.action.START_VM"
         private const val ACTION_STOP = "pro.darc.viruaisor.action.STOP_VM"
         private const val ACTION_SURFACE_READY = "pro.darc.viruaisor.action.SURFACE_READY"
@@ -344,9 +407,13 @@ class VmService : Service() {
         private const val READY_ATTEMPTS = 60
         private const val READY_RETRY_MS = 1_000L
         private const val GRACEFUL_SHUTDOWN_TIMEOUT_MS = 10_000L
+        private const val IMPORT_WAKE_TIMEOUT_MS = 10 * 60 * 1_000L
 
         fun importIntent(context: Context, uri: Uri) =
             Intent(context, VmService::class.java).setAction(ACTION_IMPORT).setData(uri)
+
+        fun importPreparedIntent(context: Context) =
+            Intent(context, VmService::class.java).setAction(ACTION_IMPORT_PREPARED)
 
         fun startIntent(context: Context) =
             Intent(context, VmService::class.java).setAction(ACTION_START)
@@ -372,5 +439,38 @@ internal object VmStopSequence {
         if (!desktopStarted) return false
         stopDesktop()
         return true
+    }
+}
+
+internal class DesktopStartGate {
+    private enum class State { IDLE, STARTING, STARTED }
+
+    private var state = State.IDLE
+
+    @get:Synchronized
+    val started: Boolean
+        get() = state == State.STARTED
+
+    @Synchronized
+    fun tryBegin(): Boolean {
+        if (state != State.IDLE) return false
+        state = State.STARTING
+        return true
+    }
+
+    @Synchronized
+    fun succeeded() {
+        check(state == State.STARTING) { "Desktop start was not in progress." }
+        state = State.STARTED
+    }
+
+    @Synchronized
+    fun failed() {
+        if (state == State.STARTING) state = State.IDLE
+    }
+
+    @Synchronized
+    fun reset() {
+        state = State.IDLE
     }
 }

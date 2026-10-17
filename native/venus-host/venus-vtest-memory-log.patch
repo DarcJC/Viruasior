@@ -1,0 +1,14 @@
+diff --git a/src/venus/vkr_device_memory.c b/src/venus/vkr_device_memory.c
+--- a/src/venus/vkr_device_memory.c
++++ b/src/venus/vkr_device_memory.c
+@@ -506,3 +506,9 @@
+-   struct vkr_device_memory *mem = vkr_device_memory_create_and_add(ctx, args);
++   const VkMemoryAllocateFlagsInfo *flags_info = vkr_find_struct(
++      alloc_info->pNext, VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO);
++   vkr_log("VTEST_DIAG_ALLOC_BEGIN bytes=%llu type=%u property=%x flags=%x imported=%d",
++      (unsigned long long)alloc_info->allocationSize, alloc_info->memoryTypeIndex,
++      property_flags, flags_info ? flags_info->flags : 0, local_import_info.fd >= 0);
++   struct vkr_device_memory *mem = vkr_device_memory_create_and_add(ctx, args);
++   vkr_log("VTEST_DIAG_ALLOC_END result=%d created=%d", args->ret, mem != NULL);
+    if (!mem) {
+       if (local_import_info.fd >= 0)

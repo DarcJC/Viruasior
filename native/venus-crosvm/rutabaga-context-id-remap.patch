@@ -1,0 +1,315 @@
+diff --git a/src/virgl_renderer.rs b/src/virgl_renderer.rs
+index 1078e0c..f766a1f 100644
+--- a/src/virgl_renderer.rs
++++ b/src/virgl_renderer.rs
+@@ -26,6 +26,8 @@ use std::ptr::null_mut;
+ use std::sync::atomic::AtomicBool;
+ use std::sync::atomic::Ordering;
+ use std::sync::Arc;
++use std::sync::Mutex;
++use std::sync::MutexGuard;
+
+ use log::error;
+ use log::info;
+@@ -64,6 +66,7 @@ use crate::rutabaga_utils::RutabagaIovec;
+ use crate::rutabaga_utils::RutabagaResult;
+ use crate::rutabaga_utils::Transfer3D;
+ use crate::rutabaga_utils::VirglRendererFlags;
++use crate::rutabaga_utils::RUTABAGA_CAPSET_VENUS;
+ use crate::rutabaga_utils::RUTABAGA_FLAG_FENCE;
+ use crate::rutabaga_utils::RUTABAGA_FLAG_INFO_RING_IDX;
+ use crate::rutabaga_utils::RUTABAGA_MAP_ACCESS_RW;
+@@ -71,6 +74,13 @@ use crate::RutabagaPath;
+ use crate::RutabagaPaths;
+ use crate::RUTABAGA_PATH_TYPE_GPU;
+
++#[path = "renderer_context_ids.rs"]
++mod renderer_context_ids;
++use self::renderer_context_ids::RendererContextIds;
++#[path = "renderer_context_init.rs"]
++mod renderer_context_init_policy;
++use self::renderer_context_init_policy::renderer_context_init;
++
+ type Query = virgl_renderer_export_query;
+
+ /// Default drm fd, returning this indicates that virglrenderer should
+@@ -107,10 +117,27 @@ fn dup(rd: RawDescriptor) -> RutabagaResult<OwnedDescriptor> {
+ }
+
+ /// The virtio-gpu backend state tracker which supports accelerated rendering.
+-pub struct VirglRenderer {}
++pub struct VirglRenderer {
++    venus_only: bool,
++}
+
+ struct VirglRendererContext {
+-    ctx_id: u32,
++    guest_ctx_id: u32,
++    renderer_ctx_id: u32,
++}
++
++static VIRGL_CONTEXT_IDS: Mutex<RendererContextIds> = Mutex::new(RendererContextIds::new());
++
++fn context_ids() -> MutexGuard<'static, RendererContextIds> {
++    VIRGL_CONTEXT_IDS
++        .lock()
++        .unwrap_or_else(|poisoned| poisoned.into_inner())
++}
++
++fn renderer_context_id(guest_ctx_id: u32) -> RutabagaResult<u32> {
++    context_ids()
++        .resolve_guest(guest_ctx_id)
++        .map_err(|_| RutabagaError::InvalidContextId)
+ }
+
+ fn import_resource(resource: &mut RutabagaResource) -> RutabagaResult<()> {
+@@ -181,7 +208,7 @@ impl RutabagaContext for VirglRendererContext {
+         let ret = unsafe {
+             virgl_renderer_submit_cmd(
+                 commands.as_mut_ptr() as *mut c_void,
+-                self.ctx_id as i32,
++                self.renderer_ctx_id as i32,
+                 dword_count,
+             )
+         };
+@@ -192,7 +219,7 @@ impl RutabagaContext for VirglRendererContext {
+         let ret = unsafe {
+             virgl_renderer_submit_cmd2(
+                 commands.as_mut_ptr() as *mut c_void,
+-                self.ctx_id as i32,
++                self.renderer_ctx_id as i32,
+                 dword_count,
+                 fence_ids.as_ptr() as *mut u64,
+                 fence_ids.len() as u32,
+@@ -211,7 +238,10 @@ impl RutabagaContext for VirglRendererContext {
+         // The context id and resource id must be valid because the respective instances ensure
+         // their lifetime.
+         unsafe {
+-            virgl_renderer_ctx_attach_resource(self.ctx_id as i32, resource.resource_id as i32);
++            virgl_renderer_ctx_attach_resource(
++                self.renderer_ctx_id as i32,
++                resource.resource_id as i32,
++            );
+         }
+     }
+
+@@ -220,7 +250,10 @@ impl RutabagaContext for VirglRendererContext {
+         // The context id and resource id must be valid because the respective instances ensure
+         // their lifetime.
+         unsafe {
+-            virgl_renderer_ctx_detach_resource(self.ctx_id as i32, resource.resource_id as i32);
++            virgl_renderer_ctx_detach_resource(
++                self.renderer_ctx_id as i32,
++                resource.resource_id as i32,
++            );
+         }
+     }
+
+@@ -238,7 +271,7 @@ impl RutabagaContext for VirglRendererContext {
+         #[allow(clippy::undocumented_unsafe_blocks)]
+         let ret = unsafe {
+             virgl_renderer_context_create_fence(
+-                fence.ctx_id,
++                self.renderer_ctx_id,
+                 flags,
+                 fence.ring_idx as u32,
+                 fence.fence_id,
+@@ -251,11 +284,26 @@ impl RutabagaContext for VirglRendererContext {
+
+ impl Drop for VirglRendererContext {
+     fn drop(&mut self) {
++        info!(
++            "VIRUAISOR_CONTEXT_DESTROY_BEGIN ctx_id={} renderer_ctx_id={}",
++            self.guest_ctx_id, self.renderer_ctx_id
++        );
+         // SAFETY:
+         // The context is safe to destroy because nothing else can be referencing it.
+         unsafe {
+-            virgl_renderer_context_destroy(self.ctx_id);
++            virgl_renderer_context_destroy(self.renderer_ctx_id);
++        }
++        let released = context_ids().release_guest(self.guest_ctx_id);
++        if released != Some(self.renderer_ctx_id) {
++            error!(
++                "VIRUAISOR_CONTEXT_ID_REMAP_RELEASE_FAILED ctx_id={} renderer_ctx_id={} released={:?}",
++                self.guest_ctx_id, self.renderer_ctx_id, released
++            );
+         }
++        info!(
++            "VIRUAISOR_CONTEXT_DESTROY_END ctx_id={} renderer_ctx_id={}",
++            self.guest_ctx_id, self.renderer_ctx_id
++        );
+     }
+ }
+
+@@ -327,12 +375,23 @@ extern "C" fn write_context_fence(cookie: *mut c_void, ctx_id: u32, ring_idx: u3
+         // is valid for the duration of this callback.
+         let cookie = unsafe { &*(cookie as *mut RutabagaCookie) };
+
++        let guest_ctx_id = match context_ids().resolve_host(ctx_id) {
++            Some(guest_ctx_id) => guest_ctx_id,
++            None => {
++                error!(
++                    "VIRUAISOR_CONTEXT_ID_REMAP_FENCE_UNKNOWN renderer_ctx_id={} fence_id={}",
++                    ctx_id, fence_id
++                );
++                return;
++            }
++        };
++
+         // Call fence completion callback
+         if let Some(handler) = &cookie.fence_handler {
+             handler.call(RutabagaFence {
+                 flags: RUTABAGA_FLAG_FENCE | RUTABAGA_FLAG_INFO_RING_IDX,
+                 fence_id,
+-                ctx_id,
++                ctx_id: guest_ctx_id,
+                 ring_idx: ring_idx as u8,
+             });
+         }
+@@ -444,6 +503,10 @@ impl VirglRenderer {
+             return Err(RutabagaError::AlreadyInUse);
+         }
+
++        let renderer_flags: u32 = virglrenderer_flags.into();
++        let venus_only = renderer_flags & (VIRGL_RENDERER_VENUS | VIRGL_RENDERER_NO_VIRGL)
++            == (VIRGL_RENDERER_VENUS | VIRGL_RENDERER_NO_VIRGL);
++
+         // TODO(b/315870313): Add safety comment
+         #[allow(clippy::undocumented_unsafe_blocks)]
+         unsafe {
+@@ -467,14 +530,14 @@ impl VirglRenderer {
+         let ret = unsafe {
+             virgl_renderer_init(
+                 cookie as *mut c_void,
+-                virglrenderer_flags.into(),
++                renderer_flags as i32,
+                 VIRGL_RENDERER_CALLBACKS as *const virgl_renderer_callbacks
+                     as *mut virgl_renderer_callbacks,
+             )
+         };
+
+         ret_to_res(ret)?;
+-        Ok(Box::new(VirglRenderer {}))
++        Ok(Box::new(VirglRenderer { venus_only }))
+     }
+
+     fn map_info(&self, resource_id: u32) -> RutabagaResult<u32> {
+@@ -585,9 +648,10 @@ impl RutabagaComponent for VirglRenderer {
+     }
+
+     fn create_fence(&mut self, fence: RutabagaFence) -> RutabagaResult<()> {
++        let renderer_ctx_id = renderer_context_id(fence.ctx_id)?;
+         // TODO(b/315870313): Add safety comment
+         #[allow(clippy::undocumented_unsafe_blocks)]
+-        let ret = unsafe { virgl_renderer_create_fence(fence.fence_id as i32, fence.ctx_id) };
++        let ret = unsafe { virgl_renderer_create_fence(fence.fence_id as i32, renderer_ctx_id) };
+         ret_to_res(ret)
+     }
+
+@@ -751,6 +815,7 @@ impl RutabagaComponent for VirglRenderer {
+             return Err(MesaError::Unsupported.into());
+         }
+
++        let renderer_ctx_id = renderer_context_id(ctx_id)?;
+         let mut transfer_box = VirglBox {
+             x: transfer.x,
+             y: transfer.y,
+@@ -765,7 +830,7 @@ impl RutabagaComponent for VirglRenderer {
+         let ret = unsafe {
+             virgl_renderer_transfer_write_iov(
+                 resource.resource_id,
+-                ctx_id,
++                renderer_ctx_id,
+                 transfer.level as i32,
+                 transfer.stride,
+                 transfer.layer_stride,
+@@ -789,6 +854,7 @@ impl RutabagaComponent for VirglRenderer {
+             return Ok(());
+         }
+
++        let renderer_ctx_id = renderer_context_id(ctx_id)?;
+         let mut transfer_box = VirglBox {
+             x: transfer.x,
+             y: transfer.y,
+@@ -817,7 +883,7 @@ impl RutabagaComponent for VirglRenderer {
+         let ret = unsafe {
+             virgl_renderer_transfer_read_iov(
+                 resource.resource_id,
+-                ctx_id,
++                renderer_ctx_id,
+                 transfer.level,
+                 transfer.stride,
+                 transfer.layer_stride,
+@@ -846,9 +912,10 @@ impl RutabagaComponent for VirglRenderer {
+             num_iovecs = iovecs.len();
+         }
+
++        let renderer_ctx_id = renderer_context_id(ctx_id)?;
+         let resource_create_args = virgl_renderer_resource_create_blob_args {
+             res_handle: resource_id,
+-            ctx_id,
++            ctx_id: renderer_ctx_id,
+             blob_mem: resource_create_blob.blob_mem,
+             blob_flags: resource_create_blob.blob_flags,
+             blob_id: resource_create_blob.blob_id,
+@@ -963,25 +1030,53 @@ impl RutabagaComponent for VirglRenderer {
+             name = name_string;
+         }
+
++        let renderer_ctx_id = context_ids()
++            .allocate(ctx_id)
++            .map_err(|_| RutabagaError::InvalidContextId)?;
++        let renderer_context_init =
++            renderer_context_init(context_init, self.venus_only, RUTABAGA_CAPSET_VENUS);
++
+         // SAFETY:
+         // Safe because virglrenderer is initialized by now and the context name is statically
+         // allocated. The return value is checked before returning a new context.
+         let ret = unsafe {
+-            match context_init {
++            match renderer_context_init {
+                 0 => virgl_renderer_context_create(
+-                    ctx_id,
++                    renderer_ctx_id,
+                     name.len() as u32,
+                     name.as_ptr() as *const c_char,
+                 ),
+                 _ => virgl_renderer_context_create_with_flags(
+-                    ctx_id,
+-                    context_init,
++                    renderer_ctx_id,
++                    renderer_context_init,
+                     name.len() as u32,
+                     name.as_ptr() as *const c_char,
+                 ),
+             }
+         };
+-        ret_to_res(ret)?;
+-        Ok(Box::new(VirglRendererContext { ctx_id }))
++        if ret != 0 {
++            error!(
++                "VIRUAISOR_CONTEXT_CREATE_FAILED ctx_id={} renderer_ctx_id={} guest_init={:#x} renderer_init={:#x} name={} ret={}",
++                ctx_id, renderer_ctx_id, context_init, renderer_context_init, name, ret
++            );
++        }
++        info!(
++            "VIRUAISOR_CONTEXT_CREATE_RESULT ctx_id={} renderer_ctx_id={} guest_init={:#x} renderer_init={:#x} capset={} name={} ret={}",
++            ctx_id,
++            renderer_ctx_id,
++            context_init,
++            renderer_context_init,
++            renderer_context_init & VIRGL_RENDERER_CONTEXT_FLAG_CAPSET_ID_MASK,
++            name,
++            ret
++        );
++        if let Err(err) = ret_to_res(ret) {
++            context_ids().release_guest(ctx_id);
++            return Err(err);
++        }
++        Ok(Box::new(VirglRendererContext {
++            guest_ctx_id: ctx_id,
++            renderer_ctx_id,
++        }))
+     }
+ }

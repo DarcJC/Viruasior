@@ -10,6 +10,7 @@ import android.view.SurfaceView
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.compose.BackHandler
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.rememberScrollState
@@ -21,6 +22,9 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.ui.Alignment
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -44,6 +48,9 @@ import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
 import pro.darc.viruaisor.display.DisplayBackend
@@ -51,6 +58,8 @@ import pro.darc.viruaisor.display.DisplayBackendRegistry
 import pro.darc.viruaisor.display.DisplayTarget
 import pro.darc.viruaisor.display.RootAvfSurfaceBackend
 import pro.darc.viruaisor.display.InputBackendRegistry
+import pro.darc.viruaisor.display.DesktopKeyboard
+import pro.darc.viruaisor.display.DesktopSurfaceView
 import pro.darc.viruaisor.root.AvfPermissionRuntime
 import pro.darc.viruaisor.root.AvfPermissionSetup
 import pro.darc.viruaisor.root.RootAccess
@@ -61,10 +70,17 @@ import pro.darc.viruaisor.vm.VmRuntime
 import pro.darc.viruaisor.vm.VmService
 import pro.darc.viruaisor.vm.VmStatus
 import pro.darc.viruaisor.vm.VmUiState
+import pro.darc.viruaisor.vm.VmGpuProfile
 import pro.darc.viruaisor.gpu.VenusHostRuntime
 
 class MainActivity : ComponentActivity() {
     private var useRootDisplay by mutableStateOf(false)
+    private var fullscreen by mutableStateOf(false)
+    private var exitQPending = false
+    private val keyboard = DesktopKeyboard(InputBackendRegistry::sendKey) {
+        exitQPending = true
+        changeFullscreen(false)
+    }
     private val bundlePicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
             ContextCompat.startForegroundService(this, VmService.importIntent(this, uri))
@@ -81,10 +97,21 @@ class MainActivity : ComponentActivity() {
         setContent {
             ViruaisorTheme {
                 val state by VmRuntime.state.collectAsState()
+                DisposableEffect(state.isActive) {
+                    // Window-local only: hidden/closed windows cannot keep the screen on.
+                    window.decorView.keepScreenOn = state.isActive
+                    onDispose { window.decorView.keepScreenOn = false }
+                }
+                LaunchedEffect(state.bundle?.gpuProfile) {
+                    if (state.bundle?.gpuProfile == VmGpuProfile.VENUS) useRootDisplay=true
+                }
                 val rootAccess by RootRuntime.state.collectAsState()
                 val permissionSetup by AvfPermissionRuntime.state.collectAsState()
                 VmScreen(
                     state = state,
+                    fullscreen = fullscreen,
+                    onFullscreen = ::changeFullscreen,
+                    onLeaveDesktop = { changeFullscreen(false); moveTaskToBack(true) },
                     rootAccess = rootAccess,
                     permissionSetup = permissionSetup,
                     useRootDisplay = useRootDisplay,
@@ -93,6 +120,9 @@ class MainActivity : ComponentActivity() {
                     onGrantAvf = { AvfPermissionRuntime.grantMissing(this) },
                     onRevokeAvf = { AvfPermissionRuntime.revokeAdded(this) },
                     onChooseBundle = { bundlePicker.launch(BUNDLE_MIME_TYPES) },
+                    onPreparedBundle = if (getExternalFilesDir(null)?.resolve(VmService.PREPARED_BUNDLE_NAME)?.isFile == true) {
+                        { ContextCompat.startForegroundService(this,VmService.importPreparedIntent(this)); Unit }
+                    } else null,
                     onStart = {
                         ContextCompat.startForegroundService(
                             this,
@@ -122,6 +152,40 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun changeFullscreen(value: Boolean) {
+        fullscreen = value
+        val controller = WindowCompat.getInsetsController(window, window.decorView)
+        controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        if (value) controller.hide(WindowInsetsCompat.Type.systemBars()) else {
+            keyboard.release()
+            controller.show(WindowInsetsCompat.Type.systemBars())
+        }
+    }
+
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (exitQPending && event.keyCode == KeyEvent.KEYCODE_Q) {
+            if (event.action == KeyEvent.ACTION_UP) {
+                exitQPending = false
+                keyboard.key(event.keyCode, event.scanCode, false)
+            }
+            return true
+        }
+        if (fullscreen && event.action in setOf(KeyEvent.ACTION_DOWN, KeyEvent.ACTION_UP) &&
+            keyboard.key(event.keyCode, event.scanCode, event.action == KeyEvent.ACTION_DOWN,
+                event.isCtrlPressed, event.isShiftPressed, event.isAltPressed)) return true
+        return super.dispatchKeyEvent(event)
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (!hasFocus) keyboard.release()
+    }
+
+    override fun onPause() {
+        changeFullscreen(false)
+        super.onPause()
+    }
+
     override fun onSaveInstanceState(outState: Bundle) {
         outState.putBoolean("rootDisplay", useRootDisplay)
         super.onSaveInstanceState(outState)
@@ -137,6 +201,7 @@ class MainActivity : ComponentActivity() {
         val debuggable = applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0
         if (!debuggable) return
         when (intent.action) {
+            ACTION_DEBUG_IMPORT_PREPARED -> ContextCompat.startForegroundService(this,VmService.importPreparedIntent(this))
             ACTION_DEBUG_START -> ContextCompat.startForegroundService(this, VmService.startIntent(this))
             ACTION_DEBUG_STOP -> ContextCompat.startForegroundService(this, VmService.stopIntent(this))
             ACTION_DEBUG_GRANT_AVF -> AvfPermissionRuntime.grantMissing(this)
@@ -151,6 +216,7 @@ class MainActivity : ComponentActivity() {
 
     private companion object {
         const val ACTION_DEBUG_START = "pro.darc.viruaisor.action.DEBUG_START"
+        const val ACTION_DEBUG_IMPORT_PREPARED = "pro.darc.viruaisor.action.DEBUG_IMPORT_PREPARED_MANJARO"
         const val ACTION_DEBUG_STOP = "pro.darc.viruaisor.action.DEBUG_STOP"
         const val ACTION_DEBUG_CONSOLE = "pro.darc.viruaisor.action.DEBUG_CONSOLE"
         const val ACTION_DEBUG_GRANT_AVF = "pro.darc.viruaisor.action.DEBUG_GRANT_AVF"
@@ -167,6 +233,9 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun VmScreen(
     state: VmUiState,
+    fullscreen: Boolean,
+    onFullscreen: (Boolean) -> Unit,
+    onLeaveDesktop: () -> Unit,
     rootAccess: RootAccess,
     permissionSetup: AvfPermissionSetup,
     useRootDisplay: Boolean,
@@ -175,11 +244,14 @@ private fun VmScreen(
     onGrantAvf: () -> Unit,
     onRevokeAvf: () -> Unit,
     onChooseBundle: () -> Unit,
+    onPreparedBundle: (() -> Unit)?,
     onStart: () -> Unit,
     onStop: () -> Unit,
     onSurfaceReady: () -> Unit,
     onSurfaceGone: () -> Unit,
 ) {
+    BackHandler(enabled = fullscreen, onBack = onLeaveDesktop)
+    LaunchedEffect(state.isActive) { if (!state.isActive) onFullscreen(false) }
     var surfaceReady by remember { mutableStateOf(false) }
     val view = LocalView.current
     DisposableEffect(view, state.isActive) {
@@ -208,54 +280,61 @@ private fun VmScreen(
 
     Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
         Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding)
-                .verticalScroll(rememberScrollState())
-                .padding(16.dp),
+            modifier = if (fullscreen) Modifier.fillMaxSize() else Modifier.fillMaxSize()
+                .padding(innerPadding).verticalScroll(rememberScrollState()).padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Text("Viruaisor", style = MaterialTheme.typography.headlineMedium)
-            Card(modifier = Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text("Venus 宿主验证", style = MaterialTheme.typography.titleMedium)
-                    Text(venusHost.message, style = MaterialTheme.typography.bodySmall)
-                    OutlinedButton(onClick = { VenusHostRuntime.start(context) }, enabled = !state.isActive && !venusHost.running && !venusAvf.running) {
-                        Text("验证 Venus GPU 计算")
-                    }
-                    Text(venusAvf.message, style = MaterialTheme.typography.bodySmall)
-                    OutlinedButton(onClick = { VenusHostRuntime.startAvfProbe(context) }, enabled = !state.isActive && venusHost.verified && !venusHost.running && !venusAvf.running) {
-                        Text("检查 AVF Venus 后端")
-                    }
-                }
-            }
-            RootCard(rootAccess, onRequestRoot)
-            AvfPermissionCard(permissionSetup, rootAccess is RootAccess.Granted, state.isActive, onGrantAvf, onRevokeAvf)
-            AvfCard(state.support)
-            OutlinedButton(onClick = onToggleRootDisplay, enabled = rootAccess is RootAccess.Granted) {
-                Text(if (useRootDisplay) "关闭 Root 显示桥接" else "实验 Root Direct Surface（仅显示桥接）")
-            }
-            if (useRootDisplay) {
-                Text("实验仅限单 VM；内部显示接口没有 VM 所有权参数。", style = MaterialTheme.typography.bodySmall)
-                Text(rootDisplayStatus, style = MaterialTheme.typography.bodySmall)
+            if (!fullscreen) {
+                Text("Viruaisor", style = MaterialTheme.typography.headlineMedium)
+                Text("点击桌面进入全屏；Ctrl+Shift+Alt+Q 退出全屏，Android 返回/Home 手势切出。", style = MaterialTheme.typography.bodySmall)
             }
             key(useRootDisplay) {
                 VmSurface(
-                    modifier = Modifier
+                    modifier = if (fullscreen) Modifier.fillMaxWidth().weight(1f) else Modifier
                         .heightIn(max = 360.dp)
                         .aspectRatio(DISPLAY_ASPECT_RATIO)
                         .fillMaxWidth(),
                     backend = if (useRootDisplay) rootBackend else DisplayBackendRegistry.active,
+                    fullscreen = fullscreen,
+                    onEnterFullscreen = { if (state.isActive) onFullscreen(true) },
                     onReadyChanged = { surfaceReady = it },
                 )
             }
-            StatusCard(state)
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                OutlinedButton(onClick = onChooseBundle, enabled = state.canImport && !venusHost.running && !venusAvf.running) {
-                    Text(if (state.bundle == null) "Choose VM bundle" else "Replace VM bundle")
+            if (!fullscreen) {
+                StatusCard(state)
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    OutlinedButton(onClick = onChooseBundle, enabled = state.canImport && !venusHost.running && !venusAvf.running) {
+                        Text(if (state.bundle == null) "Choose VM bundle" else "Replace VM bundle")
+                    }
+                    Button(onClick = onStart, enabled = state.canStart && !venusHost.running && !venusAvf.running) { Text("Start") }
+                    OutlinedButton(onClick = onStop, enabled = state.canStop) { Text("Stop") }
                 }
-                Button(onClick = onStart, enabled = state.canStart && !venusHost.running && !venusAvf.running) { Text("Start") }
-                OutlinedButton(onClick = onStop, enabled = state.canStop) { Text("Stop") }
+                if (onPreparedBundle != null) OutlinedButton(onClick=onPreparedBundle,enabled=state.canImport) {
+                    Text("导入已准备的 Manjaro Plasma 镜像")
+                }
+                RootCard(rootAccess, onRequestRoot)
+                AvfPermissionCard(permissionSetup, rootAccess is RootAccess.Granted, state.isActive, onGrantAvf, onRevokeAvf)
+                AvfCard(state.support)
+                OutlinedButton(onClick = onToggleRootDisplay, enabled = rootAccess is RootAccess.Granted) {
+                    Text(if (useRootDisplay) "关闭 Root 显示桥接" else "实验 Root Direct Surface（仅显示桥接）")
+                }
+                if (useRootDisplay) {
+                    Text("实验仅限单 VM；内部显示接口没有 VM 所有权参数。", style = MaterialTheme.typography.bodySmall)
+                    Text(rootDisplayStatus, style = MaterialTheme.typography.bodySmall)
+                }
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text("Venus 宿主验证", style = MaterialTheme.typography.titleMedium)
+                        Text(venusHost.message, style = MaterialTheme.typography.bodySmall)
+                        OutlinedButton(onClick = { VenusHostRuntime.start(context) }, enabled = !state.isActive && !venusHost.running && !venusAvf.running) {
+                            Text("验证 Venus GPU 计算")
+                        }
+                        Text(venusAvf.message, style = MaterialTheme.typography.bodySmall)
+                        OutlinedButton(onClick = { VenusHostRuntime.startAvfProbe(context) }, enabled = !state.isActive && venusHost.verified && !venusHost.running && !venusAvf.running) {
+                            Text("检查 AVF Venus 后端")
+                        }
+                    }
+                }
             }
         }
     }
@@ -370,30 +449,19 @@ private fun StatusCard(state: VmUiState) {
 private fun VmSurface(
     modifier: Modifier = Modifier,
     backend: DisplayBackend,
+    fullscreen: Boolean,
+    onEnterFullscreen: () -> Unit,
     onReadyChanged: (Boolean) -> Unit,
 ) {
     val context = LocalContext.current
+    BoxWithConstraints(modifier=modifier.background(Color.Black)) {
+    val fitted=if (maxWidth/maxHeight > DISPLAY_ASPECT_RATIO) Modifier.fillMaxHeight().aspectRatio(DISPLAY_ASPECT_RATIO)
+        else Modifier.fillMaxWidth().aspectRatio(DISPLAY_ASPECT_RATIO)
     AndroidView(
-        modifier = modifier.background(Color.Black),
+        modifier = fitted.align(Alignment.Center),
         factory = {
-            SurfaceView(context).apply {
-                setBackgroundColor(android.graphics.Color.BLACK)
+            DesktopSurfaceView(context).apply {
                 holder.setFixedSize(DISPLAY_WIDTH, DISPLAY_HEIGHT)
-                isFocusable = true
-                isFocusableInTouchMode = true
-                setOnTouchListener { view, event ->
-                    if (event.actionMasked == android.view.MotionEvent.ACTION_DOWN) requestFocus()
-                    InputBackendRegistry.setTouchScale(DISPLAY_WIDTH.toFloat() / view.width)
-                    InputBackendRegistry.sendTouch(event)
-                }
-                setOnKeyListener { _, keyCode, event ->
-                    val scanCode = (event.scanCode.takeIf { it != 0 } ?: keyCode).toShort()
-                    when (event.action) {
-                        KeyEvent.ACTION_DOWN -> InputBackendRegistry.sendKey(scanCode, true)
-                        KeyEvent.ACTION_UP -> InputBackendRegistry.sendKey(scanCode, false)
-                        else -> false
-                    }
-                }
                 holder.addCallback(object : SurfaceHolder.Callback {
                     override fun surfaceCreated(holder: SurfaceHolder) = Unit
                     override fun surfaceChanged(
@@ -415,11 +483,17 @@ private fun VmSurface(
                 })
             }
         },
+        update = { view ->
+            view.enterFullscreen = onEnterFullscreen
+            if (view.fullscreen != fullscreen) view.fullscreen = fullscreen
+        },
         onRelease = { view ->
+            view.releaseInput()
             onReadyChanged(false)
             backend.detach(view.holder.surface)
         },
     )
+    }
 }
 
 private const val DISPLAY_WIDTH = 1280

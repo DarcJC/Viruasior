@@ -4,7 +4,14 @@ package pro.darc.viruaisor.vm
 internal object VmGpuConfiguration {
     fun apply(profile: VmGpuProfile, set: (String, Any) -> Unit) {
         set("setBackend", profile.avfBackend)
-        if (profile == VmGpuProfile.GFXSTREAM) {
+        if (profile == VmGpuProfile.VENUS) {
+            set("setRendererUseEgl", false)
+            set("setRendererUseGles", false)
+            set("setRendererUseGlx", false)
+            set("setRendererUseSurfaceless", true)
+            set("setRendererUseVulkan", true)
+            set("setContextTypes", arrayOf("venus"))
+        } else if (profile == VmGpuProfile.GFXSTREAM) {
             // This device's host Vulkan compositor aborts on its BGRA8 display buffer. Keep the
             // working GL compositor, while making the guest Vulkan/composer capsets explicit.
             set("setRendererUseEgl", true)

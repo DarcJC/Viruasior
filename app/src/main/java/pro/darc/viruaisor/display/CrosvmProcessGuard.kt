@@ -7,6 +7,7 @@ import java.nio.file.NoSuchFileException
 /** Internal lab guard, not proof that the global display Binder belongs to this app's VM. */
 internal class CrosvmProcessGuard(
     private val proc: File = File("/proc"),
+    private val privateCandidate: (File,String) -> Boolean = { _,_ -> false },
     private val readExecutable: (File) -> String? = { process ->
         try {
             Files.readSymbolicLink(File(process, "exe").toPath()).toString()
@@ -26,7 +27,7 @@ internal class CrosvmProcessGuard(
                 // A visibility failure must not silently hide a competing VM.
                 throw IllegalStateException("Cannot inspect executable for pid=${process.name}", error)
             }
-            executable != null && AVF_CROSVM.matches(executable)
+            executable != null && (AVF_CROSVM.matches(executable) || privateCandidate(process,executable))
         }
         check(crosvm.size == 1) {
             "Root display experiment requires exactly one crosvm; found ${crosvm.size}"

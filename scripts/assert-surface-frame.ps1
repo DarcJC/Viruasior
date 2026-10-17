@@ -13,13 +13,14 @@ if (-not $output.StartsWith($debugRoot + [System.IO.Path]::DirectorySeparatorCha
 [System.IO.Directory]::CreateDirectory($output) | Out-Null
 
 # Read-only graphics/UI inspection; no root, policy changes, lockscreen bypass or fake host drawing.
-& $Adb shell uiautomator dump /data/local/tmp/viruaisor-frame.xml | Out-Null
+$remoteUi = '/sdcard/Android/data/pro.darc.viruaisor/files/viruaisor-frame.xml'
+& $Adb shell uiautomator dump $remoteUi | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'UI dump failed' }
 $xmlPath = Join-Path $output 'frame-ui.xml'
-& $Adb pull /data/local/tmp/viruaisor-frame.xml $xmlPath | Out-Null
+& $Adb pull $remoteUi $xmlPath | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'UI dump pull failed' }
 [xml]$ui = [System.IO.File]::ReadAllText($xmlPath)
-$surface = $ui.SelectSingleNode('//node[@class="android.view.SurfaceView" and @package="pro.darc.viruaisor"]')
+$surface = $ui.SelectSingleNode('//node[(@class="android.view.SurfaceView" or @class="pro.darc.viruaisor.display.DesktopSurfaceView") and @package="pro.darc.viruaisor"]')
 if ($null -eq $surface) { throw 'No visible app SurfaceView; open Viruaisor without bypassing lockscreen' }
 $coords = @([regex]::Matches($surface.bounds, '[0-9]+') | ForEach-Object { [int]$_.Value })
 if ($coords.Count -ne 4 -or $coords[2]-$coords[0] -lt 100 -or $coords[3]-$coords[1] -lt 100) {

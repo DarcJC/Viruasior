@@ -52,7 +52,8 @@ class RootOverlayService : RootService() {
     private fun probe(caller: Int, token: String, mode: String, callback: IBinder): String {
         val executable = File(applicationInfo.nativeLibraryDir, "libvenus_overlay_probe.so")
         check(executable.isFile && executable.canExecute())
-        val candidate = mode == "venus-exec"
+        val desktop = mode == "venus-desktop"
+        val candidate = mode == "venus-exec" || desktop
         val stock = mode == "stock-exec" || candidate
         val source = if (stock) readArtifact(File(RootOverlayArtifactPolicy.CROSVM_PATH)) else null
         if (source != null) {
@@ -61,12 +62,13 @@ class RootOverlayService : RootService() {
         }
         val arguments = mutableListOf(executable.path, caller.toString(), applicationInfo.uid.toString(), token, mode)
         source?.let { arguments.add(it.stat.st_dev.toString()); arguments.add(it.stat.st_ino.toString()) }
-        val input = if (candidate) File(applicationInfo.nativeLibraryDir, RootOverlayArtifactPolicy.CANDIDATE_LIBRARY) else File(RootOverlayArtifactPolicy.CROSVM_PATH)
+        val input = if (candidate) File(applicationInfo.nativeLibraryDir, if (desktop) RootOverlayArtifactPolicy.DESKTOP_LIBRARY else RootOverlayArtifactPolicy.CANDIDATE_LIBRARY) else File(RootOverlayArtifactPolicy.CROSVM_PATH)
         if (candidate) {
             val directory = Os.lstat(applicationInfo.nativeLibraryDir)
             check(directory.st_uid == 1000 && directory.st_mode and 0x12 == 0)
             val artifact = readArtifact(input)
-            RootOverlayArtifactPolicy.enforceCandidate(artifact.hash, artifact.stat.st_size, artifact.stat.st_uid, artifact.stat.st_mode)
+            if (desktop) RootOverlayArtifactPolicy.enforceDesktopCandidate(artifact.hash, artifact.stat.st_size, artifact.stat.st_uid, artifact.stat.st_mode)
+            else RootOverlayArtifactPolicy.enforceCandidate(artifact.hash, artifact.stat.st_size, artifact.stat.st_uid, artifact.stat.st_mode)
             Log.i(TAG, "CANDIDATE_PINNED sha256=${artifact.hash} size=${artifact.stat.st_size}")
             arguments.addAll(listOf(artifact.stat.st_dev.toString(), artifact.stat.st_ino.toString(), artifact.stat.st_size.toString()))
         }
@@ -101,7 +103,7 @@ class RootOverlayService : RootService() {
         }, "venus-overlay-native-output").apply { isDaemon = true; start() }
         try {
             process.outputStream.close()
-            check(process.waitFor(if (stock) 25 else 15, TimeUnit.SECONDS)) { "Native lease exceeded the profile deadline" }
+            check(process.waitFor(if (desktop) 86405 else if (stock) 25 else 15, TimeUnit.SECONDS)) { "Native lease exceeded the profile deadline" }
             reader.join(1000)
             check(!reader.isAlive) { "Native output did not close" }
             return "native_exit=${process.exitValue()}\n${synchronized(output) { output.toString() }}"

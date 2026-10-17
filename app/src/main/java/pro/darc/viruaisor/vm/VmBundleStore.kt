@@ -133,7 +133,8 @@ class VmBundleStore(private val context: Context) {
         val gpuProfile = when (val configured = json.optString("gpuProfile", "2d")) {
             "2d" -> VmGpuProfile.SOFTWARE_2D
             "gfxstream" -> VmGpuProfile.GFXSTREAM
-            else -> error("gpuProfile must be 2d or gfxstream, not $configured.")
+            "venus" -> VmGpuProfile.VENUS
+            else -> error("gpuProfile must be 2d, gfxstream or venus, not $configured.")
         }
         val displayJson = json.optJSONObject("display")
         val display = VmDisplayConfig(

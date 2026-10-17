@@ -11,6 +11,10 @@ import com.topjohnwu.superuser.ipc.RootService
 import java.io.File
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import android.system.Os
+import java.io.FileInputStream
+import java.security.MessageDigest
+import pro.darc.viruaisor.root.RootOverlayArtifactPolicy
 
 /** Non-daemon helper: ONLY display attach/detach; no shell, files, grants, input, or VM lifecycle RPC. */
 class RootDisplayService : RootService() {
@@ -124,8 +128,41 @@ class RootDisplayService : RootService() {
     private fun requireSingleCrosvm() {
         // waitDisplayService has NO VM ownership argument. Fail closed on competing VMs instead
         // of pretending UID authentication also authenticates the global display resource.
-        val crosvm = CrosvmProcessGuard().requireSingle()
+        val crosvm = CrosvmProcessGuard(privateCandidate=::isPrivateCandidate).requireSingle()
+        requireOwnedCrosvm(crosvm)
+        validateExecutable(crosvm,desktopOnly=false)
         Log.i(TAG, "Single-VM lab guard: crosvm pid=${crosvm.name}; internal display ownership remains unverifiable")
+    }
+
+    private fun requireOwnedCrosvm(process: File) {
+        val uidLine=File(process,"status").readLines().single { it.startsWith("Uid:") }
+        val ids=uidLine.substringAfter(':').trim().split(Regex("\\s+"))
+        check(ids.size == 4 && ids.all { it.toIntOrNull() == applicationInfo.uid }) { "Display VM is not owned by this application" }
+        check(File(process,"cmdline").readText().substringBefore('\u0000') == "crosvm_default") { "Unexpected display VM" }
+        val context=File(process,"attr/current").readText().trim().trimEnd('\u0000')
+        val domain="u:r:untrusted_app_all_virtmgr_crosvm:s0"
+        check(context == domain || context.startsWith("$domain:")) { "Unexpected VM security domain" }
+    }
+
+    private fun isPrivateCandidate(process: File,path: String): Boolean {
+        val user=applicationInfo.uid / 100000
+        if (!Regex("^/data/user/$user/pro\\.darc\\.viruaisor/files/venus-overlay-lab/[0-9a-f]{32}\\.snapshot$").matches(path)) return false
+        requireOwnedCrosvm(process)
+        validateExecutable(process,desktopOnly=true)
+        return true
+    }
+
+    private fun validateExecutable(process: File,desktopOnly: Boolean) {
+        FileInputStream(File(process,"exe")).use { input ->
+            val stat=Os.fstat(input.fd)
+            val digest=MessageDigest.getInstance("SHA-256")
+            val bytes=ByteArray(65536)
+            while (true) { val n=input.read(bytes); if (n < 0) break; digest.update(bytes,0,n) }
+            val hash=digest.digest().joinToString("") { "%02x".format(it.toInt() and 255) }
+            if (!desktopOnly && hash == RootOverlayArtifactPolicy.CROSVM_SHA256) {
+                check(stat.st_uid == 0 && stat.st_size == 13593816L && stat.st_mode and 0xfff == 0x1ed) { "Unexpected stock VM executable metadata" }
+            } else RootOverlayArtifactPolicy.enforceDesktopCandidate(hash,stat.st_size,stat.st_uid,stat.st_mode)
+        }
     }
 
     private fun removeSurface() {

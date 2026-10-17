@@ -1,0 +1,30 @@
+--- a/src/crosvm/sys/linux/gpu.rs
++++ b/src/crosvm/sys/linux/gpu.rs
+@@ -96,6 +96,14 @@ pub fn create_gpu_device(
+         gpu_params.snapshot_scratch_path = Some(Path::new("/tmpfs-gpu-snapshot").to_path_buf());
+     }
+
++    #[cfg(target_os = "android")]
++    {
++        // This app-private crosvm serves a Venus guest whose blob mappings are
++        // repeatedly created and destroyed. Keep one prepared BAR mapping so a
++        // recycled guest offset cannot retain a stale dynamic KVM memory slot.
++        gpu_params.fixed_blob_mapping = true;
++    }
++
+     if gpu_params.fixed_blob_mapping {
+         if has_vfio_gfx_device {
+             // TODO(b/323368701): make fixed_blob_mapping compatible with vfio dma_buf mapping for
+@@ -111,6 +119,12 @@ pub fn create_gpu_device(
+         }
+     }
+
++    #[cfg(target_os = "android")]
++    info!(
++        "VIRUAISOR_GPU_FIXED_BLOB_MAPPING={}",
++        u8::from(gpu_params.fixed_blob_mapping)
++    );
++
+     // external_blob must be enforced to ensure that a blob can be exported to a mappable descriptor
+     // (dma_buf, shmem, ...), since:
+     //   - is_sandboxed implies that blob mapping will be done out-of-process by the crosvm

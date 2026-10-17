@@ -61,6 +61,31 @@ outputs must match independently calculated values, and the child must exit 0.
 The main app bounds the worker to 30 seconds and rejects partial, root-UID,
 missing-word, unchanged-result and crashed runs.
 
+`--repeat-contexts` reuses one renderer for context IDs 1, 2, 1 with three
+different input vectors. Each must complete 16 real compute readbacks, followed
+by global renderer cleanup and exit 0. On the device, this passed under ordinary
+app UID 10278 while the display stayed asleep. Run
+`node scripts/assert-venus-contexts.cjs <log> 0 <uid>` to classify the result.
+This does not validate guest GL, WSI, Surface or input.
+
+When reusing the paired AVF build workspace, use
+`scripts/build-venus-context-probe.sh` to create a separate standalone renderer
+profile. The AVF renderer requires an exported system linker namespace that a
+standalone executable does not have; keep that AVF loader check strict.
+
+`scripts/build-venus-vtest-diag.sh` builds a separate Venus-only Unix-socket
+diagnostic server. Optional `--android-memory` and `--android-memory-filter`
+profiles compare the Android allocator and conservative import compatibility
+filter. They do not replace the packaged AVF backend. Manjaro userspace can run
+from the owning debug app's private directory using its own glibc loader, without
+root or chroot. `scripts/prepare-venus-linux-diag.py` stages its fixed dependency
+closure and `scripts/venus-vtest-draw-probe.py` requires the app-owned socket,
+explicit Venus/Zink selection and real Mali shader pixels. Its diagnostic
+markers cannot satisfy the formal desktop acceptance script. Mesa 24 failed the
+original FragCoord shader; the private Mesa 25 Zink comparison passes all three
+actual Mali pixel samples after the memory compatibility filter. AVF desktop
+qualification remains pending; see [device evidence](../../docs/manjaro-plasma-preparation.md).
+
 ## OEM thread teardown compatibility
 
 The initial ordinary-app worker completed compute but exited 139 in

@@ -11,6 +11,14 @@ import java.io.File
 import java.nio.file.AccessDeniedException
 
 class CrosvmProcessGuardTest {
+    @Test fun privateRuntimeIsCountedOnlyWhenItsProvenanceIsAuthenticated() {
+        val image="/data/user/0/pro.darc.viruaisor/files/venus-overlay-lab/" + "a".repeat(32) + ".snapshot"
+        process("123","crosvm_default",image)
+        val guarded=CrosvmProcessGuard(proc, privateCandidate={ process,path -> process.name == "123" && path == image }, readExecutable={ executables[it.name] })
+        assertEquals("123",guarded.requireSingle().name)
+        process("456","crosvm_other","/apex/com.android.virt/bin/crosvm")
+        assertThrows(IllegalStateException::class.java) { guarded.requireSingle() }
+    }
     @get:Rule val temporary = TemporaryFolder()
     private val executables = mutableMapOf<String, String?>()
     private val proc: File by lazy { temporary.newFolder("proc") }

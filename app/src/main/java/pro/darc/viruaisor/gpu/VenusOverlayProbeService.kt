@@ -35,7 +35,7 @@ class VenusOverlayProbeService : Service() {
         val fault = intent?.getStringExtra("stock_fault") ?: "none"
         val venusGpu = intent?.getBooleanExtra("venus_gpu", false) == true
         val skipCacheSync = intent?.getBooleanExtra("skip_cache_sync", false) == true
-        if (intent?.action != ACTION || mode !in setOf("stock-baseline", "stock-recover") && !RootOverlayAuthorization.validRequest("0".repeat(32), mode) ||
+        if (intent?.action != ACTION || mode == "venus-desktop" || mode !in setOf("stock-baseline", "stock-recover") && !RootOverlayAuthorization.validRequest("0".repeat(32), mode) ||
             injectErrorAfterVm && mode != "stock-exec" || !StockProbeConfig.validFault(fault) ||
             fault != "none" && mode != "stock-exec" || venusGpu && mode != "venus-exec" ||
             skipCacheSync && (mode != "venus-exec" || !venusGpu)) {

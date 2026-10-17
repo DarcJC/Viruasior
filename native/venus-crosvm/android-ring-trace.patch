@@ -1,0 +1,36 @@
+--- a/src/venus/vkr_context.c
++++ b/src/venus/vkr_context.c
+@@ -165,6 +165,9 @@
+ bool
+ vkr_context_submit_cmd(struct vkr_context *ctx, const void *buffer, size_t size)
+ {
++   uint32_t opcode = 0;
++   if (size >= sizeof(opcode)) memcpy(&opcode, buffer, sizeof(opcode));
++   vkr_log("VIRUAISOR_CONTEXT_SUBMIT ctx=%u size=%zu first=%x", ctx->ctx_id, size, opcode);
+    /* CS error is considered fatal (destroy the context?) */
+    if (vkr_context_get_fatal(ctx)) {
+       vkr_log("submit_cmd: early bail due to fatal decoder state");
+@@ -546,6 +549,7 @@
+
+    struct timespec abs_ts;
+    int ret = thrd_busy;
++   unsigned trace_count = 0;
+    assert(ctx->ring_monitor.started);
+    while (ctx->ring_monitor.started) {
+       /* only notify at the configured rate, not faster. */
+@@ -554,8 +558,15 @@
+          list_for_each_entry (struct vkr_ring, ring, &ctx->rings, head) {
+             if (ring->monitor)
+                vkr_ring_set_status_bits(ring, VK_RING_STATUS_ALIVE_BIT_MESA);
++            if (trace_count < 3)
++               vkr_log("VIRUAISOR_RING_MONITOR ctx=%u ring=%llu head=%u tail=%u status=%x",
++                       ctx->ctx_id, (unsigned long long)ring->id,
++                       atomic_load_explicit(ring->control.head, memory_order_acquire),
++                       atomic_load_explicit(ring->control.tail, memory_order_acquire),
++                       atomic_load_explicit(ring->control.status, memory_order_acquire));
+          }
+          mtx_unlock(&ctx->ring_mutex);
++         trace_count++;
+
+          ret = clock_gettime(CLOCK_REALTIME, &abs_ts);
+          if (ret)

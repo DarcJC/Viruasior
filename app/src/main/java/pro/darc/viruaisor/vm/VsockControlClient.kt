@@ -23,7 +23,7 @@ class VsockControlClient(private val engine: AvfVmEngine) {
     fun shutdown(port: Long) = send(port, SHUTDOWN)
 
     fun startDesktop(port: Long, profile: VmGpuProfile) =
-        request(port, GuestDesktopProtocol.start(profile))
+        request(port, GuestDesktopProtocol.start(profile), if (profile == VmGpuProfile.VENUS) 95_000 else COMMAND_TIMEOUT_MS)
 
     fun stopDesktop(port: Long, profile: VmGpuProfile) =
         request(port, GuestDesktopProtocol.stop(profile))
@@ -95,9 +95,10 @@ class VsockControlClient(private val engine: AvfVmEngine) {
 }
 
 internal object GuestDesktopProtocol {
-    fun start(profile: VmGpuProfile): String = "START_DESKTOP ${profile.avfBackend}"
+    private fun name(profile: VmGpuProfile) = if (profile == VmGpuProfile.VENUS) "venus" else profile.avfBackend
+    fun start(profile: VmGpuProfile): String = "START_DESKTOP ${name(profile)}"
 
-    fun stop(profile: VmGpuProfile): String = "STOP_DESKTOP ${profile.avfBackend}"
+    fun stop(profile: VmGpuProfile): String = "STOP_DESKTOP ${name(profile)}"
 }
 
 internal object GuestControlProtocol {

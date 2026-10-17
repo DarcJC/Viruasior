@@ -12,6 +12,7 @@ data class VmDisk(
 enum class VmGpuProfile(val avfBackend: String) {
     SOFTWARE_2D("2d"),
     GFXSTREAM("gfxstream"),
+    VENUS("virglrenderer"),
 }
 
 data class VmDisplayConfig(

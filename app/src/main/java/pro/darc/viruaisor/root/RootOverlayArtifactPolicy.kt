@@ -8,6 +8,13 @@ internal object RootOverlayArtifactPolicy {
     const val CANDIDATE_LIBRARY = "libvenus_crosvm.so"
     const val CANDIDATE_SHA256 = "a4a71002533174408d0acdbfe3d4980482087bc9a29d0428ac423579bce9029b"
     const val CANDIDATE_BYTES = 13277408L
+    const val DESKTOP_LIBRARY = "libvenus_desktop_crosvm.so"
+    const val DESKTOP_SHA256 = "0a176f6bba666f3bcd9683981a3a167813467fa850da731d24b15f5203c59e6c"
+    const val DESKTOP_BYTES = 14104232L
+    fun enforceDesktopCandidate(hash: String, bytes: Long, owner: Int, mode: Int) {
+        if (hash != DESKTOP_SHA256 || bytes != DESKTOP_BYTES || owner !in setOf(0,1000) ||
+            mode !in setOf(0x81ed,0x816d)) throw SecurityException("Desktop runtime must be the pinned installer-owned executable")
+    }
     fun enforceCandidate(hash: String, bytes: Long, owner: Int, mode: Int) {
         if (hash != CANDIDATE_SHA256 || bytes != CANDIDATE_BYTES || owner !in setOf(0, 1000) ||
             mode !in setOf(0x81ed, 0x816d)) {

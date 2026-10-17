@@ -10,7 +10,11 @@ import ctypes as C
 import os
 import sys
 
-GFX_ICD = "/usr/share/vulkan/icd.d/gfxstream_vk_icd.json"
+if sys.argv[1:] not in ([], ["--venus"]):
+    raise SystemExit("usage: guest-gpu-draw-probe.py [--venus]")
+PROFILE = "venus" if sys.argv[1:] == ["--venus"] else "gfxstream"
+GFX_ICD = ("/opt/viruaisor/venus/venus_icd.json" if PROFILE == "venus"
+           else "/usr/share/vulkan/icd.d/gfxstream_vk_icd.json")
 SIZE = 32
 I, U, P = C.c_int, C.c_uint, C.c_void_p
 
@@ -30,9 +34,14 @@ def run():
             or os.environ.get("VK_ICD_FILENAMES") != GFX_ICD
             or os.environ.get("MESA_LOADER_DRIVER_OVERRIDE") != "zink"
             or os.environ.get("LIBGL_ALWAYS_SOFTWARE", "").lower() not in ("0", "false")):
-        raise RuntimeError("explicit gfxstream/Zink/nonsoftware environment is required")
+        raise RuntimeError("explicit %s/Zink/nonsoftware environment is required" % PROFILE)
     print("DRAW_UID=%s DRAW_GID=%s DRAW_GROUPS=%s" %
           (os.geteuid(), os.getegid(), os.getgroups()), flush=True)
+    draw()
+
+
+def draw(success_label="GPU_DRAW_READBACK_PASS (not Android Surface presentation)"):
+    """Exercise EGL and validate real shader pixels; callers enforce their transport."""
 
     print("DRAW_STAGE=load-EGL", flush=True)
     egl = C.CDLL("libEGL.so.1")
@@ -149,6 +158,7 @@ def run():
         if error:
             raise RuntimeError("draw: GL error 0x%x" % error)
         print("DRAW_STAGE=read-pixels", flush=True)
+        mismatches = 0
         for x, y in ((1, 1), (16, 16), (30, 30)):
             pixel = (C.c_ubyte * 4)()
             read_pixels(x, y, 1, 1, 0x1908, 0x1401, pixel)
@@ -158,8 +168,10 @@ def run():
             expected = (round(255 * (x + 0.5) / SIZE), round(255 * (y + 0.5) / SIZE), 128, 255)
             print("PIXEL(%s,%s)=%s expected=%s" % (x, y, list(pixel), expected), flush=True)
             if any(abs(actual - target) > 2 for actual, target in zip(pixel, expected)):
-                raise RuntimeError("shader readback mismatch")
-        print("GPU_DRAW_READBACK_PASS (not Android Surface presentation)", flush=True)
+                mismatches += 1
+        if mismatches:
+            raise RuntimeError("shader readback mismatch at %s samples" % mismatches)
+        print(success_label, flush=True)
     finally:
         if display:
             current(display, None, None, None)

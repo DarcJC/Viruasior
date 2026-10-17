@@ -1,0 +1,23 @@
+--- a/vm_control/src/lib.rs
++++ b/vm_control/src/lib.rs
+@@ -465,6 +465,11 @@
+         gralloc: &mut RutabagaGralloc,
+         prot: Protection,
+     ) -> anyhow::Result<(Box<dyn MappedRegion>, u64, Option<SafeDescriptor>)> {
++        if let VmMemorySource::Descriptor { descriptor, offset, size } = &self {
++            let path = std::fs::read_link(format!("/proc/self/fd/{}", descriptor.as_raw_descriptor()));
++            info!("VIRUAISOR_VM_MAP_FD fd={} offset={} size={} name={:?}",
++                descriptor.as_raw_descriptor(), offset, size, path);
++        }
+         let (mem_region, size, descriptor) = match self {
+             VmMemorySource::Descriptor {
+                 descriptor,
+@@ -795,6 +803,8 @@
+                     Err(e) => return VmMemoryResponse::Err(e.into()),
+                 };
+
++                info!("VIRUAISOR_VM_MAP_REGION guest={:#x} size={:#x}", guest_addr.0, size);
++
+                 let slot = match vm
+                     .add_memory_region(
+                         guest_addr,

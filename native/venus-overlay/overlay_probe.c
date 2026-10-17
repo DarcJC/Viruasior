@@ -3,6 +3,7 @@
 #include "overlay_copy.h"
 #include "overlay_mount_policy.h"
 #include "overlay_wait.h"
+#include "desktop_lease.h"
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -161,7 +162,7 @@ static int stable_process_handle(pid_t pid, pid_t expected_parent, unsigned uid,
 }
 /* Observe only the fixed test VM and its authenticated stock-virtmgr parent. */
 static bool observe_stock(pid_t owner, unsigned uid, uint64_t ns, const struct stat *image,
-                          const struct stat *virtmgr_image, struct stock_children *children) {
+                          const struct stat *virtmgr_image, struct stock_children *children, bool desktop) {
     DIR *dir = opendir("/proc");
     if (!dir) return false;
     bool seen = children->crosvm_fd >= 0; struct dirent *e;
@@ -184,7 +185,7 @@ static bool observe_stock(pid_t owner, unsigned uid, uint64_t ns, const struct s
                 printf("VIRTMGR_OBSERVED pid=%ld ppid=%d uid=%u caps=%" PRIx64 " ns=%" PRIu64 " context=%s\n", p, owner, uid, caps, ns, context);
             }
         }
-        if (!same_inode(&executable, image) || !overlay_stock_identity_valid(uid, uid, cmd, caps)) continue;
+        if (!same_inode(&executable, image) || !(desktop ? overlay_desktop_identity(uid,uid,cmd,caps) : overlay_stock_identity_valid(uid, uid, cmd, caps))) continue;
         pid_t grandparent = 0; struct stat parent_exe;
         snprintf(path, sizeof(path), "/proc/%d/exe", parent);
         unsigned long long parent_start = start_time(parent, &grandparent);
@@ -220,7 +221,8 @@ int main(int argc, char **argv) {
     setvbuf(stdout, NULL, _IOLBF, 0);
     if (getuid() || argc < 5 || !overlay_token_valid(argv[3])) return 64;
     const char *mode = argv[4];
-    bool candidate = !strcmp(mode, "venus-exec");
+    bool desktop = !strcmp(mode, "venus-desktop");
+    bool candidate = !strcmp(mode, "venus-exec") || desktop;
     bool stock = !strcmp(mode, "stock-exec") || candidate;
     if (argc != (candidate ? 10 : stock ? 7 : 5) || (!stock && strcmp(mode, "normal") && strcmp(mode, "timeout") && strcmp(mode, "client-death") && strcmp(mode, "helper-death"))) return 64;
     char *end; long parsed = strtol(argv[1], &end, 10);
@@ -327,8 +329,10 @@ int main(int argc, char **argv) {
         candidate ? "venus-candidate-byte-identical" : stock ? "stock-copy-byte-identical" : "sentinel", (uintmax_t)copied_image.st_dev, (uintmax_t)copied_image.st_ino);
     if (!strcmp(mode, "helper-death")) _exit(23); /* Dedicated app's independent watchdog destroys the namespace. */
     uint64_t deadline = monotonic_ms() + (stock ? 20000 : 8000);
+    const uint64_t session_deadline = monotonic_ms() + UINT64_C(86400000);
+    char previous_control = '0';
     for (;;) {
-        if (stock && !stock_seen) stock_seen = observe_stock(pid, uid, target_ns, &copied_image, &virtmgr_image, &children);
+        if (stock && !stock_seen) stock_seen = observe_stock(pid, uid, target_ns, &copied_image, &virtmgr_image, &children, desktop);
         struct pollfd owner = { .fd = pidfd, .events = POLLIN };
         int status = poll(&owner, 1, 50);
         if (status > 0 && owner.revents) {
@@ -339,10 +343,16 @@ int main(int argc, char **argv) {
         REQUIRE(status >= 0 || errno == EINTR, "pidfd-poll");
         int control = openat(dir, control_name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
         REQUIRE(control >= 0, "fixed-control");
+        struct stat control_stat;
+        REQUIRE(!fstat(control,&control_stat) && S_ISREG(control_stat.st_mode) && control_stat.st_uid == uid &&
+            control_stat.st_size == 1 && control_stat.st_nlink == 1, "owned-one-byte-control");
         char c = 0; ssize_t n = pread(control, &c, 1, 0); close(control);
         REQUIRE(n == 1, "read-control");
         if (c == '1' && (stock || !strcmp(mode, "normal"))) { result = 0; break; }
-        if (monotonic_ms() >= deadline) {
+        REQUIRE(c == '0' || (desktop && (c == '2' || c == '3')), "control-value");
+        if (desktop && overlay_desktop_heartbeat(previous_control,c)) deadline=monotonic_ms()+15000;
+        previous_control=c;
+        if (monotonic_ms() >= deadline || (desktop && monotonic_ms() >= session_deadline)) {
             printf("LEASE_EXPIRED\n");
             if (stock) terminate_stock_lease(pidfd, &children);
             result = !strcmp(mode, "timeout") ? 0 : 2; break;

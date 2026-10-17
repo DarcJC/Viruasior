@@ -28,6 +28,7 @@ class AvfVmEngine(
     context: Context,
     private val callbackExecutor: Executor,
     private val onEvent: (VmEngineEvent) -> Unit,
+    private val venusRuntimeReady: () -> Boolean = { false },
 ) : VmInputBackend {
     private val appContext = context.applicationContext
     private val lock = Any()
@@ -40,6 +41,9 @@ class AvfVmEngine(
     fun start(bundle: VmBundle) = synchronized(lock) {
         Log.d(TAG, "start engine=${System.identityHashCode(this)}")
         try {
+            check(bundle.gpuProfile != VmGpuProfile.VENUS || venusRuntimeReady()) {
+                "Venus requires the pinned application-private desktop runtime; software fallback is forbidden."
+            }
             stopRequested = false
             guestAgent = null
             val manager = manager()
@@ -74,8 +78,10 @@ class AvfVmEngine(
                     onEvent(VmEngineEvent.Running)
                 }
             }
+            true
         } catch (error: Throwable) {
             onEvent(VmEngineEvent.Error(error.avfMessage()))
+            false
         }
     }
 
@@ -102,6 +108,12 @@ class AvfVmEngine(
     override fun sendTouch(event: MotionEvent): Boolean =
         synchronized(lock) { vm }?.let { target ->
             runCatching { invoke(target, "sendMultiTouchEvent", event) as Boolean }
+                .getOrDefault(false)
+        } ?: false
+
+    override fun sendMouse(event: MotionEvent): Boolean =
+        synchronized(lock) { vm }?.let { target ->
+            runCatching { invoke(target, "sendMouseEvent", event) as Boolean }
                 .getOrDefault(false)
         } ?: false
 
@@ -155,6 +167,13 @@ class AvfVmEngine(
             runCatching { invoke(target, "clearCallback") }
             callbackProxy = null
         }
+    }
+
+    fun closeStopped() = synchronized(lock) {
+        val target=vm ?: return@synchronized
+        check(invoke(target,"getStatus") != STATUS_RUNNING) { "Cannot close an active VM" }
+        invoke(target,"close")
+        vm=null; consoleInput?.close(); consoleInput=null; guestAgent=null; callbackProxy=null
     }
 
     private fun manager(): Any = appContext.getSystemService(AvfCapability.SERVICE)
@@ -280,6 +299,7 @@ class AvfVmEngine(
                 "onStopped" -> {
                     val reason = args?.getOrNull(1) as? Int ?: STOP_REASON_UNKNOWN
                     synchronized(lock) {
+                        vm?.let { stopped -> runCatching { invoke(stopped,"close") } }
                         consoleInput?.close()
                         vm = null
                         consoleInput = null

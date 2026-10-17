@@ -1,0 +1,88 @@
+--- a/src/venus/vkr_device_memory.c
++++ b/src/venus/vkr_device_memory.c
+@@ -21,6 +21,7 @@
+ #include "venus_cache_sync.h"
+ #include "venus_dma_buf_size_policy.h"
+ #include "venus_import_type_policy.h"
++#include "venus_ahb_registry.h"
+ #include <inttypes.h>
+ #include <fcntl.h>
+ #include <linux/dma-heap.h>
+@@ -31,3 +32,53 @@
++#define VIRUAISOR_AHB_REGISTRY_CAPACITY 4096
++static struct venus_ahb_registry_entry
++   viruaisor_ahb_registry[VIRUAISOR_AHB_REGISTRY_CAPACITY];
++static pthread_mutex_t viruaisor_ahb_registry_mutex = PTHREAD_MUTEX_INITIALIZER;
++void *viruaisor_ahb_acquire_from_fd(int fd);
++
++static bool
++viruaisor_ahb_register(int fd, AHardwareBuffer *buffer)
++{
++   struct stat st;
++   if (fd < 0 || !buffer || fstat(fd, &st))
++      return false;
++   pthread_mutex_lock(&viruaisor_ahb_registry_mutex);
++   const bool added = venus_ahb_registry_add(
++      viruaisor_ahb_registry, VIRUAISOR_AHB_REGISTRY_CAPACITY,
++      (uint64_t)st.st_dev, (uint64_t)st.st_ino, buffer);
++   pthread_mutex_unlock(&viruaisor_ahb_registry_mutex);
++   return added;
++}
++
++static void
++viruaisor_ahb_unregister(int fd, AHardwareBuffer *buffer)
++{
++   struct stat st;
++   if (fd < 0 || !buffer || fstat(fd, &st))
++      return;
++   pthread_mutex_lock(&viruaisor_ahb_registry_mutex);
++   (void)venus_ahb_registry_remove(
++      viruaisor_ahb_registry, VIRUAISOR_AHB_REGISTRY_CAPACITY,
++      (uint64_t)st.st_dev, (uint64_t)st.st_ino, buffer);
++   pthread_mutex_unlock(&viruaisor_ahb_registry_mutex);
++}
++
++/* Same-process display bridge: the caller owns the returned AHB reference. */
++void *
++viruaisor_ahb_acquire_from_fd(int fd)
++{
++   struct stat st;
++   if (fd < 0 || fstat(fd, &st))
++      return NULL;
++   pthread_mutex_lock(&viruaisor_ahb_registry_mutex);
++   AHardwareBuffer *buffer = venus_ahb_registry_find(
++      viruaisor_ahb_registry, VIRUAISOR_AHB_REGISTRY_CAPACITY,
++      (uint64_t)st.st_dev, (uint64_t)st.st_ino);
++   if (buffer)
++      AHardwareBuffer_acquire(buffer);
++   pthread_mutex_unlock(&viruaisor_ahb_registry_mutex);
++   return buffer;
++}
++
+ static void
+ vkr_trace_dma_buf_fd(const char *stage, uint64_t object_id, uint32_t res_id, int fd)
+ {
+@@ -761,6 +811,11 @@
+    mem->valid_fd_types = valid_fd_types;
+    mem->udmabuf_fd = udmabuf_fd;
+    mem->android_buffer = android_buffer;
++#ifdef __ANDROID__
++   if (android_buffer && !viruaisor_ahb_register(udmabuf_fd, android_buffer))
++      vkr_log("VIRUAISOR_AHB_REGISTRY_FULL object=%" PRIu64,
++              viruaisor_memory_id);
++#endif
+    mem->gbm_bo = gbm_bo;
+    mem->mtl_shm = mtl_shm;
+    mem->allocation_size = alloc_info->allocationSize;
+@@ -909,7 +964,10 @@
+ vkr_device_memory_release(struct vkr_device_memory *mem)
+ {
+ #ifdef __ANDROID__
+-   if (mem->android_buffer) venus_ahb_release(mem->android_buffer);
++   if (mem->android_buffer) {
++      viruaisor_ahb_unregister(mem->udmabuf_fd, mem->android_buffer);
++      venus_ahb_release(mem->android_buffer);
++   }
+ #endif
+    vkr_mtl_shm_free(mem->mtl_shm);
+    if (mem->gbm_bo)

@@ -1,7 +1,9 @@
 #define _GNU_SOURCE
 #include <errno.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdio.h>
+#include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/ioctl.h>
@@ -15,7 +17,8 @@
 #include "vn_protocol_driver.h"
 #include "probe_shader.h"
 
-#define CTX 1
+static _Atomic uint32_t context_id = 1;
+#define CTX context_id
 #define REPLY_BYTES 65536
 #define REPLY_FLAG VK_COMMAND_GENERATE_REPLY_BIT_EXT
 #define HANDLE(type, id) ((type)(uintptr_t)(id))
@@ -28,6 +31,7 @@ static struct vn_cs_encoder enc;
 static struct vn_cs_decoder dec;
 static void *reply_mapping;
 static const char *stage = "init";
+static bool renderer_initialized;
 #ifdef VENUS_TLS_TRACE
 /* Diagnostic pass-through: identify the owner of each pthread destructor before
  * a possible ICD-side unload. No key is deleted or destructor suppressed. */
@@ -95,9 +99,8 @@ static void begin(const char *name) {
 #define VOID_CALL(name, ...) do { begin(#name); vn_encode_##name(&enc, REPLY_FLAG, __VA_ARGS__); REQUIRE(submit() == 0); vn_decode_##name##_reply(&dec, __VA_ARGS__); REQUIRE(!dec.fatal); } while (0)
 #define VK_CALL(name, ...) do { begin(#name); vn_encode_##name(&enc, REPLY_FLAG, __VA_ARGS__); REQUIRE(submit() == 0); VkResult r = vn_decode_##name##_reply(&dec, __VA_ARGS__); printf("VENUS_VK_RESULT=%s:%d\n", #name, r); REQUIRE(!dec.fatal && r == VK_SUCCESS); } while (0)
 
-int main(void) {
-    setvbuf(stdout, NULL, _IOLBF, 0);
-    bool initialized = false, context = false, reply_created = false, memory_created = false, imported_created = false;
+static int probe_context(uint32_t ordinal) {
+    bool context = false, reply_created = false, memory_created = false, imported_created = false;
     void *data_mapping = NULL;
     int exported_fd = -1, result = 1;
     uint64_t mapped_size = 0;
@@ -111,12 +114,15 @@ int main(void) {
     REQUIRE(crypto_pin != NULL);
     printf("VENUS_CRYPTO_MODULE=PINNED_PROCESS_LIFETIME\n");
     virgl_set_log_callback(on_log, NULL, NULL);
-    struct virgl_renderer_callbacks callbacks = {.version = VIRGL_RENDERER_CALLBACKS_VERSION, .write_context_fence = on_fence};
+    static struct virgl_renderer_callbacks callbacks = {.version = VIRGL_RENDERER_CALLBACKS_VERSION, .write_context_fence = on_fence};
     uint32_t flags = VIRGL_RENDERER_VENUS | VIRGL_RENDERER_NO_VIRGL |
         VIRGL_RENDERER_RENDER_SERVER | VIRGL_RENDERER_THREAD_SYNC |
         VIRGL_RENDERER_ASYNC_FENCE_CB | VIRGL_RENDERER_USE_EXTERNAL_BLOB;
-    REQUIRE(virgl_renderer_init(NULL, flags, &callbacks) == 0);
-    initialized = true;
+    if (!renderer_initialized) {
+        REQUIRE(virgl_renderer_init(NULL, flags, &callbacks) == 0);
+        renderer_initialized = true;
+        printf("VENUS_RENDERER_INITIALIZED=1\n");
+    }
     uint32_t cap_version = 0, cap_size = 0;
     virgl_renderer_get_cap_set(4, &cap_version, &cap_size);
     printf("VENUS_CAPSET=4 version=%u size=%u\n", cap_version, cap_size);
@@ -243,7 +249,7 @@ int main(void) {
     uint32_t expected[16];
     REQUIRE(fd_type != 1 || sync_dma_buf(exported_fd, DMA_BUF_SYNC_START | DMA_BUF_SYNC_WRITE) == 0);
     for (uint32_t i = 0; i < 16; i++) {
-        words[i] = 0xa5a50000u + i;
+        words[i] = 0xa5a50000u + i + (ordinal - 1) * 0x01000000u;
         expected[i] = ((words[i] ^ (0x9e3779b9u + i * 0x045d9f3bu)) * 1664525u) + 1013904223u;
     }
     REQUIRE(fd_type != 1 || sync_dma_buf(exported_fd, DMA_BUF_SYNC_END | DMA_BUF_SYNC_WRITE) == 0);
@@ -315,7 +321,29 @@ cleanup:;
     if (imported_created) virgl_renderer_resource_unref(3);
     if (reply_mapping) virgl_renderer_resource_unmap(1);
     if (reply_created) virgl_renderer_resource_unref(1);
-    if (initialized) virgl_renderer_cleanup(NULL);
+    return result;
+}
+
+int main(int argc, char **argv) {
+    setvbuf(stdout, NULL, _IOLBF, 0);
+    bool repeat = argc == 2 && !strcmp(argv[1], "--repeat-contexts");
+    if (argc != 1 && !repeat) return 64;
+    const uint32_t ids[] = {1, 2, 1};
+    if (repeat) printf("VENUS_REPEAT_BEGIN count=3\n");
+    int result = 1;
+    for (uint32_t i = 0; i < (repeat ? 3u : 1u); i++) {
+        context_id = ids[i];
+        reply_mapping = NULL;
+        pthread_mutex_lock(&fence_mutex);
+        completed_fence = next_fence = 0;
+        pthread_mutex_unlock(&fence_mutex);
+        if (repeat) printf("VENUS_CONTEXT_BEGIN index=%u id=%u\n", i + 1, ids[i]);
+        result = probe_context(i + 1);
+        if (repeat) printf("VENUS_CONTEXT_END index=%u id=%u exit=%d\n", i + 1, ids[i], result);
+        if (result) break;
+    }
+    if (renderer_initialized) virgl_renderer_cleanup(NULL);
     printf("VENUS_HOST_END exit=%d\n", result);
+    if (repeat) printf("VENUS_REPEAT_END exit=%d\n", result);
     return result;
 }

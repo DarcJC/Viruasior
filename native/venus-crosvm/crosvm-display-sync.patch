@@ -1,0 +1,4 @@
+--- a/devices/src/virtio/gpu/virtio_gpu.rs
++++ b/devices/src/virtio/gpu/virtio_gpu.rs
+@@ -416,0 +417 @@
++            rutabaga.display_flush()?;

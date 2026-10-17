@@ -7,16 +7,19 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import pro.darc.viruaisor.vm.GuestDesktopProtocol
 import pro.darc.viruaisor.vm.GuestControlProtocol
+import pro.darc.viruaisor.vm.DesktopStartGate
 import pro.darc.viruaisor.vm.VmStopSequence
 import pro.darc.viruaisor.vm.VmGpuProfile
 
 class GuestDesktopProtocolTest {
     @Test fun startCarriesTheParsedGpuProfile() {
+        assertEquals("START_DESKTOP venus", GuestDesktopProtocol.start(VmGpuProfile.VENUS))
         assertEquals("START_DESKTOP 2d", GuestDesktopProtocol.start(VmGpuProfile.SOFTWARE_2D))
         assertEquals("START_DESKTOP gfxstream", GuestDesktopProtocol.start(VmGpuProfile.GFXSTREAM))
     }
 
     @Test fun stopCarriesTheSameParsedGpuProfile() {
+        assertEquals("STOP_DESKTOP venus", GuestDesktopProtocol.stop(VmGpuProfile.VENUS))
         assertEquals("STOP_DESKTOP 2d", GuestDesktopProtocol.stop(VmGpuProfile.SOFTWARE_2D))
         assertEquals("STOP_DESKTOP gfxstream", GuestDesktopProtocol.stop(VmGpuProfile.GFXSTREAM))
     }
@@ -59,5 +62,37 @@ class GuestControlProtocolTest {
         assertThrows(IllegalStateException::class.java) {
             GuestControlProtocol.validate("READY", "ERROR systemctl")
         }
+    }
+}
+
+class DesktopStartGateTest {
+    @Test fun coalescesConcurrentStartRequestsAndRemembersSuccess() {
+        val gate = DesktopStartGate()
+
+        assertTrue(gate.tryBegin())
+        assertFalse(gate.tryBegin())
+        gate.succeeded()
+        assertTrue(gate.started)
+        assertFalse(gate.tryBegin())
+    }
+
+    @Test fun permitsRetryAfterARealStartFailure() {
+        val gate = DesktopStartGate()
+
+        assertTrue(gate.tryBegin())
+        gate.failed()
+        assertFalse(gate.started)
+        assertTrue(gate.tryBegin())
+    }
+
+    @Test fun resetAllowsTheNextVmSessionToStart() {
+        val gate = DesktopStartGate()
+        assertTrue(gate.tryBegin())
+        gate.succeeded()
+
+        gate.reset()
+
+        assertFalse(gate.started)
+        assertTrue(gate.tryBegin())
     }
 }

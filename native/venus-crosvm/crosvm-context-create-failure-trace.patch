@@ -1,0 +1,27 @@
+diff --git a/devices/src/virtio/gpu/mod.rs b/devices/src/virtio/gpu/mod.rs
+--- a/devices/src/virtio/gpu/mod.rs
++++ b/devices/src/virtio/gpu/mod.rs
+@@ -509,8 +509,21 @@ impl Frontend {
+                     context_init,
+                     context_name.as_deref().unwrap_or("")
+                 );
+-                self.virtio_gpu
+-                    .create_context(ctx_id, context_init, context_name.as_deref())
++                let result = self.virtio_gpu.create_context(
++                    ctx_id,
++                    context_init,
++                    context_name.as_deref(),
++                );
++                if let Err(ref create_error) = result {
++                    error!(
++                        "VIRUAISOR_CONTEXT_CREATE_FAILED ctx_id={} init={:#x} name={} error={:?}",
++                        ctx_id,
++                        context_init,
++                        context_name.as_deref().unwrap_or(""),
++                        create_error
++                    );
++                }
++                result
+             }
+             GpuCommand::CtxDestroy(info) => {
+                 let ctx_id = info.hdr.ctx_id.to_native();

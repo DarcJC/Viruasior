@@ -1,0 +1,118 @@
+--- a/src/venus/vkr_device_memory.c
++++ b/src/venus/vkr_device_memory.c
+@@ -25,11 +25,36 @@
+ #include <fcntl.h>
+ #include <linux/dma-heap.h>
+ #include <sys/ioctl.h>
++#include <sys/stat.h>
++#include <unistd.h>
++
++static void
++vkr_trace_dma_buf_fd(const char *stage, uint64_t object_id, uint32_t res_id, int fd)
++{
++   struct stat st = {0};
++   const int stat_ret = fstat(fd, &st);
++   const int descriptor_flags = fcntl(fd, F_GETFD);
++   char fd_path[64];
++   char fd_target[256];
++   snprintf(fd_path, sizeof(fd_path), "/proc/self/fd/%d", fd);
++   ssize_t target_length = readlink(fd_path, fd_target, sizeof(fd_target) - 1);
++   if (target_length < 0)
++      target_length = 0;
++   fd_target[target_length] = 0;
++   vkr_log("VIRUAISOR_DMA_BUF_FD stage=%s pid=%d object=%" PRIu64
++           " res=%u fd=%d flags=%d stat=%d dev=%ju ino=%ju size=%jd mode=%jo target=%s",
++           stage, getpid(), object_id, res_id, fd, descriptor_flags, stat_ret,
++           stat_ret ? UINTMAX_C(0) : (uintmax_t)st.st_dev,
++           stat_ret ? UINTMAX_C(0) : (uintmax_t)st.st_ino,
++           stat_ret ? INTMAX_C(0) : (intmax_t)st.st_size,
++           stat_ret ? UINTMAX_C(0) : (uintmax_t)st.st_mode, fd_target);
++}
+
+ /* Fixed Android allocator: no root, device selection, or guest-provided path. */
+ static VkResult
+ vkr_android_import(struct vkr_device *dev, VkMemoryAllocateInfo *info, uint32_t property_flags,
+-                   int *retained_fd, AHardwareBuffer **out_buffer, VkImportMemoryFdInfoKHR *import)
++                   uint64_t object_id, int *retained_fd, AHardwareBuffer **out_buffer,
++                   VkImportMemoryFdInfoKHR *import)
+ {
+    const uint64_t bytes = venus_heap_allocation_size(info->allocationSize, getpagesize());
+    if (!bytes)
+@@ -52,6 +77,8 @@
+    }
+    int duplicate = os_dupfd_cloexec(fd);
+    if (duplicate < 0) { close(fd); venus_ahb_release(buffer); return VK_ERROR_OUT_OF_HOST_MEMORY; }
++   vkr_trace_dma_buf_fd("android-retained", object_id, 0, fd);
++   vkr_trace_dma_buf_fd("android-vk-import", object_id, 0, duplicate);
+    *retained_fd = fd;
+    *out_buffer = buffer;
+    *import = (VkImportMemoryFdInfoKHR){.sType=VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR,
+@@ -131,9 +158,15 @@
+       return false;
+    }
+
++#ifdef __ANDROID__
++   vkr_trace_dma_buf_fd("resource-retained", 0, res_info->resourceId, res->u.fd);
++#endif
+    int fd = os_dupfd_cloexec(res->u.fd);
+    if (fd < 0)
+       return false;
++#ifdef __ANDROID__
++   vkr_trace_dma_buf_fd("resource-vk-import", 0, res_info->resourceId, fd);
++#endif
+
+    *out = (VkImportMemoryFdInfoKHR){
+       .sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR,
+@@ -612,7 +645,9 @@
+          }
+ #ifdef __ANDROID__
+          else if (!physical_dev->gbm_device) {
+-            args->ret = vkr_android_import(dev, alloc_info, property_flags, &udmabuf_fd, &android_buffer, &local_import_info);
++            args->ret = vkr_android_import(dev, alloc_info, property_flags,
++                                           viruaisor_memory_id, &udmabuf_fd,
++                                           &android_buffer, &local_import_info);
+          }
+ #endif
+          else {
+@@ -634,6 +669,11 @@
+          valid_fd_types |= 1 << VIRGL_RESOURCE_FD_DMABUF;
+    }
+
++#ifdef __ANDROID__
++   if (local_import_info.fd >= 0)
++      vkr_trace_dma_buf_fd("vk-allocate-before", viruaisor_memory_id,
++                           res_info ? res_info->resourceId : 0, local_import_info.fd);
++#endif
+    struct vkr_device_memory *mem = vkr_device_memory_create_and_add(ctx, args);
+    if (!mem) {
+ #ifdef __ANDROID__
+@@ -699,6 +739,10 @@
+    mtx_unlock(&ctx->object_mutex);
+
+    struct vkr_device *dev = vkr_device_from_handle(args->device);
++#ifdef __ANDROID__
++   if (mem->udmabuf_fd >= 0)
++      vkr_trace_dma_buf_fd("memory-free", mem->base.id, 0, mem->udmabuf_fd);
++#endif
+    vkr_device_memory_release(mem);
+    vkr_device_memory_destroy_driver_handle(ctx, args);
+
+@@ -893,11 +937,18 @@
+
+    int fd;
+    if (mem->udmabuf_fd >= 0) {
++#ifdef __ANDROID__
++      vkr_trace_dma_buf_fd("blob-export-retained", mem->base.id, 0,
++                           mem->udmabuf_fd);
++#endif
+       fd = os_dupfd_cloexec(mem->udmabuf_fd);
+       if (fd < 0) {
+          vkr_log("mem udmabuf fd dup failed (%s)", strerror(errno));
+          return false;
+       }
++#ifdef __ANDROID__
++      vkr_trace_dma_buf_fd("blob-export-send", mem->base.id, 0, fd);
++#endif
+    } else if (mem->gbm_bo) {
+       assert(handle_type == VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT);
+       assert(can_export_dma_buf && !can_export_opaque);

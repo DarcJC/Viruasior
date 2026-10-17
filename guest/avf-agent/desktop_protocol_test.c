@@ -13,6 +13,8 @@ static void expect_mapping(const char *command, const char *verb, const char *un
 }
 
 int main(void) {
+    expect_mapping("START_DESKTOP venus", "start", "avf-plasma.service", false);
+    expect_mapping("STOP_DESKTOP venus", "stop", "avf-plasma.service", false);
     expect_mapping("START_DESKTOP 2d", "start", "avf-desktop@2d.service", false);
     expect_mapping("START_DESKTOP gfxstream", "start", "avf-desktop@gfxstream.service", false);
     expect_mapping("STOP_DESKTOP 2d", "stop", "avf-desktop@2d.service", false);

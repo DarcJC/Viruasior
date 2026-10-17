@@ -1,0 +1,29 @@
+[Unit]
+Description=Viruaisor Manjaro Plasma desktop with required Venus GPU acceleration
+After=systemd-user-sessions.service
+After=getty@tty1.service
+Conflicts=getty@tty1.service
+ConditionPathExists=/opt/viruaisor/venus/venus_icd.json
+
+[Service]
+Type=exec
+User=droid
+Group=users
+SupplementaryGroups=video render input
+PAMName=login
+TTYPath=/dev/tty1
+StandardInput=tty
+StandardOutput=journal+console
+StandardError=journal+console
+TTYReset=yes
+TTYVHangup=yes
+TTYVTDisallocate=yes
+EnvironmentFile=/etc/viruaisor/venus.env
+WorkingDirectory=/home/droid
+ExecStartPre=/usr/bin/timeout 40 /opt/viruaisor/venus-preflight
+ExecStart=/usr/bin/startx /opt/viruaisor/plasma-session -- /usr/bin/Xorg :0 vt1 -keeptty -nolisten tcp
+TimeoutStartSec=90
+TimeoutStopSec=15
+KillMode=control-group
+
+# Started only by START_DESKTOP venus after the host Surface is attached.

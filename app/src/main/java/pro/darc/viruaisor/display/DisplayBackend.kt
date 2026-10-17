@@ -1,6 +1,7 @@
 package pro.darc.viruaisor.display
 
 import android.os.IBinder
+import android.os.DeadObjectException
 import android.os.Parcel
 import android.util.Log
 import android.view.MotionEvent
@@ -29,6 +30,7 @@ interface DisplayBackend {
 interface VmInputBackend {
     fun setTouchScale(scale: Float)
     fun sendTouch(event: MotionEvent): Boolean
+    fun sendMouse(event: MotionEvent): Boolean
     fun sendKey(scanCode: Short, down: Boolean): Boolean
 }
 
@@ -46,6 +48,7 @@ object InputBackendRegistry {
 
     fun setTouchScale(scale: Float) = active?.setTouchScale(scale)
     fun sendTouch(event: MotionEvent): Boolean = active?.sendTouch(event) == true
+    fun sendMouse(event: MotionEvent): Boolean = active?.sendMouse(event) == true
     fun sendKey(scanCode: Short, down: Boolean): Boolean = active?.sendKey(scanCode, down) == true
 }
 
@@ -161,9 +164,15 @@ class Android17AvfDisplayConnector : AvfDisplayConnector {
     }
 
     override fun removeSurface(displayBinder: IBinder) {
-        transact(displayBinder, DISPLAY_DESCRIPTOR, REMOVE_SURFACE, write = { data ->
-            data.writeBoolean(false)
-        }) { Unit }
+        try {
+            transact(displayBinder, DISPLAY_DESCRIPTOR, REMOVE_SURFACE, write = { data ->
+                data.writeBoolean(false)
+            }) { Unit }
+        } catch (_: DeadObjectException) {
+            // VM exit can precede Surface teardown. The producer is already gone;
+            // the caller still releases every local queue/layer/parent handle.
+            Log.i("ViruaisorRootDisplay", "Display producer already exited before Surface removal")
+        }
     }
 
     private fun <T> transact(

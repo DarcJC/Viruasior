@@ -1,0 +1,18 @@
+diff --git a/protos/src/lib.rs b/protos/src/lib.rs
+--- a/protos/src/lib.rs
++++ b/protos/src/lib.rs
+@@ -6,7 +6,12 @@
+
+ #[cfg(feature = "plugin")]
+ pub use crosvm_plugin_proto::plugin;
++// Cargo's build.rs generates these locally; the *_proto crates are Soong-only.
++#[cfg(any(feature = "composite-disk", feature = "registered_events"))]
++mod local_protos {
++    include!(concat!(env!("OUT_DIR"), "/generated.rs"));
++}
+ #[cfg(feature = "composite-disk")]
+-pub use cdisk_spec_proto::cdisk_spec;
++pub use local_protos::cdisk_spec;
+ #[cfg(feature = "registered_events")]
+-pub use registered_events_proto::registered_events;
++pub use local_protos::registered_events;
