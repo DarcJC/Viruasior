@@ -587,3 +587,119 @@ points passed in each mode on that same VM. The fit mode filled the full
 kept Android focus in the App. Xorg/KWin remained on cores 4–7, SELinux remained
 Enforcing, host hidden-API values matched the prior state, and droid remained
 locked. No guest account or user data was replaced.
+
+## Rejected software-vblank timing trials after sync-fd optimization (2026-10-19)
+
+With the retained sync-fd ICD, KWin's built-in software-vblank fallback was
+retested using `KWIN_X11_FORCE_SOFTWARE_VSYNC=1` in a temporary guest service
+override. KWin reported 59997 mHz at native resolution; it was not mistaking
+the mode for 120 Hz. The paired KWin 5.27.10 implementation aligns a monotonic
+timestamp to the refresh period, then truncates the timer delay to whole
+milliseconds. Diagnostic callbacks confirmed frequent early wakeups.
+
+Two private ABI probes tested the timing hypothesis without changing GPU
+completion, consumer waits, or Surface release fences. The first used
+`Qt::PreciseTimer` and rounded the delay upward. The second used a nonblocking
+absolute `CLOCK_MONOTONIC` timerfd with a Qt socket notifier. It did not sleep
+on the compositor thread. Each probe was loaded only into KWin from guest
+`/tmp`, with a runtime namespace bind and bounded recovery timer.
+
+All samples below used fullscreen native resolution on VM PID 16488, the
+installed sync-fd ICD, large cores 4–7, and the moving X11 colour window.
+Each nominal 60-second capture passed RGB, motion and corner checks. Desktop
+sessions were restarted between the control shim and each candidate.
+
+| Software-vblank variant | Seconds | Presentations/s | p95 / p99 ms | Intervals >20 ms |
+| --- | ---: | ---: | --- | ---: |
+| Built-in timer, no shim | 59.65 | 59.92 | 16.69 / 25.00 | 50 |
+| Control shim, original timer behavior | 59.57 | 59.88 | 16.69 / 25.00 | 56 |
+| Precise Qt timer, upward rounding | 59.79 | 59.71 | 25.01 / 25.03 | 615 |
+| Absolute timerfd | 59.27 | 59.93 | 25.01 / 25.03 | 664 |
+
+The control recorded 19–35 early callbacks per second. Upward rounding removed
+early callbacks but typically woke about 1.0–1.3 ms late. Timerfd also removed
+early callbacks and reduced steady-state mean lateness to about 80–115 us,
+yet actual presentation intervals remained poor. More accurate wakeups alone
+therefore did not establish smoother output. The samples do not separate the
+effect of guest/Android clock phase from the remaining rendering and queueing
+delays; average throughput near 60 is not a stability pass.
+Timerfd's frame-ready interval p99 was still 22.62 ms, despite the much smaller
+callback error, so timer accuracy did not remove the irregular buffer arrivals.
+
+Neither timer candidate nor the software-vblank override is retained. The
+override was removed, recovery timers stopped, and the normal desktop was
+verified without either preload before the next full VM restart. Raw evidence
+uses `vsync-after-syncfd-`, `vsync-timer-control-`, `vsync-precise-`, and
+`vsync-timerfd-` prefixes in the private test directories. No Android settings,
+host kernel, guest kernel, or production KWin library was modified.
+
+## Queue-completion cache retest after sync-fd optimization (2026-10-19)
+
+The earlier rejected queue cache was rebuilt against the current renderer,
+including the retained AHB lifetime repairs, and tested with the installed
+asynchronous desktop sync-fd ICD. Removing the producer CPU wait had changed
+the bottleneck, so the earlier negative result alone was insufficient to judge
+this combination. The cache algorithm was unchanged: successful guest queue
+submissions advance an epoch, and display synchronization reuses completed
+work only after draining the rings, with no pending fence or newer submission.
+
+The test order was baseline B1, candidate A1, baseline B2, candidate A2. Every
+run received a complete VM restart and the same native-first, then 1920×1200
+sequence. All eight captures used fullscreen motion, unique actual own-layer
+presentation timestamps, and passed RGB/movement/corner checks. The same
+scoped guest ICD and launcher were verified after each boot; Xorg/KWin stayed
+on guest large cores 4–7, with no service overrides.
+
+| Mode / run | Seconds | Presentations/s | p95 / p99 ms | Intervals >20 ms |
+| --- | ---: | ---: | --- | ---: |
+| Native, B1 | 59.78 | 88.59 | 16.68 / 16.70 | 7 |
+| Native, A1 | 59.97 | 90.43 | 16.67 / 16.70 | 8 |
+| Native, B2 | 59.27 | 91.64 | 16.67 / 16.70 | 11 |
+| Native, A2 | 59.38 | 89.55 | 16.67 / 16.70 | 7 |
+| 1920×1200, B1 | 59.37 | 92.80 | 16.67 / 16.70 | 4 |
+| 1920×1200, A1 | 59.77 | 96.29 | 16.67 / 16.69 | 3 |
+| 1920×1200, B2 | 59.91 | 92.27 | 16.67 / 16.70 | 2 |
+| 1920×1200, A2 | 59.27 | 94.19 | 16.67 / 16.69 | 3 |
+
+Pooling elapsed time gives 92.53 versus 95.25 presentations/s at 1920, a 2.93%
+average increase. Both configurations had six intervals over 20 ms, and the
+p95/p99 distribution was effectively unchanged. Native pooled throughput was
+90.11 versus 90.00, with 18 versus 15 long intervals. Neither native throughput
+nor cadence shows a useful gain. The candidate's second 1920 run also reduced
+the initially observed advantage. There is a small measured average-throughput
+gain at 1920; it is insufficient for the user's "keep only a clear benefit"
+criterion, and does not improve the stable-120/stable-native-60 result. The cache
+is again rejected, rather than described as having literally zero effect.
+
+The candidate passed fence-lifetime tests with AddressSanitizer and
+UndefinedBehaviorSanitizer, the full native build, Android unit tests, debug
+build, and five-ELF packaging/pin verification. Its native runtime was
+14,116,888 bytes, SHA-256
+`78ec9332a75f83d5ccf7eb488624014862f5ae073a2525445a343a6d14366222`;
+the APK was
+`5d691d382fc18178499cb218f10f56dc464094120dd7bb05982ddfa00fe07ea4`.
+The running executable was hashed on-device. The actual GPU dependency probe
+also passed baseline, async, wrong-PID and non-Zink modes; all 1024 GPU-written
+words were correct after consumption by a separate Vulkan instance. Async
+export returned a pending fd in 21 us, while compatibility cases waited about
+203 ms. These checks establish that correctness was preserved in this trial;
+they do not turn its small performance gain into a stability improvement.
+
+Private evidence uses `queue-syncfd-` capture names and the
+`touch-perf-20261018/queue-after-syncfd/` directory. The candidate's source diff
+and binaries are preserved there for reproducibility, outside version control.
+
+The cache patch, header/test changes, build integration and artifact pin were
+removed again. Rebuilding the restored renderer reproduced the exact
+`0302b363b9e9cfa434cf86f5cfda7a57b84fa69ea8f7b20af6a647def252470a`
+runtime. Android unit tests, debug build and packaged ELF/pin checks passed
+after restoration. The rebuilt APK's 157 ZIP entry payloads matched the saved
+baseline; the original baseline APK (`f6729fea...`) was reinstalled. A full
+restart produced VM PID 2640 with the correct running executable, unchanged
+scoped guest ICD/launcher, no service overrides, and large-core masks 4–7.
+The 1920×1280 fit mode and five guest-coordinate points passed on the full
+3408×2272 viewport. Injected Escape produced one guest down/up pair and kept
+Android focus in the App. SELinux remained Enforcing, the two checked host hidden-API
+settings were unchanged, and the droid account remained locked. Only this
+experiment record is retained in Git; the earlier sync-fd optimization remains
+installed and the overall frame-rate/cadence goals remain open.
