@@ -116,3 +116,26 @@ the submit worker's DMA-BUF synchronization, rather than Vulkan queue submission
 itself. Disabling Gallium threading reduced the short-run rate to about 61 fps
 and was reverted. These timing libraries are diagnostic-only, loaded from guest
 `/tmp`; the shipped guest libraries remain unchanged.
+
+The finer measurement attributes about 1.6–1.8 ms per synchronization export to
+`vkGetSemaphoreFdKHR`; exporting the memory fd and importing its dependency take
+only about 5 and 7 microseconds. An opt-in prototype exported a single shared
+completion fence for all DMA-BUF resources in one GPU batch, preserving each
+resource's dependency import. It reduced the measured flush wait but did not
+produce a convincing presentation gain: 72.65 fps for KWin alone, and 75.01 fps
+for Xorg and KWin together, each in a 60-second 1920×1200 run. It was not retained.
+A trial binding only the VM renderer threads to host large cores also measured
+73.27 fps and was reverted. A run spanning desktop startup and an unintended
+native mode was excluded from comparisons.
+
+Both the guest's original Gallium library and all six instrumented Mesa source
+files were restored. Rebuilding the restored source reproduced the original
+Gallium SHA-256 `a7aae0f85e853aa7c80f1202a5c642877061665e44c8ff9c0d16bfa8e40d0723`.
+The guest runtime service override was removed, and a VM restart cleared the
+temporary libraries. The current production CPU selection remains large cores
+4–7; the unsuccessful fence and host-affinity experiments are not shipped.
+
+Matching the App window to the native guest's 60 Hz was also rejected. The
+physical display confirmed 60 Hz, but a 29.47-second sample fell to 25.11 fps
+(p95 66.67 ms, p99 66.68 ms). The window-only 120 Hz request was restored; no
+global display setting was changed. Guest native mode remains 60 Hz.
