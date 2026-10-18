@@ -237,3 +237,37 @@ verification passed again. The 1920×1280 mode filled the 3408×2272 fullscreen
 Surface without letterboxing. SELinux remained Enforcing and the existing
 host hidden-API settings were unchanged. The two temporary guest probe hooks
 and their Python files were removed without modifying the droid account.
+
+## Wayland image-size regression (2026-10-19)
+
+An isolated Wayland session displayed a native shared-memory colour window with
+hardware KWin composition. A GPU-backed version instead exited with
+`invalid buffer stride of height for plane 0`. KWin's
+[DMA-BUF bounds check](https://github.com/KDE/kwin/blob/Plasma/5.27/src/wayland/linuxdmabufv1clientbuffer.cpp)
+requires the advertised offset plus stride times height to fit the exported fd.
+The renderer synthesized the layout with 64-byte row alignment but synthesized
+memory requirements from tightly packed pixels, producing contradictory sizes.
+
+The guest Vulkan regression reproduced the problem directly: a 900×600 image
+reported stride 3648 and needed 2,188,800 bytes, but its memory requirement and
+exported fd were only 2,162,688 bytes. The aligned 1920×1200 control passed.
+The repaired calculation includes row padding, layout size/offset and array-layer
+spacing, preserves larger driver requirements and alignment, and checks overflow.
+After repair, both memory-requirement APIs and the exported fd report 2,191,360
+bytes for 900×600. Guest checks at 901×2272, 1920×1200 and 3408×2272 also pass.
+
+Native size/overflow tests with AddressSanitizer and UndefinedBehaviorSanitizer,
+native compilation, Android unit tests, APK build and artifact verification pass.
+The runtime is 14,116,096 bytes, SHA-256
+`81d45ebb8a55a5f212be3a76ce3da1a78dc3b68f0d5f718f27b22844a0bfae5b`.
+The native GPU Wayland colour window now stays alive and displays correctly;
+the existing X11 desktop also displays correctly. Temporary Wayland testing
+retains large-core affinity 4–7 and uses no host system changes.
+
+Full Plasma starts on Wayland, but its Xwayland motion window remains invisible.
+Protocol tracing shows a separate Zink export failure before any window buffer
+is attached: an ordinary shared pixmap is created with optimal tiling, loses
+exportability, then requires the disabled DRM-modifier extension when exporting
+later. A presentation capture without that visible workload was rejected, so
+there is no valid full-desktop Wayland performance claim yet. Wayland remains
+an isolated diagnostic rather than the production session.

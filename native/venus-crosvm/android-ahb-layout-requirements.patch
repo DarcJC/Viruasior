@@ -1,0 +1,48 @@
+--- a/src/venus/vkr_image.c
++++ b/src/venus/vkr_image.c
+@@ -10,6 +10,7 @@
+ #ifdef __ANDROID__
+ #include "vkr_device_memory.h"
+ #include "venus_ahb_bind_policy.h"
++#include "venus_ahb_image_size.h"
+ #endif
+ 
+ static void
+@@ -186,19 +187,25 @@
+ vkr_android_fix_ahb_image_requirements(
+    const struct vkr_image *image, VkMemoryRequirements *requirements)
+ {
+-   if (image && image->android_hardware_buffer_external &&
+-       requirements->size == 0) {
+-      uint64_t bytes = image->extent.width;
+-      if (__builtin_mul_overflow(bytes, (uint64_t)image->extent.height,
+-                                 &bytes) ||
+-          __builtin_mul_overflow(bytes, (uint64_t)image->array_layers,
+-                                 &bytes) ||
+-          __builtin_mul_overflow(bytes, UINT64_C(4), &bytes) ||
+-          __builtin_add_overflow(bytes, UINT64_C(4095), &bytes) ||
+-          !bytes)
++   if (image && image->android_hardware_buffer_external) {
++      /* VIRUAISOR_AHB_LAYOUT_REQUIREMENTS: the guest DMA-BUF must contain
++       * the advertised row padding, plane offset and every array layer. */
++      const struct venus_ahb_image_layout layout = {
++         .offset = image->guest_subresource_layout.offset,
++         .row_pitch = image->guest_subresource_layout.rowPitch,
++         .size = image->guest_subresource_layout.size,
++         .array_pitch = image->guest_subresource_layout.arrayPitch,
++      };
++      const uint64_t alignment = requirements->alignment > 4096 ?
++         requirements->alignment : 4096;
++      const uint64_t bytes = venus_ahb_image_required_size(
++         image->extent.width, image->extent.height, image->array_layers,
++         image->guest_subresource_layout_valid ? &layout : NULL, alignment);
++      if (!bytes)
+          return;
+-      requirements->size = bytes & ~UINT64_C(4095);
+-      requirements->alignment = 4096;
++      if (requirements->size < bytes)
++         requirements->size = bytes;
++      requirements->alignment = alignment;
+       vkr_log("VIRUAISOR_AHB_IMAGE_REQUIREMENTS_SYNTHETIC size=%" PRIu64
+               " alignment=%" PRIu64 " types=%x",
+               requirements->size, requirements->alignment,
