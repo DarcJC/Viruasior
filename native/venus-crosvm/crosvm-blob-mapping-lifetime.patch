@@ -1,0 +1,15 @@
+--- a/devices/src/virtio/gpu/virtio_gpu.rs
++++ b/devices/src/virtio/gpu/virtio_gpu.rs
+@@ -1068,6 +1068,12 @@
+ 
+     /// Releases guest kernel reference on the resource.
+     pub fn unref_resource(&mut self, resource_id: u32) -> VirtioGpuResult {
++        // VIRUAISOR_BLOB_MAPPING_RELEASE: unregister the guest mapping before
++        // dropping its backing, including clients that omit an explicit UNMAP.
++        if self.resources.get(&resource_id).ok_or(ErrInvalidResourceId)?.shmem_offset.is_some() {
++            info!("VIRUAISOR_BLOB_MAPPING_RELEASE resource_id={}",resource_id);
++            self.resource_unmap_blob(resource_id)?;
++        }
+         let resource = self
+             .resources
+             .remove(&resource_id)

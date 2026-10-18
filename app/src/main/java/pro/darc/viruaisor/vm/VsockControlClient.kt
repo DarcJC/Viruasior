@@ -28,10 +28,10 @@ class VsockControlClient(private val engine: AvfVmEngine) {
     fun stopDesktop(port: Long, profile: VmGpuProfile) =
         request(port, GuestDesktopProtocol.stop(profile))
 
-    fun displayModes(port: Long) = GuestDisplayProtocol.parseModes(exchange(port, "DISPLAY_MODES", 12_000))
+    fun displayModes(port: Long) = GuestDisplayProtocol.parseConfigs(exchange(port, "DISPLAY_CONFIGS", 12_000))
 
-    fun resize(port: Long, size: DisplaySize) =
-        GuestDisplayProtocol.validateResize(exchange(port, GuestDisplayProtocol.resize(size), 12_000), size)
+    fun resize(port: Long, mode: DisplayMode) =
+        GuestDisplayProtocol.validateResize(exchange(port, GuestDisplayProtocol.resize(mode), 12_000), mode)
 
     private fun request(port: Long, command: String, timeoutMillis: Int = COMMAND_TIMEOUT_MS) {
         GuestControlProtocol.validateResponse(exchange(port, command, timeoutMillis))

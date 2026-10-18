@@ -16,6 +16,15 @@ int main(void) {
     uint32_t width=0,height=0;
     assert(parse_resize_command("RESIZE 1920 1080", &width, &height));
     assert(width==1920 && height==1080);
+    uint32_t rate=0;
+    assert(parse_resize_rate_command("RESIZE_RATE 1920 1200 120000", &width, &height, &rate));
+    assert(width==1920 && height==1200 && rate==120000);
+    assert(parse_resize_rate_command("RESIZE_RATE 3408 2272 60000", &width, &height, &rate));
+    const char *bad_rates[]={"RESIZE_RATE 3408 2272 120000", "RESIZE_RATE 1920 1200 0",
+        "RESIZE_RATE 1920 1200 120000;reboot", "RESIZE_RATE 1920 1200 999999999999",
+        "RESIZE_RATE 4096 4096 60000", "RESIZE_RATE 1920 1200 -60000"};
+    for (size_t i=0;i<sizeof(bad_rates)/sizeof(bad_rates[0]);++i)
+        assert(!parse_resize_rate_command(bad_rates[i], &width, &height, &rate));
     const char *bad_sizes[]={"RESIZE 0 720", "RESIZE -1 720", "RESIZE 4097 1",
         "RESIZE 4096 4096", "RESIZE 1280 720; reboot", "RESIZE 1280 720 ",
         "RESIZE 1 999999999999999999999", "RESIZE +1 720", "RESIZE 1 2 3"};

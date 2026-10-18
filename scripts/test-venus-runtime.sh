@@ -18,4 +18,6 @@ for test in "$repo"/native/venus-display/*_test.cpp; do
 done
 rustc --test "$repo/native/venus-crosvm/venus_init_policy.rs" -o "$work/venus_init_policy"
 "$work/venus_init_policy"
+rustc --test "$repo/native/venus-crosvm/venus_display_batch.rs" -o "$work/venus_display_batch"
+"$work/venus_display_batch"
 printf 'Test artifacts: %s\n' "$work"

@@ -4,7 +4,7 @@ package pro.darc.viruaisor.display
 internal object RootDisplaySize {
     fun validate(width: Int, height: Int) {
         require(width in 1..4096 && height in 1..4096) { "Invalid root display buffer dimensions" }
-        require(width.toLong() * height.toLong() <= 4_194_304L) { "Root display pixel budget exceeded" }
+        require(width.toLong() * height.toLong() <= 8_388_608L) { "Root display pixel budget exceeded" }
     }
 }
 

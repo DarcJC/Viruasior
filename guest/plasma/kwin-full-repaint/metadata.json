@@ -1,0 +1,10 @@
+{
+  "KPlugin": {
+    "Id": "viruaisor_full_repaint",
+    "Name": "Viruaisor scanout repaint",
+    "Description": "Preserve the complete desktop on Venus shared scanout",
+    "License": "GPL-2.0-or-later",
+    "Version": "1.0",
+    "EnabledByDefault": false
+  }
+}

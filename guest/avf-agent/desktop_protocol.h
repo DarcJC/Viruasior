@@ -12,5 +12,6 @@ struct desktop_operation {
 
 bool parse_desktop_operation(const char *command, struct desktop_operation *operation);
 bool parse_resize_command(const char *command, uint32_t *width, uint32_t *height);
+bool parse_resize_rate_command(const char *command, uint32_t *width, uint32_t *height, uint32_t *millihz);
 
 #endif

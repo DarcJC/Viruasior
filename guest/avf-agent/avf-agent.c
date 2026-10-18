@@ -63,7 +63,7 @@ static void trim(char *command) {
     command[strcspn(command, "\r\n")] = '\0';
 }
 
-static void display_control(int client, const char *verb, uint32_t width, uint32_t height) {
+static void display_control(int client, const char *verb, uint32_t width, uint32_t height, uint32_t rate) {
     int output[2];
     if (pipe2(output,O_CLOEXEC)) { reply(client,"ERROR display-control\n"); return; }
     pid_t child=fork();
@@ -71,11 +71,17 @@ static void display_control(int client, const char *verb, uint32_t width, uint32
         dup2(output[1],STDOUT_FILENO);
         close(output[0]); close(output[1]);
         close(client);
-        char w[16],h[16];
-        snprintf(w,sizeof(w),"%u",width); snprintf(h,sizeof(h),"%u",height);
+        char w[16],h[16],r[16];
+        snprintf(w,sizeof(w),"%u",width); snprintf(h,sizeof(h),"%u",height); snprintf(r,sizeof(r),"%u",rate);
         if (strcmp(verb,"QUERY")==0)
             execl("/usr/sbin/runuser","runuser","-u","droid","--","/usr/bin/timeout","10",
                   "/opt/viruaisor/display-control.py","QUERY",(char *)NULL);
+        else if (strcmp(verb,"QUERY_RATES")==0)
+            execl("/usr/sbin/runuser","runuser","-u","droid","--","/usr/bin/timeout","10",
+                  "/opt/viruaisor/display-control.py","QUERY_RATES",(char *)NULL);
+        else if (strcmp(verb,"RESIZE_RATE")==0)
+            execl("/usr/sbin/runuser","runuser","-u","droid","--","/usr/bin/timeout","10",
+                  "/opt/viruaisor/display-control.py","RESIZE_RATE",w,h,r,(char *)NULL);
         else
             execl("/usr/sbin/runuser","runuser","-u","droid","--","/usr/bin/timeout","10",
                   "/opt/viruaisor/display-control.py","RESIZE",w,h,(char *)NULL);
@@ -121,10 +127,16 @@ static void handle_client(int fd) {
         if (systemctl(desktop.verb, desktop.unit, desktop.no_block) == 0) reply(fd, "OK\n");
         else reply(fd, "ERROR systemctl\n");
     } else if (strcmp(command, "DISPLAY_MODES") == 0) {
-        display_control(fd,"QUERY",0,0);
+        display_control(fd,"QUERY",0,0,0);
+    } else if (strcmp(command, "DISPLAY_CONFIGS") == 0) {
+        display_control(fd,"QUERY_RATES",0,0,0);
+    } else if (strncmp(command,"RESIZE_RATE ",12)==0) {
+        uint32_t width=0,height=0,rate=0;
+        if (parse_resize_rate_command(command,&width,&height,&rate)) display_control(fd,"RESIZE_RATE",width,height,rate);
+        else reply(fd,"ERROR invalid-mode-rate\n");
     } else if (strncmp(command, "RESIZE ", 7) == 0) {
         uint32_t width=0,height=0;
-        if (parse_resize_command(command,&width,&height)) display_control(fd,"RESIZE",width,height);
+        if (parse_resize_command(command,&width,&height)) display_control(fd,"RESIZE",width,height,0);
         else reply(fd,"ERROR invalid-resolution\n");
     } else {
         reply(fd, "ERROR unknown-command\n");

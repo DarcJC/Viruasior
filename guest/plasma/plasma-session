@@ -8,8 +8,13 @@ cat > "$HOME/.config/kwinrc" <<'EOF'
 [Compositing]
 Enabled=true
 Backend=OpenGL
+[Plugins]
+viruaisor_full_repaintEnabled=true
 EOF
 export KWIN_COMPOSE=O2
+# Shared scanout contents are not preserved as required by KWin buffer age.
+# Repaint the full GL back buffer; partial repaint otherwise flashes black tiles.
+export KWIN_USE_BUFFER_AGE=0
 startplasma-x11 &
 plasma_pid=$!
 trap 'kill "$plasma_pid" 2>/dev/null || true' EXIT HUP INT TERM
@@ -21,11 +26,13 @@ while [ "$count" -lt 90 ]; do
         grep -q 'Compositing is active' "$report" &&
         grep -q 'Compositing Type: OpenGL' "$report" &&
         grep -Eiq 'OpenGL renderer string:.*zink.*mali' "$report" &&
+        [ "$(qdbus org.kde.KWin /Effects org.kde.kwin.Effects.isEffectLoaded viruaisor_full_repaint 2>/dev/null)" = true ] &&
         ! grep -Eiq 'llvmpipe|lavapipe|swiftshader|softpipe' "$report"; then
         cat "$report"
         # avf-plasma.service only starts this session after venus-preflight has
         # proved MESA_VENUS on Mali and completed a GPU draw/readback.
         echo 'VIRUAISOR_KWIN_COMPOSITING=opengl'
+        echo 'VIRUAISOR_FULL_REPAINT=true'
         echo 'VIRUAISOR_PLASMA_HARDWARE_READY=true'
         wait "$plasma_pid"
         exit $?

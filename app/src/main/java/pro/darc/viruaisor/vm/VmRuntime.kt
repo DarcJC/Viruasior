@@ -53,19 +53,25 @@ object VmRuntime {
         it.copy(status = status, detail = detail)
     }
 
-    internal fun setDisplayModes(modes: DisplayModes) = update {
-        it.copy(display = it.display.copy(modes = modes.available, actual = modes.current))
+    internal fun setDisplayModes(modes: DisplayConfigs) = update {
+        it.copy(display = it.display.withConfirmed(modes.current).copy(modes=modes.available))
+    }
+
+    internal fun confirmDisplayMode(mode: DisplayMode) {
+        update { it.copy(display=it.display.withConfirmed(mode)) }
+        Log.i(TAG,"DISPLAY_MODE_CONFIRMED width=${mode.size.width} height=${mode.size.height} millihz=${mode.refreshMilliHz}")
     }
 
     internal fun setPresentedSize(size: DisplaySize) = update {
-        if (!it.isActive) it else it.copy(display = it.display.copy(
-            presented = size,
-            requested = it.display.requested.takeUnless { requested -> requested == size },
-        ))
+        if (!it.isActive) it else it.copy(display = it.display.withPresented(size))
     }
 
-    internal fun requestResize(size: DisplaySize) = update { state ->
-        state.copy(display = state.display.copy(requested = size.takeUnless { size == state.display.presented }, error = null))
+    internal fun requestResize(mode: DisplayMode) = update { state ->
+        state.copy(display = state.display.copy(requested = mode.takeUnless { it == state.display.actual && it.size == state.display.presented }, error = null))
+    }
+
+    internal fun prepareDisplayConfig(config: VmDisplayConfig) = update {
+        it.copy(bundle=it.bundle?.copy(display=config))
     }
 
     internal fun displayFailure(message: String) = update {

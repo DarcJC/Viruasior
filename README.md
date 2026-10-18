@@ -12,6 +12,10 @@ keeps VM lifecycle ownership in `VmService`, and controls guest services over vs
   composer produces green output despite correct screenshots. Runtime resolution selection
   uses guest-supported XRandR modes and updates display and input geometry. See
   [validation and measured limits](docs/ahb-kwin-resize-validation.md).
+  High-refresh modes now include 1920×1200 @ 120 Hz and this tablet's native
+  3408×2272 @ 60 Hz. These are selectable timings, not sustained frame-rate
+  guarantees. API 37 absolute touchpad capture forwards contacts to the guest's
+  independent virtio trackpad. See [current repaint, input and performance results](docs/high-refresh-trackpad-validation.md).
 
 - A single VM bundle is imported into app-private `filesDir/vms/default/` storage.
 - Guests boot headlessly to `multi-user.target`; desktop services start only on an explicit

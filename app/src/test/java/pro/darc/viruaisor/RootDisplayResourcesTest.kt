@@ -12,6 +12,10 @@ class RootDisplayResourcesTest {
         RootDisplaySize.validate(1280, 720)
     }
 
+    @Test fun nativeTabletDisplayFitsTheBoundedBudget() {
+        org.junit.Assert.assertTrue(runCatching { RootDisplaySize.validate(3408,2272) }.isSuccess)
+    }
+
     @Test fun invalidAndOversizedDimensionsFailClosed() {
         listOf(0 to 720, 1280 to 0, -1 to 720, 1280 to -1,
             4097 to 1, 1 to 4097, 4096 to 4096, Int.MAX_VALUE to Int.MAX_VALUE).forEach { (w, h) ->

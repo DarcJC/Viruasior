@@ -117,6 +117,12 @@ class AvfVmEngine(
                 .getOrDefault(false)
         } ?: false
 
+    override fun sendTrackpad(event: MotionEvent): Boolean =
+        synchronized(lock) { vm }?.let { target ->
+            runCatching { invoke(target,"sendTrackpadEvent",event) as Boolean }
+                .getOrDefault(false)
+        } ?: false
+
     override fun sendKey(scanCode: Short, down: Boolean): Boolean =
         synchronized(lock) { vm }?.let { target ->
             runCatching { invoke(target, "sendKeyEvent", scanCode, down) as Boolean }
@@ -215,6 +221,7 @@ class AvfVmEngine(
         invoke(customBuilder, "useTouch", true)
         invoke(customBuilder, "useKeyboard", true)
         invoke(customBuilder, "useMouse", true)
+        invoke(customBuilder, "useTrackpad", true)
 
         val diskClass = loadClass("$CUSTOM_CONFIG\$Disk")
         val rootDisk = if (bundle.rootfsPartitionLabel != null) {

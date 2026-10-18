@@ -6,6 +6,7 @@ import android.os.SystemClock
 import android.view.InputDevice
 import android.view.MotionEvent
 import android.view.SurfaceView
+import android.hardware.input.InputManager
 
 /** Touch uses the boot-time virtio ABS range; relative mouse deltas use the current guest mode. */
 internal class DesktopSurfaceView(context: Context) : SurfaceView(context) {
@@ -13,7 +14,7 @@ internal class DesktopSurfaceView(context: Context) : SurfaceView(context) {
         set(value) {
             field = value
             if (!value) releaseInput()
-            else post { requestFocus(); requestPointerCapture() }
+            else post { requestFocus(); requestDesktopPointerCapture() }
         }
     var enterFullscreen: () -> Unit = {}
     var guestWidth = 1280
@@ -21,6 +22,15 @@ internal class DesktopSurfaceView(context: Context) : SurfaceView(context) {
     var inputWidth = 1280
     var inputHeight = 720
     var inputEnabled = true
+        set(value) { if (field && !value) releaseInput();field=value }
+    private val trackpad=DesktopTrackpad(InputBackendRegistry::sendTrackpad)
+    private var capturedSource: Pair<Int,Int>?=null
+    private val inputManager=context.getSystemService(InputManager::class.java)
+    private val inputListener=object: InputManager.InputDeviceListener {
+        override fun onInputDeviceAdded(id: Int) = Unit
+        override fun onInputDeviceChanged(id: Int) { trackpad.deviceRemoved(id) }
+        override fun onInputDeviceRemoved(id: Int) { trackpad.deviceRemoved(id) }
+    }
     private var absolute: Pair<Float, Float>? = null
     private var touch: MotionEvent? = null
     private val buttons = linkedSetOf<Int>()
@@ -32,6 +42,7 @@ internal class DesktopSurfaceView(context: Context) : SurfaceView(context) {
         isFocusableInTouchMode = true
         setZOrderOnTop(true)
         setBackgroundColor(android.graphics.Color.BLACK)
+        requestUnbufferedDispatch(InputDevice.SOURCE_ANY)
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
@@ -76,22 +87,42 @@ internal class DesktopSurfaceView(context: Context) : SurfaceView(context) {
         return super.onGenericMotionEvent(event)
     }
 
-    override fun onCapturedPointerEvent(event: MotionEvent): Boolean =
-        if (!inputEnabled) true else if (fullscreen) pointer(event, relative = true) else false
+    override fun onCapturedPointerEvent(event: MotionEvent): Boolean {
+        if (!inputEnabled) return true
+        if (!fullscreen) return false
+        if(capturedSource != (event.deviceId to event.source)) {
+            capturedSource=event.deviceId to event.source
+            android.util.Log.i("ViruaisorInput","CAPTURED_INPUT device=${event.deviceId} source=${event.source.toString(16)} trackpad=${DesktopPointerPolicy.isTrackpad(event.source,true)}")
+        }
+        if (DesktopPointerPolicy.isTrackpad(event.source,true)) { trackpad.forward(event);return true }
+        return pointer(event,relative=true)
+    }
 
     override fun onPointerCaptureChange(hasCapture: Boolean) {
         super.onPointerCaptureChange(hasCapture)
         absolute = null
-        if (!hasCapture) releaseButtons()
+        if (!hasCapture) { releaseButtons();trackpad.release() }
     }
 
     override fun onWindowFocusChanged(hasWindowFocus: Boolean) {
         super.onWindowFocusChanged(hasWindowFocus)
         if (!hasWindowFocus) releaseInput()
-        else if (fullscreen) post { if (hasWindowFocus()) requestPointerCapture() }
+        else if (fullscreen) post { if (hasWindowFocus()) requestDesktopPointerCapture() }
     }
 
-    override fun onDetachedFromWindow() { releaseInput(); super.onDetachedFromWindow() }
+    private fun requestDesktopPointerCapture() {
+        // API 37's no-argument overload defaults to relative gesture emulation.
+        requestPointerCapture(android.view.View.POINTER_CAPTURE_MODE_ABSOLUTE)
+    }
+
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        inputManager.registerInputDeviceListener(inputListener,handler)
+    }
+    override fun onDetachedFromWindow() {
+        inputManager.unregisterInputDeviceListener(inputListener)
+        releaseInput();super.onDetachedFromWindow()
+    }
 
     private fun pointer(event: MotionEvent, relative: Boolean): Boolean {
         when (event.actionMasked) {
@@ -166,6 +197,7 @@ internal class DesktopSurfaceView(context: Context) : SurfaceView(context) {
     private fun releaseButtons() { buttons.toList().forEach { button(it, false) } }
 
     fun releaseInput() {
+        trackpad.release()
         if (hasPointerCapture()) releasePointerCapture()
         releaseButtons()
         touch?.let {

@@ -60,7 +60,7 @@ class VmService : Service() {
     private val lifecycleMutex=Mutex()
     private val pendingLifecycleCommands = PendingLifecycleCommands()
     private val displayMutex = Mutex()
-    private val resizeRequests = Channel<Pair<Int,DisplaySize>>(Channel.CONFLATED)
+    private val resizeRequests = Channel<Pair<Int,DisplayMode>>(Channel.CONFLATED)
     private var displayMonitor: Job? = null
     private var resizeTimeout: Job? = null
     @Volatile private var displayGeneration = 0
@@ -81,6 +81,7 @@ class VmService : Service() {
                 displayMutex.withLock {
                     val selected = bundle
                     if (generation != displayGeneration || selected == null || !desktopStartGate.started) return@withLock
+                    val previous = VmRuntime.state.value.display.actual
                     val result = runCatching {
                         check(size in VmRuntime.state.value.display.modes) { "Guest does not support this resolution" }
                         controlClient.resize(selected.vsockPort, size)
@@ -90,15 +91,16 @@ class VmService : Service() {
                             if (VmRuntime.state.value.display.requested == size) VmRuntime.displayFailure(it.rootMessage())
                         }
                         if (result.isSuccess) {
-                            val previous = VmRuntime.state.value.display.presented
+                            VmRuntime.confirmDisplayMode(size)
                             resizeTimeout?.cancel()
                             resizeTimeout = scope.launch {
                                 delay(12_000)
                                 displayMutex.withLock {
                                     val display = VmRuntime.state.value.display
-                                    if (generation == displayGeneration && display.requested == size && display.presented != size) {
+                                    if (generation == displayGeneration && display.requested == size && display.presented != size.size) {
                                         if (previous != null) runCatching { controlClient.resize(selected.vsockPort,previous) }
-                                        VmRuntime.displayFailure("新分辨率画面未提交，已尝试恢复上一分辨率")
+                                        if (generation == displayGeneration && VmRuntime.state.value.display.requested == size)
+                                            VmRuntime.displayFailure("新分辨率画面未提交，已尝试恢复上一分辨率")
                                     }
                                 }
                             }
@@ -139,10 +141,13 @@ class VmService : Service() {
             }
             ACTION_RESIZE -> {
                 val size = runCatching { DisplaySize(intent.getIntExtra("width",0),intent.getIntExtra("height",0)) }.getOrNull()
-                if (size != null && desktopStartGate.started) {
+                val rate = intent.getIntExtra("millihz",0)
+                val modes = VmRuntime.state.value.display.modes.filter { it.size == size && (rate == 0 || it.refreshMilliHz == rate) }
+                val mode = modes.maxByOrNull { it.refreshMilliHz }
+                if (mode != null && desktopStartGate.started) {
                     resizeTimeout?.cancel()
-                    VmRuntime.requestResize(size)
-                    resizeRequests.trySend(displayGeneration to size)
+                    VmRuntime.requestResize(mode)
+                    resizeRequests.trySend(displayGeneration to mode)
                 }
             }
             ACTION_DEBUG_CONSOLE -> scope.launch {
@@ -229,12 +234,15 @@ class VmService : Service() {
             fail("AVF is unavailable on this installation.")
             return
         }
-        val selectedBundle = state.bundle ?: VmBundleStore(this).currentBundle()
-        if (selectedBundle == null) {
+        val importedBundle = state.bundle ?: VmBundleStore(this).currentBundle()
+        if (importedBundle == null) {
             fail("Import a VM bundle before starting.")
             return
         }
         if (state.isActive) return
+
+        val selectedBundle = nativeDisplayBundle(importedBundle)
+        VmRuntime.prepareDisplayConfig(selectedBundle.display)
 
         bundle = selectedBundle
         displayGeneration++
@@ -266,6 +274,16 @@ class VmService : Service() {
             closeVenusLease()
             fail("VM startup failed: ${error.rootMessage()}")
         }
+    }
+
+    private fun nativeDisplayBundle(selected: VmBundle): VmBundle {
+        if (selected.gpuProfile != VmGpuProfile.VENUS) return selected
+        val mode = getSystemService(android.hardware.display.DisplayManager::class.java)
+            .getDisplay(android.view.Display.DEFAULT_DISPLAY)?.mode ?: return selected
+        val width=maxOf(mode.physicalWidth,mode.physicalHeight)
+        val height=minOf(mode.physicalWidth,mode.physicalHeight)
+        if (runCatching { DisplaySize(width,height) }.isFailure) return selected
+        return selected.copy(display=selected.display.copy(width=width,height=height,refreshRate=60))
     }
 
     private suspend fun stopVm() {
@@ -532,6 +550,9 @@ class VmService : Service() {
         fun resizeIntent(context: Context, size: DisplaySize) =
             Intent(context, VmService::class.java).setAction(ACTION_RESIZE)
                 .putExtra("width",size.width).putExtra("height",size.height)
+
+        fun resizeIntent(context: Context, mode: DisplayMode) =
+            resizeIntent(context,mode.size).putExtra("millihz",mode.refreshMilliHz)
 
         fun debugConsoleIntent(context: Context, text: String) =
             Intent(context, VmService::class.java)

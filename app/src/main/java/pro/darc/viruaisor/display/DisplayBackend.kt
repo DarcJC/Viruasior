@@ -31,6 +31,7 @@ interface VmInputBackend {
     fun setTouchScale(scale: Float)
     fun sendTouch(event: MotionEvent): Boolean
     fun sendMouse(event: MotionEvent): Boolean
+    fun sendTrackpad(event: MotionEvent): Boolean
     fun sendKey(scanCode: Short, down: Boolean): Boolean
 }
 
@@ -49,6 +50,7 @@ object InputBackendRegistry {
     fun setTouchScale(scale: Float) = active?.setTouchScale(scale)
     fun sendTouch(event: MotionEvent): Boolean = active?.sendTouch(event) == true
     fun sendMouse(event: MotionEvent): Boolean = active?.sendMouse(event) == true
+    fun sendTrackpad(event: MotionEvent): Boolean = active?.sendTrackpad(event) == true
     fun sendKey(scanCode: Short, down: Boolean): Boolean = active?.sendKey(scanCode, down) == true
 }
 

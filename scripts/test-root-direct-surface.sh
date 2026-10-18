@@ -75,7 +75,15 @@ fatal_pattern='bootstrap failed|binding timed out|attach failed|operation exceed
 deadline=$((SECONDS + TIMEOUT))
 while (( SECONDS < deadline )); do
     cp "$OUT/logcat-live.txt" "$OUT/progress.txt"
-    if grep -Eq "$fatal_pattern" "$OUT/progress.txt"; then
+    # Reopening the activity can replay the previous VM's Crashed state before
+    # DEBUG_START transitions to Starting. Only that lifecycle snapshot is stale;
+    # graphics errors and a crash after Starting still fail this attempt.
+    if awk -v fatal="$fatal_pattern" '
+        /status=Starting/ { started=1 }
+        /status=Crashed/ && !started { next }
+        $0 ~ fatal { found=1 }
+        END { exit !found }
+    ' "$OUT/progress.txt"; then
         capture
         echo "FAIL: root display/VM error. Evidence: $OUT" >&2
         exit 1

@@ -1,0 +1,32 @@
+--- a/src/virgl_renderer.rs
++++ b/src/virgl_renderer.rs
+@@ -649,6 +649,9 @@
+ 
+     fn display_flush(&self) -> RutabagaResult<()> {
+         let renderer_ids = context_ids().active_renderer_ids();
++        let contexts = renderer_ids.len();
++        let started = std::time::Instant::now();
++        let result = (|| {
+         for renderer_ctx_id in renderer_ids {
+             // SAFETY: context ids are allocated only after successful renderer creation and
+             // remain active until the context object is dropped.
+@@ -656,6 +659,19 @@
+             ret_to_res(ret)?;
+         }
+         Ok(())
++        })();
++        static CLOCK: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
++        static STATS: std::sync::Mutex<(u64,u64,u64,u64)> = std::sync::Mutex::new((0,0,0,0));
++        let micros = started.elapsed().as_micros() as u64;
++        let second = CLOCK.get_or_init(std::time::Instant::now).elapsed().as_secs();
++        let mut stats = STATS.lock().unwrap();
++        stats.1 += 1; stats.2 += micros; stats.3 = stats.3.max(micros);
++        if second != stats.0 {
++            info!("VIRUAISOR_DISPLAY_TIMING frames={} contexts={} sync_avg_us={} sync_max_us={}",
++                stats.1,contexts,stats.2/stats.1,stats.3);
++            *stats=(second,0,0,0);
++        }
++        result
+     }
+ 
+     fn create_fence(&mut self, fence: RutabagaFence) -> RutabagaResult<()> {

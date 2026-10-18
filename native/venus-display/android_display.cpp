@@ -59,6 +59,17 @@ struct AndroidDisplaySurface {
     uint64_t frameSinkFailures=0;
     uint64_t cpuCopies=0;
     uint64_t deferredFrames=0;
+    uint64_t consumerBacklog=0;
+    std::chrono::steady_clock::time_point lastBacklogLog{};
+    void backlog() {
+        ++consumerBacklog;
+        const auto now=std::chrono::steady_clock::now();
+        if (now-lastBacklogLog>=std::chrono::seconds(1)) {
+            lastBacklogLog=now;
+            __android_log_print(ANDROID_LOG_INFO,"ViruaisorVenusDisplay",
+                "DISPLAY_CONSUMER_BACKLOG count=%llu",(unsigned long long)consumerBacklog);
+        }
+    }
     AHardwareBuffer *retainedBuffer=nullptr;
     std::chrono::steady_clock::time_point lastPostLog{};
     bool logPost() {
@@ -124,8 +135,7 @@ struct AndroidDisplaySurface {
         return STATUS_OK;
     }
     int presentHardwareBufferLocked(AHardwareBuffer *hardware_buffer, int dma_fd=-1) {
-        if (!hardware_buffer || !width || !height ||
-            (!frameSink && (!window || !control))) {
+        if (!hardware_buffer || !width || !height) {
             __android_log_print(
                 ANDROID_LOG_WARN, "ViruaisorVenusDisplay",
                 "SURFACE_BUFFER_REJECTED state window=%d control=%d sink=%d buffer=%d width=%u height=%u",
@@ -150,12 +160,16 @@ struct AndroidDisplaySurface {
                 static_cast<unsigned long long>(description.usage), width, height);
             return STATUS_BAD_VALUE;
         }
+        // A detached UI has no consumer. Retain the qualified original AHB for
+        // attach replay; do not turn an ordinary detach into a CPU copy.
+        if (!frameSink && (!window || !control)) return STATUS_OK;
         if (frameSink) {
             AParcel *input = nullptr, *output = nullptr;
             auto status = AIBinder_prepareTransaction(frameSink, &input);
             AIBinder *release = makeReleaseBinder(hardware_buffer, dma_fd);
             if (status == STATUS_OK && !release) {
                 AParcel_delete(input);
+                backlog();
                 return -EAGAIN; // Bounded consumer backlog: retain the last visible frame.
             }
             if (status == STATUS_OK) status = AParcel_writeStrongBinder(input, release);
@@ -201,7 +215,7 @@ struct AndroidDisplaySurface {
         // Renderer synchronization completes the producing Vulkan queues before
         // this call, so no additional acquire fence is needed.
         auto *release = ReleaseBuffer::create(hardware_buffer, dma_fd);
-        if (!release) { ASurfaceTransaction_delete(transaction); return -EAGAIN; }
+        if (!release) { ASurfaceTransaction_delete(transaction); backlog(); return -EAGAIN; }
         ASurfaceTransaction_setBufferWithRelease(transaction, control, hardware_buffer, -1,
                                                 release, releaseNativeBuffer);
         ASurfaceTransaction_setBufferTransparency(transaction, control,

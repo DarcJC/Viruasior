@@ -1,0 +1,44 @@
+--- a/src/virgl_renderer.rs
++++ b/src/virgl_renderer.rs
+@@ -6,6 +6,9 @@
+ //! External code found at <https://gitlab.freedesktop.org/virgl/virglrenderer/>.
+ 
+ #![cfg(feature = "virgl_renderer")]
++
++#[path = "venus_display_batch.rs"]
++mod display_batch;
+ 
+ use std::ffi::CStr;
+ use std::fs::canonicalize;
+@@ -651,15 +654,11 @@
+         let renderer_ids = context_ids().active_renderer_ids();
+         let contexts = renderer_ids.len();
+         let started = std::time::Instant::now();
+-        let result = (|| {
+-        for renderer_ctx_id in renderer_ids {
+-            // SAFETY: context ids are allocated only after successful renderer creation and
+-            // remain active until the context object is dropped.
+-            let ret = unsafe { virgl_renderer_context_wait_idle(renderer_ctx_id) };
+-            ret_to_res(ret)?;
+-        }
+-        Ok(())
+-        })();
++        // SAFETY: ids remain live for this flush; wait_all drains every successful
++        // request before returning, including on deferred or failed completions.
++        let result = ret_to_res(display_batch::wait_all(&renderer_ids,
++            |id| unsafe { virgl_renderer_context_wait_idle_begin(id) },
++            |id| unsafe { virgl_renderer_context_wait_idle_end(id) }));
+         static CLOCK: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+         static STATS: std::sync::Mutex<(u64,u64,u64,u64)> = std::sync::Mutex::new((0,0,0,0));
+         let micros = started.elapsed().as_micros() as u64;
+--- a/src/generated/virgl_renderer_bindings.rs
++++ b/src/generated/virgl_renderer_bindings.rs
+@@ -493,6 +493,8 @@
+ }
+ extern "C" {
+     pub fn virgl_renderer_context_wait_idle(ctx_id: u32) -> ::std::os::raw::c_int;
++    pub fn virgl_renderer_context_wait_idle_begin(ctx_id: u32) -> ::std::os::raw::c_int;
++    pub fn virgl_renderer_context_wait_idle_end(ctx_id: u32) -> ::std::os::raw::c_int;
+ }
+ extern "C" {
+     pub fn virgl_renderer_context_poll(ctx_id: u32);

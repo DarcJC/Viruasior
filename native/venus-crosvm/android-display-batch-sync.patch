@@ -1,0 +1,97 @@
+--- a/src/proxy/proxy_context.c
++++ b/src/proxy/proxy_context.c
+@@ -287,7 +287,7 @@
+ }
+ 
+ static int
+-proxy_context_wait_idle(struct virgl_context *base)
++proxy_context_wait_idle_begin(struct virgl_context *base)
+ {
+    struct proxy_context *ctx = (struct proxy_context *)base;
+    const struct render_context_op_wait_idle_request req = {
+@@ -298,12 +298,26 @@
+       return -1;
+    }
+ 
++   return 0;
++}
++
++static int
++proxy_context_wait_idle_end(struct virgl_context *base)
++{
++   struct proxy_context *ctx = (struct proxy_context *)base;
+    struct render_context_op_wait_idle_reply reply;
+    if (!proxy_socket_receive_reply(&ctx->socket, &reply, sizeof(reply))) {
+       proxy_log("display synchronization failed for ctx %u", base->ctx_id);
+       return -1;
+    }
+    return reply.status > 0 ? 0 : reply.status == 0 ? -EAGAIN : -EIO;
++}
++
++static int
++proxy_context_wait_idle(struct virgl_context *base)
++{
++   const int ret = proxy_context_wait_idle_begin(base);
++   return ret ? ret : proxy_context_wait_idle_end(base);
+ }
+ 
+ static int
+@@ -602,6 +616,8 @@
+    ctx->base.get_blob = proxy_context_get_blob;
+    ctx->base.submit_cmd = proxy_context_submit_cmd;
+    ctx->base.wait_idle = proxy_context_wait_idle;
++   ctx->base.wait_idle_begin = proxy_context_wait_idle_begin;
++   ctx->base.wait_idle_end = proxy_context_wait_idle_end;
+ 
+    ctx->base.get_fencing_fd = proxy_context_get_fencing_fd;
+    ctx->base.retire_fences = proxy_context_retire_fences;
+--- a/src/virgl_context.h
++++ b/src/virgl_context.h
+@@ -116,6 +116,9 @@
+ 
+    /* Wait until all renderer work submitted to this context is host-visible. */
+    int (*wait_idle)(struct virgl_context *ctx);
++   /* A successful begin must be paired with end before another socket request. */
++   int (*wait_idle_begin)(struct virgl_context *ctx);
++   int (*wait_idle_end)(struct virgl_context *ctx);
+ 
+    /*
+     * Return an fd that is readable whenever there is any signaled fence in
+--- a/src/virglrenderer.c
++++ b/src/virglrenderer.c
+@@ -823,6 +823,24 @@
+    return ctx->wait_idle(ctx);
+ }
+ 
++int virgl_renderer_context_wait_idle_begin(uint32_t ctx_id)
++{
++   TRACE_FUNC();
++   struct virgl_context *ctx = virgl_context_lookup(ctx_id);
++   if (!ctx || !ctx->wait_idle_begin)
++      return -EOPNOTSUPP;
++   return ctx->wait_idle_begin(ctx);
++}
++
++int virgl_renderer_context_wait_idle_end(uint32_t ctx_id)
++{
++   TRACE_FUNC();
++   struct virgl_context *ctx = virgl_context_lookup(ctx_id);
++   if (!ctx || !ctx->wait_idle_end)
++      return -EOPNOTSUPP;
++   return ctx->wait_idle_end(ctx);
++}
++
+ void virgl_renderer_poll(void)
+ {
+    TRACE_FUNC();
+--- a/src/virglrenderer.h
++++ b/src/virglrenderer.h
+@@ -458,6 +458,8 @@
+                                                      uint64_t fence_id);
+ 
+ VIRGL_EXPORT int virgl_renderer_context_wait_idle(uint32_t ctx_id);
++VIRGL_EXPORT int virgl_renderer_context_wait_idle_begin(uint32_t ctx_id);
++VIRGL_EXPORT int virgl_renderer_context_wait_idle_end(uint32_t ctx_id);
+ VIRGL_EXPORT void virgl_renderer_context_poll(uint32_t ctx_id); /* force fences */
+ VIRGL_EXPORT int virgl_renderer_context_get_poll_fd(uint32_t ctx_id);
+ 

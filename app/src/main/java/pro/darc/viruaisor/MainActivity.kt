@@ -7,6 +7,8 @@ import android.util.Base64
 import android.view.KeyEvent
 import android.view.SurfaceHolder
 import android.view.SurfaceView
+import pro.darc.viruaisor.vm.DisplayMode
+import pro.darc.viruaisor.display.DesktopPointerPolicy
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -101,6 +103,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             ViruaisorTheme {
                 val state by VmRuntime.state.collectAsState()
+                LaunchedEffect(fullscreen,state.display.actual) { applyFullscreenRefresh(fullscreen) }
                 DisposableEffect(state.isActive) {
                     // Window-local only: hidden/closed windows cannot keep the screen on.
                     window.decorView.keepScreenOn = state.isActive
@@ -159,12 +162,37 @@ class MainActivity : ComponentActivity() {
 
     private fun changeFullscreen(value: Boolean) {
         fullscreen = value
+        applyFullscreenRefresh(value)
         val controller = WindowCompat.getInsetsController(window, window.decorView)
         controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         if (value) controller.hide(WindowInsetsCompat.Type.systemBars()) else {
             keyboard.release()
             controller.show(WindowInsetsCompat.Type.systemBars())
         }
+    }
+
+    private var savedDisplayPreference: Pair<Int,Float>? = null
+    private fun applyFullscreenRefresh(active: Boolean) {
+        val attributes=window.attributes
+        if (!active) {
+            savedDisplayPreference?.let { (id,rate) ->
+                attributes.preferredDisplayModeId=id
+                attributes.preferredRefreshRate=rate
+                window.attributes=attributes
+            }
+            savedDisplayPreference=null
+            return
+        }
+        val display=window.decorView.display ?: return
+        if (savedDisplayPreference == null) savedDisplayPreference=attributes.preferredDisplayModeId to attributes.preferredRefreshRate
+        val current=display.mode
+        val target=VmRuntime.state.value.display.actual?.refreshHz ?: 120f
+        val selected=DesktopPointerPolicy.preferredMode(display.supportedModes.map {
+            DesktopPointerPolicy.ScreenMode(it.modeId,it.physicalWidth,it.physicalHeight,it.refreshRate)
+        },current.physicalWidth,current.physicalHeight,target) ?: return
+        attributes.preferredDisplayModeId=selected.id
+        attributes.preferredRefreshRate=selected.hz
+        window.attributes=attributes
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
@@ -217,7 +245,12 @@ class MainActivity : ComponentActivity() {
             ACTION_DEBUG_ROOT_DISPLAY -> useRootDisplay = true
             "pro.darc.viruaisor.action.DEBUG_RESIZE" -> {
                 val size = runCatching { DisplaySize(intent.getIntExtra("width",0),intent.getIntExtra("height",0)) }.getOrNull()
-                if (size != null) ContextCompat.startForegroundService(this,VmService.resizeIntent(this,size))
+                if (size != null) {
+                    val rate=intent.getIntExtra("millihz",0)
+                    val request=if(rate == 0) VmService.resizeIntent(this,size) else
+                        runCatching { VmService.resizeIntent(this,DisplayMode(size,rate)) }.getOrNull()
+                    if(request != null) ContextCompat.startForegroundService(this,request)
+                }
             }
             ACTION_DEBUG_CONSOLE -> {
                 val encoded = intent.getStringExtra(EXTRA_TEXT_BASE64).orEmpty()
@@ -260,7 +293,7 @@ private fun VmScreen(
     onPreparedBundle: (() -> Unit)?,
     onStart: () -> Unit,
     onStop: () -> Unit,
-    onResize: (DisplaySize) -> Unit,
+    onResize: (DisplayMode) -> Unit,
     onSurfaceReady: () -> Unit,
     onSurfaceGone: () -> Unit,
 ) {
@@ -362,13 +395,13 @@ private fun VmScreen(
 }
 
 @Composable
-private fun ResolutionControl(state: VmUiState, onResize: (DisplaySize) -> Unit) {
+private fun ResolutionControl(state: VmUiState, onResize: (DisplayMode) -> Unit) {
     var expanded by remember { mutableStateOf(false) }
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Box {
             OutlinedButton(onClick = { expanded=true }, enabled = !state.display.switching) {
-                Text(if (state.display.switching) "正在切换到 ${state.display.requested}…"
-                    else "分辨率：${state.display.presented ?: state.display.actual}")
+                Text(if (state.display.requested != null) "正在切换到 ${state.display.requested}…"
+                    else "分辨率：${state.display.actual ?: state.display.presented}")
             }
             DropdownMenu(expanded=expanded,onDismissRequest={expanded=false}) {
                 state.display.modes.forEach { size ->

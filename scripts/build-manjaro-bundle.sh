@@ -32,6 +32,8 @@ install -Dm0755 "$repo/guest/avf-agent/avf-agent" "$root/usr/local/sbin/avf-agen
 install -Dm0644 "$repo/docs/guest/avf-agent.service" "$root/usr/lib/systemd/system/avf-agent.service"
 install -Dm0644 "$repo/guest/plasma/avf-plasma.service" "$root/usr/lib/systemd/system/avf-plasma.service"
 install -m0644 "$repo/guest/plasma/venus.env" "$root/etc/viruaisor/venus.env"
+bash "$repo/scripts/build-kwin-full-repaint.sh"
+install -Dm0755 "$workspace_out/viruaisor_full_repaint.so" "$root/usr/lib/qt/plugins/kwin/effects/plugins/viruaisor_full_repaint.so"
 for file in venus-preflight plasma-session display-control.py; do install -m0755 "$repo/guest/plasma/$file" "$root/opt/viruaisor/$file"; done
 install -m0644 "$repo/scripts/guest-gpu-draw-probe.py" "$root/opt/viruaisor/guest-gpu-draw-probe.py"
 install -m0644 "$repo/guest/plasma/input-check.py" "$root/opt/viruaisor/input-check.py"

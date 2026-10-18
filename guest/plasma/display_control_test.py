@@ -17,6 +17,32 @@ Virtual-2 disconnected (normal left inverted right x axis y axis)
 """
 
 class DisplayControlTest(unittest.TestCase):
+    def test_native_size_is_within_the_explicit_eight_megapixel_budget(self):
+        self.assertTrue(display.valid_size(3408, 2272))
+        self.assertFalse(display.valid_size(4096, 4096))
+
+    def test_configs_preserve_supported_rates_and_reject_native_high_rate(self):
+        text = XRANDR.replace("   1920x1080     60.00 +", "   3408x2272     60.00 120.00\n   1920x1200     119.99 59.88\n   1920x1080     60.00 +")
+        output, current, modes = display.parse_configs(text)
+        self.assertEqual("Virtual-1", output)
+        self.assertEqual((1280,720,60000),current)
+        self.assertIn((1920,1200,119990),modes)
+        self.assertIn((3408,2272,60000),modes)
+        self.assertNotIn((3408,2272,120000),modes)
+
+    def test_rate_change_failure_restores_previous_rate_at_same_size(self):
+        text = XRANDR.replace("60.00*", "120.00 60.00*")
+        before = display.parse_configs(text)
+        with patch.object(display,"query_configs",side_effect=[before,before]), patch.object(display,"run_xrandr") as run:
+            with self.assertRaises(RuntimeError): display.resize_rate(1280,720,120000)
+            self.assertEqual(["--output","Virtual-1","--mode","1280x720","--rate","60.00"],run.call_args_list[-1].args[0])
+
+    def test_unadvertised_refresh_does_not_invoke_xrandr(self):
+        before = display.parse_configs(XRANDR)
+        with patch.object(display,"query_configs",return_value=before), patch.object(display,"run_xrandr") as run:
+            with self.assertRaises(ValueError): display.resize_rate(1280,720,120000)
+            run.assert_not_called()
+
     def test_query_uses_real_modes_with_budget_and_current_size(self):
         output, current, modes = display.parse_modes(XRANDR)
         self.assertEqual("Virtual-1", output)

@@ -2,6 +2,8 @@
 
 2026-10-18，M367FC / Android 17，Manjaro ARM / Plasma 5.27.10，私有 Mesa 25.0.7。
 
+后续闪黑、120 Hz mode、原生触摸板与长窗口测量见 [最新验证](high-refresh-trackpad-validation.md)。下文的 48 fps 是历史短样本，不是稳定帧率结论。
+
 ## 修复与证据边界
 
 可见帧现在通过独立 SurfaceControl 层提交原始 AHardwareBuffer。正常路径不做 CPU lock、像素扫描、CPU copy 或额外的应用呈现 blit；`FRAME_POSTED path=root-surface-control cpuCopies=0` 区分该路径与保留的诊断回退。描述符必须包含 composer 和 sampled usage。release Binder 放在变长 AHB parcel 之前，两端顺序一致。

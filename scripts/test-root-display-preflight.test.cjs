@@ -13,7 +13,7 @@ const script = path.resolve(__dirname, 'test-root-direct-surface.sh').replace(/\
 const bash = process.env.TEST_BASH || (process.platform === 'win32'
   ? 'C:/Program Files/Git/bin/bash.exe' : 'bash');
 
-function run(windowDump, ready, failure = '', omitDesktopMarker = false) {
+function run(windowDump, ready, failure = '', omitDesktopMarker = false, staleCrash = false, largeLog = false) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'viruaisor-display-gate-'));
   try {
     const trace = path.join(dir, 'calls.txt');
@@ -32,6 +32,10 @@ else if (args === 'exec-out screencap -p') process.stdout.write(png(100,100,(x,y
 else if (args.startsWith('pull ')) fs.writeFileSync(process.argv.at(-1),xml);
 else if (args === 'shell dumpsys SurfaceFlinger') { console.log(' - Output Layer 0x1(ViruaisorRootDisplay#123)'); console.log(' hwc: layer=0x1 composition=CLIENT (1)'); }
 else if (args.startsWith('logcat ') && process.env.TEST_READY === 'true') {
+  if(process.env.TEST_STALE_CRASH === 'true') console.log('I ViruaisorState: status=Crashed');
+  console.log('I ViruaisorState: status=Starting');
+  if(process.env.TEST_FAILURE) console.log(process.env.TEST_FAILURE);
+  if(process.env.TEST_LARGE_LOG === 'true') console.log('I virtmgr: harmless renderer progress\\n'.repeat(10000));
   console.log('I ViruaisorRootDisplay: DESKTOP_LEASE_READY token=${'a'.repeat(32)} uid=10278 pid=123');
   console.log('I ViruaisorRootDisplay: DESKTOP_EXECUTION_VERIFIED token=${'a'.repeat(32)} name=crosvm_default caps=0');
   console.log('I ViruaisorRootDisplay: Root Direct Surface attached');
@@ -68,6 +72,8 @@ else if (args.startsWith('logcat ') && process.env.TEST_FAILURE) {
         TEST_READY: String(ready),
         TEST_FAILURE: failure,
         TEST_OMIT_DESKTOP_MARKER: String(omitDesktopMarker),
+        TEST_STALE_CRASH: String(staleCrash),
+        TEST_LARGE_LOG: String(largeLog),
       },
     });
     if (result.error) throw result.error;
@@ -109,6 +115,22 @@ test('Plasma hardware ready satisfies desktop start when early request log was m
   const r = run(windowState(false, 'INTERACTIVE_STATE_AWAKE'), true, '', true);
   assert.equal(r.status, 0, r.stderr);
   assert.match(r.stdout, /renderer synchronization and a post-ready non-black Direct Surface frame verified/);
+});
+
+test('an old Crashed state replayed before Starting does not fail the new VM run', () => {
+  const r = run(windowState(false, 'INTERACTIVE_STATE_AWAKE'), true, '', false, true);
+  assert.equal(r.status, 0, r.stderr);
+});
+
+test('a Crashed state after Starting fails the new VM run', () => {
+  const r = run(windowState(false, 'INTERACTIVE_STATE_AWAKE'), true, 'I ViruaisorState: status=Crashed');
+  assert.equal(r.status, 1, r.stderr);
+  assert.match(r.stderr, /root display\/VM error/i);
+});
+test('a large renderer log cannot hide a new crash through pipefail/SIGPIPE', () => {
+  const r = run(windowState(false, 'INTERACTIVE_STATE_AWAKE'), true, 'I ViruaisorState: status=Crashed', false, false, true);
+  assert.equal(r.status, 1, r.stderr);
+  assert.match(r.stderr, /root display\/VM error/i);
 });
 
 for (const failure of [

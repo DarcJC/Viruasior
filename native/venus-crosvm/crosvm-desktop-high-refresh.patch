@@ -1,0 +1,18 @@
+--- a/devices/src/virtio/gpu/edid.rs
++++ b/devices/src/virtio/gpu/edid.rs
+@@ -59,6 +59,15 @@
+         populate_detailed_timing_descriptor(descriptor1, info);
+         let descriptor2 = &mut edid[72..90];
+         populate_display_name(descriptor2);
++
++        // VIRUAISOR_DESKTOP_HIGH_REFRESH: retain the supplied native timing and
++        // advertise a bounded desktop mode independently of the panel timing.
++        if info.width() >= 1920 && info.height() >= 1200 {
++            let mut desktop = *info;
++            desktop.resolution = Resolution::new(1920, 1200);
++            desktop.refresh_rate = 120;
++            populate_detailed_timing_descriptor(&mut edid[90..108], &desktop);
++        }
+ 
+         // We add one extension edid.
+         edid[126] = 1;
