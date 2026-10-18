@@ -1,0 +1,19 @@
+--- a/src/gallium/drivers/zink/zink_resource.c
++++ b/src/gallium/drivers/zink/zink_resource.c
+@@ -1314,8 +1314,14 @@
+       !screen->info.have_EXT_image_drm_format_modifier &&
+       screen->info.driver_props.driverID == VK_DRIVER_ID_MESA_VENUS &&
+       screen->info.props.vendorID == 0x13b5 &&
+-      (templ->bind & (PIPE_BIND_SHARED | PIPE_BIND_SCANOUT)) ==
+-         (PIPE_BIND_SHARED | PIPE_BIND_SCANOUT);
++      (templ->bind & PIPE_BIND_SHARED) &&
++      ((templ->bind & PIPE_BIND_SCANOUT) ||
++       /* VIRUAISOR_ZINK_SHARED_PIXMAP_EXPORT: Xwayland also shares ordinary
++        * window pixmaps. Optimal tiling drops their exportability below. */
++       (ici.imageType == VK_IMAGE_TYPE_2D &&
++        ici.format == VK_FORMAT_B8G8R8A8_UNORM &&
++        ici.samples == VK_SAMPLE_COUNT_1_BIT && ici.mipLevels == 1 &&
++        ici.arrayLayers == 1));
+    const bool viruaisor_import_dmabuf =
+       alloc_info->whandle &&
+       zink_venus_linear_dmabuf(screen->info.have_EXT_image_drm_format_modifier,

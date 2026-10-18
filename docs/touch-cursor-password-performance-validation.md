@@ -264,10 +264,45 @@ The native GPU Wayland colour window now stays alive and displays correctly;
 the existing X11 desktop also displays correctly. Temporary Wayland testing
 retains large-core affinity 4–7 and uses no host system changes.
 
-Full Plasma starts on Wayland, but its Xwayland motion window remains invisible.
-Protocol tracing shows a separate Zink export failure before any window buffer
-is attached: an ordinary shared pixmap is created with optimal tiling, loses
-exportability, then requires the disabled DRM-modifier extension when exporting
-later. A presentation capture without that visible workload was rejected, so
-there is no valid full-desktop Wayland performance claim yet. Wayland remains
-an isolated diagnostic rather than the production session.
+The Plasma shell starts on Wayland, but its Xwayland motion window initially
+remained invisible. Protocol tracing showed a separate Zink export failure
+before any window buffer was attached: an ordinary shared pixmap was created
+with optimal tiling, lost exportability, then required the disabled DRM-modifier
+extension when exporting later. A presentation capture without that visible
+workload was rejected.
+
+## Shared Xwayland pixmap export (2026-10-19)
+
+The private Zink path previously made only shared scanout images exportable at
+creation. Xwayland also exports ordinary shared window pixmaps. Extend the same
+linear DMA-BUF declaration/allocation path to 2D BGRA8 shared images with one
+sample, one mip and one array layer, qualified to Venus on Mali without DRM
+modifiers. Imports and the existing scanout path retain their prior behavior;
+GPU synchronization is unchanged.
+
+The failing window now displays with the original six-colour motion workload.
+Three real Android captures verify motion, RGB content and both corner regions
+at native and 1920×1200 resolutions. KWin and Xwayland map the temporary candidate
+library, SHA-256
+`d214dcabfb02964e1a0c87317e2157f54c75a68244793752658997d49b8ef33e`
+(19,276,176 bytes). Mesa compilation, the existing private DMA-BUF/upload policy
+tests and patch integration check pass.
+
+With the experimental Wayland compositor and Plasma shell, native 3408×2272@60
+measures 75.72 fps over 59.49 seconds, p95/p99 16.69/16.72 ms, with 24 intervals
+over 20 ms. At 1920×1200@120, the same visible workload measures 91.16 fps over
+60.13 seconds, p95/p99 16.68/16.70 ms, with 9 intervals over 20 ms. Both use large
+cores 4–7 and full repainting. These are display-path experiments, not acceptance
+of a complete production Wayland session or of stable 120 fps. Session startup,
+App mode control and input compatibility must be validated before changing the
+default desktop. The installed production session remains X11.
+
+A follow-up X11 comparison on the same running VM and AHB-size-fixed runtime
+measures 61.66 fps native and 71.86 fps at 1920 with the candidate in KWin, versus
+61.10 and 69.30 fps with the original library. Both native samples have p95/p99
+25.01/33.33 ms; their over-20-ms counts are 951 and 696 respectively. The 1920
+counts are 76 and 109. Xorg's secure execution loads the original installed
+library in both runs, while KWin's mapped library confirms the intended change.
+This does not establish an X11 performance gain or explain the change in native
+cadence relative to earlier runs; retain the patch for the reproduced Xwayland
+export repair, not as a queue or X11 performance optimization.

@@ -19,6 +19,9 @@ fi
 if ! grep -Fq zink_venus_linear_dmabuf "$source/src/gallium/drivers/zink/zink_resource.c"; then
     git -C "$source" apply "$repo/native/venus-crosvm/zink-venus-pixmap-linear.patch"
 fi
+if ! grep -Fq VIRUAISOR_ZINK_SHARED_PIXMAP_EXPORT "$source/src/gallium/drivers/zink/zink_resource.c"; then
+    git -C "$source" apply "$repo/native/venus-crosvm/zink-venus-shared-pixmap.patch"
+fi
 gcc -Wall -Wextra -Werror "$repo/native/venus-crosvm/zink_venus_dmabuf_policy_test.c" -o /tmp/viruaisor-zink-dmabuf-test
 /tmp/viruaisor-zink-dmabuf-test
 gcc -Wall -Wextra -Werror "$repo/native/venus-crosvm/zink_venus_upload_policy_test.c" -o /tmp/viruaisor-zink-upload-test
