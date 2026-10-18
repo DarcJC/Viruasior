@@ -187,3 +187,53 @@ setting the same 3408×2272@60 mode directly, measured 62.54 fps for the precedi
 runtime (59.80 s) and 62.51 fps for the final repair (59.32 s). Both had p95/p99
 intervals near 25 ms. No material regression appeared in this comparison; neither
 meets stable 60 fps. This repair is a crash fix, not a claimed frame-rate gain.
+
+## Rejected queue-completion cache experiment (2026-10-19)
+
+A candidate cached each Vulkan queue's completed work epoch. Successful guest
+`QueueSubmit`, `QueueSubmit2` and `QueueBindSparse` advanced the epoch; display
+synchronization reused completion only after draining the guest command rings,
+with no pending fence and no newer work. Timeout/error paths retained their
+pending fences. The intent was to avoid empty fence submissions for idle queues,
+without removing synchronization for active queues.
+
+The idle-queue regression failed before implementation, then passed alongside
+the existing fence-lifetime tests, including AddressSanitizer/UndefinedBehaviorSanitizer.
+The native build, Android unit tests, debug APK build and packaged artifact
+verification passed. The trial runtime was 14,117,016 bytes with SHA-256
+`cf5888e61a04e3b10502e7e22b7d73995f67bfd0815607cb13180aaddc7fe77f`.
+Actual moving colour-window pixels and both sampled corner regions passed.
+
+The candidate and then the baseline APK each received a fresh VM start, followed
+by the same native-then-1920 mode sequence and fullscreen motion workload.
+Each mode received a nominal 60-second capture of unique presentation timestamps
+from the App's own SurfaceFlinger layer, excluding timestamps before capture.
+Xorg and KWin used large cores 4–7 in both runs; neither prime-core pinning nor
+host system changes were used.
+
+| Mode | Baseline fps | Candidate fps | Baseline p95 / p99 | Candidate p95 / p99 |
+| --- | ---: | ---: | ---: | ---: |
+| 3408×2272@60 | 62.53 | 62.57 | 25.00 / 25.01 ms | 24.99 / 25.01 ms |
+| 1920×1200@120 | 72.70 | 71.58 | 16.69 / 25.00 ms | 16.69 / 24.99 ms |
+
+Native samples covered 59.62 seconds (baseline) and 59.27 seconds (candidate);
+1920 samples covered 59.64 and 59.25 seconds respectively. Intervals over 20 ms
+were 225/3728 versus 211/3709 at native resolution and 60/4336 versus 58/4241
+at 1920. Neither the average nor the long-frame distribution establishes a
+useful improvement. A preceding independent baseline native sample also measured
+62.51 fps. These results still do not meet stable 120 fps at 1920 or stable
+60 fps at native resolution; the collector's generic `passed` flag is not a
+120-fps acceptance check.
+
+The queue cache, its build integration, tests and artifact-pin changes were
+reverted. The external renderer source was also restored, and the known-good
+`7600b50a10e17c50452433a2c3783da2ca78e2fc4e934c3ed2f3ff894fa0714f`
+runtime was restored in both the installed APK and local packaged artifacts.
+Only this experiment record is retained. Raw captures and the rejected candidate
+remain private under `.pi/device-debug/`, outside version control.
+
+After restoration, Android unit tests, debug build and packaged native-pin
+verification passed again. The 1920×1280 mode filled the 3408×2272 fullscreen
+Surface without letterboxing. SELinux remained Enforcing and the existing
+host hidden-API settings were unchanged. The two temporary guest probe hooks
+and their Python files were removed without modifying the droid account.
