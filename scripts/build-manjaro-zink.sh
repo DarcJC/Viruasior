@@ -12,11 +12,17 @@ if ! grep -Fq VIRUAISOR_ZINK_BUFFER_COHERENCE "$source/src/gallium/drivers/zink/
     git -C "$source" apply "$patch"
 fi
 cp "$repo/native/venus-crosvm/zink_venus_dmabuf_policy.h" "$source/src/gallium/drivers/zink/"
+cp "$repo/native/venus-crosvm/zink_venus_upload_policy.h" "$source/src/gallium/drivers/zink/"
+if ! grep -Fq zink_venus_private_upload "$source/src/gallium/drivers/zink/zink_bo.c"; then
+    git -C "$source" apply "$repo/native/venus-crosvm/zink-venus-small-upload.patch"
+fi
 if ! grep -Fq zink_venus_linear_dmabuf "$source/src/gallium/drivers/zink/zink_resource.c"; then
     git -C "$source" apply "$repo/native/venus-crosvm/zink-venus-pixmap-linear.patch"
 fi
 gcc -Wall -Wextra -Werror "$repo/native/venus-crosvm/zink_venus_dmabuf_policy_test.c" -o /tmp/viruaisor-zink-dmabuf-test
 /tmp/viruaisor-zink-dmabuf-test
+gcc -Wall -Wextra -Werror "$repo/native/venus-crosvm/zink_venus_upload_policy_test.c" -o /tmp/viruaisor-zink-upload-test
+/tmp/viruaisor-zink-upload-test
 unset PKG_CONFIG_SYSROOT_DIR PKG_CONFIG_LIBDIR PKG_CONFIG_PATH
 setup=()
 [[ ! -f "$work/build.ninja" ]] || setup=(--reconfigure --clearcache)

@@ -76,6 +76,16 @@ class VmService : Service() {
         engine = AvfVmEngine(this, executor, ::onEngineEvent) { venusLease?.active == true }
         InputBackendRegistry.bind(engine)
         controlClient = VsockControlClient(engine)
+        GuestPasswordRuntime.bind(this) { password, complete ->
+            scope.launch {
+                val success=lifecycleMutex.withLock {
+                    val selected=bundle
+                    selected != null && VmRuntime.state.value.status is VmStatus.GuestAgentReady &&
+                        runCatching { controlClient.changeDroidPassword(selected.vsockPort,password) }.isSuccess
+                }
+                complete(success)
+            }
+        }
         scope.launch {
             for ((generation,size) in resizeRequests) {
                 displayMutex.withLock {
@@ -162,6 +172,7 @@ class VmService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        GuestPasswordRuntime.unbind(this)
         Log.d(TAG, "onDestroy service=${System.identityHashCode(this)} status=${VmRuntime.state.value.status}")
         readinessJob?.cancel()
         displayMonitor?.cancel()
@@ -415,11 +426,24 @@ class VmService : Service() {
         if (selected.gpuProfile != VmGpuProfile.VENUS) return
         displayMonitor?.cancel()
         val generation = displayGeneration
+        var chooseDefault = true
         displayMonitor = scope.launch {
             while (generation == displayGeneration && desktopStartGate.started) {
                 displayMutex.withLock {
                     runCatching { controlClient.displayModes(selected.vsockPort) }.onSuccess {
-                        if (generation == displayGeneration) VmRuntime.setDisplayModes(it)
+                        if (generation == displayGeneration) {
+                            val pending=VmRuntime.state.value.display.requested
+                            VmRuntime.setDisplayModes(it)
+                            if (chooseDefault) {
+                                chooseDefault=false
+                                val preferred=DisplayModePolicy.preferred(
+                                    DisplaySize(selected.display.width,selected.display.height),it.available)
+                                if (pending == null && preferred != null && preferred != it.current) {
+                                    VmRuntime.requestResize(preferred)
+                                    resizeRequests.trySend(generation to preferred)
+                                }
+                            }
+                        }
                     }
                 }
                 delay(2_000)

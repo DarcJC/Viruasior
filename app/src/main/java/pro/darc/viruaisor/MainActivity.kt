@@ -34,6 +34,12 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.TextButton
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.foundation.layout.Box
@@ -77,6 +83,9 @@ import pro.darc.viruaisor.vm.VmStatus
 import pro.darc.viruaisor.vm.VmUiState
 import pro.darc.viruaisor.vm.VmGpuProfile
 import pro.darc.viruaisor.vm.DisplaySize
+import pro.darc.viruaisor.vm.DisplayModePolicy
+import pro.darc.viruaisor.vm.GuestPasswordProtocol
+import pro.darc.viruaisor.vm.GuestPasswordRuntime
 import pro.darc.viruaisor.gpu.VenusHostRuntime
 
 class MainActivity : ComponentActivity() {
@@ -162,6 +171,8 @@ class MainActivity : ComponentActivity() {
 
     private fun changeFullscreen(value: Boolean) {
         fullscreen = value
+        window.decorView.pointerIcon=if(value) android.view.PointerIcon.getSystemIcon(this,
+            android.view.PointerIcon.TYPE_NULL) else null
         applyFullscreenRefresh(value)
         val controller = WindowCompat.getInsetsController(window, window.decorView)
         controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
@@ -186,7 +197,9 @@ class MainActivity : ComponentActivity() {
         val display=window.decorView.display ?: return
         if (savedDisplayPreference == null) savedDisplayPreference=attributes.preferredDisplayModeId to attributes.preferredRefreshRate
         val current=display.mode
-        val target=VmRuntime.state.value.display.actual?.refreshHz ?: 120f
+        // Guest scanout timing and Android consumer cadence are independent.
+        // Keep the visible consumer responsive even for a native 60 Hz guest.
+        val target=120f
         val selected=DesktopPointerPolicy.preferredMode(display.supportedModes.map {
             DesktopPointerPolicy.ScreenMode(it.modeId,it.physicalWidth,it.physicalHeight,it.refreshRate)
         },current.physicalWidth,current.physicalHeight,target) ?: return
@@ -196,6 +209,9 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        // This activity opts out of predictive Back in the manifest. Some tablet
+        // keyboards emit Android BACK with physical ESC scan code 1; predictive
+        // Back consumes it before this method and loses that distinction.
         if (fullscreen && VmRuntime.state.value.display.switching) {
             keyboard.release()
             return true
@@ -356,6 +372,7 @@ private fun VmScreen(
             if (!fullscreen) {
                 StatusCard(state)
                 if (state.display.modes.isNotEmpty()) ResolutionControl(state,onResize)
+                DroidPasswordControl(state.status is VmStatus.GuestAgentReady)
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     OutlinedButton(onClick = onChooseBundle, enabled = state.canImport && !venusHost.running && !venusAvf.running) {
                         Text(if (state.bundle == null) "Choose VM bundle" else "Replace VM bundle")
@@ -395,8 +412,50 @@ private fun VmScreen(
 }
 
 @Composable
+private fun DroidPasswordControl(ready: Boolean) {
+    var open by remember { mutableStateOf(false) }
+    val status by GuestPasswordRuntime.status.collectAsState()
+    Column {
+        OutlinedButton(onClick={open=true},enabled=ready && status != GuestPasswordRuntime.Status.Updating) {
+            Text(if(status == GuestPasswordRuntime.Status.Updating) "正在更新密码…" else "修改 droid 密码")
+        }
+        if(status == GuestPasswordRuntime.Status.Changed) Text("droid 密码已更新，可用于客体锁屏登录")
+        if(status == GuestPasswordRuntime.Status.Failed) Text("更新失败，请确认虚拟机可用且已更新配套客体 agent",color=MaterialTheme.colorScheme.error)
+    }
+    if(open) {
+        var password by remember { mutableStateOf("") }
+        var confirmation by remember { mutableStateOf("") }
+        var error by remember { mutableStateOf<String?>(null) }
+        fun close() {password="";confirmation="";open=false}
+        AlertDialog(onDismissRequest={close()},title={Text("修改 droid 密码")},text={
+            Column(verticalArrangement=Arrangement.spacedBy(12.dp)) {
+                Text("设置 Linux 客体 droid 用户的登录及锁屏密码。")
+                OutlinedTextField(value=password,onValueChange={password=it;error=null},label={Text("新密码")},
+                    singleLine=true,visualTransformation=PasswordVisualTransformation(),
+                    keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Password))
+                OutlinedTextField(value=confirmation,onValueChange={confirmation=it;error=null},label={Text("再次输入新密码")},
+                    singleLine=true,visualTransformation=PasswordVisualTransformation(),
+                    keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Password))
+                error?.let {Text(it,color=MaterialTheme.colorScheme.error)}
+            }
+        },confirmButton={
+            TextButton(enabled=ready,onClick={
+                if(password != confirmation) error="两次输入的密码不一致"
+                else {
+                    val valid=runCatching {GuestPasswordProtocol.command(password)}
+                    if(valid.isFailure) error=valid.exceptionOrNull()?.message
+                    else if(GuestPasswordRuntime.request(password)) close()
+                    else error="虚拟机暂不可用，请稍后重试"
+                }
+            }) {Text("更新密码")}
+        },dismissButton={TextButton(onClick={close()}) {Text("取消")}})
+    }
+}
+
+@Composable
 private fun ResolutionControl(state: VmUiState, onResize: (DisplayMode) -> Unit) {
     var expanded by remember { mutableStateOf(false) }
+    val native=state.bundle?.display?.let { DisplaySize(it.width,it.height) }
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Box {
             OutlinedButton(onClick = { expanded=true }, enabled = !state.display.switching) {
@@ -404,8 +463,13 @@ private fun ResolutionControl(state: VmUiState, onResize: (DisplayMode) -> Unit)
                     else "分辨率：${state.display.actual ?: state.display.presented}")
             }
             DropdownMenu(expanded=expanded,onDismissRequest={expanded=false}) {
-                state.display.modes.forEach { size ->
-                    DropdownMenuItem(text={Text(size.toString())},onClick={expanded=false; onResize(size)})
+                state.display.modes.sortedByDescending { native != null && DisplayModePolicy.fits(native,it.size) }.forEach { size ->
+                    val label=when {
+                        size.size == native -> " · 原生"
+                        native != null && DisplayModePolicy.fits(native,size.size) -> " · 适配屏幕"
+                        else -> ""
+                    }
+                    DropdownMenuItem(text={Text("$size$label")},onClick={expanded=false; onResize(size)})
                 }
             }
         }
@@ -565,12 +629,21 @@ private fun VmSurface(
             }
         },
         update = { view ->
+            // The view can exist before the service replaces imported dimensions
+            // with the VM's native boot size. Refresh the fixed ABS range too.
+            if (view.inputWidth != bufferSize.width || view.inputHeight != bufferSize.height) {
+                view.releaseInput()
+                view.inputWidth=bufferSize.width
+                view.inputHeight=bufferSize.height
+                view.holder.setFixedSize(bufferSize.width,bufferSize.height)
+            }
             if (view.guestWidth != guestSize.width || view.guestHeight != guestSize.height || !inputEnabled) view.releaseInput()
             view.guestWidth=guestSize.width
             view.guestHeight=guestSize.height
             view.inputEnabled=inputEnabled
             view.enterFullscreen = onEnterFullscreen
             if (view.fullscreen != fullscreen) view.fullscreen = fullscreen
+            view.resumePointerCapture()
         },
         onRelease = { view ->
             view.releaseInput()

@@ -162,6 +162,13 @@ if [[ ${VENUS_CROSVM_DISPLAY:-0} == 1 ]]; then
     if ! grep -Fq VIRUAISOR_DESKTOP_HIGH_REFRESH "$work/crosvm/devices/src/virtio/gpu/edid.rs"; then
         git -C "$work/crosvm" apply "$repo/native/venus-crosvm/crosvm-desktop-high-refresh.patch"
     fi
+    if ! grep -Fq VIRUAISOR_DESKTOP_ASPECT "$work/crosvm/devices/src/virtio/gpu/edid.rs"; then
+        git -C "$work/crosvm" apply "$repo/native/venus-crosvm/crosvm-desktop-aspect.patch"
+    fi
+    cp "$repo/native/venus-crosvm/venus_gpu_arena.rs" "$work/crosvm/vm_control/src/sys/"
+    if ! grep -Fq VIRUAISOR_GPU_PAGE_MAPPING "$work/crosvm/vm_control/src/sys/linux.rs"; then
+        git -C "$work/crosvm" apply "$repo/native/venus-crosvm/crosvm-gpu-page-mapping.patch"
+    fi
     if ! grep -Fq VIRUAISOR_DISPLAY_TIMING "$work/rutabaga/src/virgl_renderer.rs"; then
         git -C "$work/rutabaga" apply "$repo/native/venus-crosvm/rutabaga-display-timing.patch"
     fi
@@ -205,6 +212,7 @@ if [[ ${VENUS_CROSVM_IMPORT_FILTER:-0} == 1 ]]; then
     apply_renderer_patch android-ahb-write-path-trace VIRUAISOR_AHB_WRITE_COMMAND src/venus/vkr_command_buffer.c
     apply_renderer_patch android-venus-teardown VIRUAISOR_ANDROID_DEVICE_TEARDOWN_ORDER src/venus/vkr_device.c
     apply_renderer_patch android-renderer-fd-trace VIRUAISOR_PROXY_FD src/proxy/proxy_context.c
+    apply_renderer_patch android-allocation-quiet-trace VIRUAISOR_ALLOCATION_QUIET_TRACE src/venus/vkr_device_memory.c
     apply_renderer_patch android-display-batch-sync virgl_renderer_context_wait_idle_begin src/virglrenderer.c
     gcc -Wall -Wextra -Werror "$repo/native/venus-crosvm/venus_import_memory_policy_test.c" -o /tmp/viruaisor-venus-import-policy-test
     /tmp/viruaisor-venus-import-policy-test

@@ -22,6 +22,8 @@ local.properties
 /app/src/main/jniLibs/**/libvenus_crosvm.so
 /app/src/main/jniLibs/**/libvenus_desktop_crosvm.so
 /guest/avf-agent/desktop-protocol-test
+/guest/avf-agent/password-control-test
+/guest/avf-agent/command-reader-test
 /app/src/main/assets/third_party/venus-host-notices.txt
 /app/src/main/assets/venus/guest-probe.cpio.gz
 /guest/avf-agent/avf-agent

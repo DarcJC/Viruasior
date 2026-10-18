@@ -149,6 +149,28 @@ interface AvfDisplayConnector {
  * stream decoder can replace it without changing VM lifecycle code.
  */
 class Android17AvfDisplayConnector : AvfDisplayConnector {
+    fun setCursorSurface(displayBinder: IBinder, surface: Surface) {
+        transact(displayBinder, DISPLAY_DESCRIPTOR, SET_SURFACE, write = { data ->
+            data.writeTypedObject(surface, 0)
+            data.writeBoolean(true)
+        }) { Unit }
+    }
+
+    fun setCursorStream(displayBinder: IBinder, pipe: android.os.ParcelFileDescriptor?) {
+        transact(displayBinder, DISPLAY_DESCRIPTOR, 2, write = { data ->
+            data.writeTypedObject(pipe, 0)
+        }) { Unit }
+    }
+
+    fun removeCursor(displayBinder: IBinder) {
+        try {
+            transact(displayBinder, DISPLAY_DESCRIPTOR, REMOVE_SURFACE, write = { it.writeBoolean(true) }) { Unit }
+            setCursorStream(displayBinder,null)
+        } catch (_: DeadObjectException) {
+            Log.i("ViruaisorRootDisplay","Cursor producer already exited")
+        }
+    }
+
     override fun waitForDisplayService(): IBinder {
         val virtualization = NativeBinderLookup.waitForVirtualizationService()
             ?: error("The AVF binder service is unavailable.")

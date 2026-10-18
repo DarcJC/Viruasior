@@ -19,7 +19,9 @@
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/socket.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <cstdint>
 #include <chrono>
 #include <dlfcn.h>
@@ -55,6 +57,7 @@ struct AndroidDisplaySurface {
     uint32_t width = 0, height = 0;
     ScanoutBuffer frame;
     bool writing=false;
+    bool isCursor=false;
     uint64_t frames=0;
     uint64_t frameSinkFailures=0;
     uint64_t cpuCopies=0;
@@ -107,7 +110,7 @@ struct AndroidDisplaySurface {
         auto result = ANativeWindow_setBuffersGeometry(
             window, width, height, WINDOW_FORMAT_RGBA_8888);
         if (result != STATUS_OK) return result;
-        if (frameSink) return STATUS_OK;
+        if (frameSink || isCursor) return STATUS_OK;
         if (!control) {
             control = ASurfaceControl_createFromWindow(
                 window, "Viruaisor Venus scanout");
@@ -256,6 +259,7 @@ struct AndroidDisplayContext {
     AIBinder *service = nullptr, *virtualization = nullptr;
     std::mutex cursorMutex;
     int cursorFd = -1;
+    uint32_t cursorX=0x80000000, cursorY=0x80000000;
     bool registered = false;
     bool retired = false;
     std::mutex serviceMutex;
@@ -304,12 +308,17 @@ static binder_status_t transact(AIBinder *binder, transaction_code_t code, const
         return statusReply(output, result);
     }
     if (code == 2) {
-        int32_t present = 0; int fd = -1;
-        if (AParcel_readInt32(input,&present) != STATUS_OK || present != 1 ||
-            AParcel_readParcelFileDescriptor(input,&fd) != STATUS_OK) return STATUS_BAD_VALUE;
+        int fd = -1;
+        // AParcel already consumes the nullable Parcelable presence word.
+        if (AParcel_readParcelFileDescriptor(input,&fd) != STATUS_OK) return STATUS_BAD_VALUE;
+        if (fd>=0) {
+            int flags=fcntl(fd,F_GETFL);
+            if (flags<0 || fcntl(fd,F_SETFL,flags|O_NONBLOCK)<0) { close(fd);return STATUS_BAD_VALUE; }
+        }
         std::lock_guard guard(ctx->cursorMutex);
         if (ctx->cursorFd >= 0) close(ctx->cursorFd);
         ctx->cursorFd=fd;
+        if (fd>=0) { uint32_t position[]={ctx->cursorX,ctx->cursorY}; (void)send(fd,position,sizeof(position),MSG_DONTWAIT|MSG_NOSIGNAL); }
         return statusReply(output,STATUS_OK);
     }
     if (code == 3) {
@@ -379,6 +388,7 @@ extern "C" AndroidDisplaySurface *create_android_surface(AndroidDisplayContext *
     if (!ctx || !width || !height || width>4096 || height>4096) return nullptr;
     auto &surface=cursor ? ctx->cursor : ctx->scanout;
     std::lock_guard guard(surface.mutex);
+    surface.isCursor=cursor;
     if (!surface.frame.configure(width,height)) return nullptr;
     if ((surface.width!=width || surface.height!=height) && surface.retainedBuffer) {
         AHardwareBuffer_release(surface.retainedBuffer); surface.retainedBuffer=nullptr;
@@ -392,6 +402,13 @@ extern "C" void destroy_android_surface(AndroidDisplayContext *,AndroidDisplaySu
     // A guest modeset destroys scanout resources, not the Android UI attachment.
     std::lock_guard guard(surface->mutex);
     surface->writing=false;
+    if (surface->isCursor && surface->frame.data()) {
+        // Resource 0 hides the cursor. Preserve the UI attachment but clear the
+        // old glyph, so a later position update cannot resurrect stale pixels.
+        memset(surface->frame.data(),0,(size_t)surface->width*surface->height*4);
+        surface->frame.finish();
+        (void)surface->presentLocked();
+    }
 }
 extern "C" uint32_t get_android_surface_buffer(AndroidDisplayContext *,AndroidDisplaySurface *surface,ANativeWindow_Buffer *buffer) {
     if (!surface || !buffer) return 0;
@@ -410,7 +427,8 @@ extern "C" void post_android_surface_buffer(AndroidDisplayContext *ctx,AndroidDi
 }
 extern "C" void set_android_surface_position(AndroidDisplayContext *ctx,uint32_t x,uint32_t y) {
     std::lock_guard guard(ctx->cursorMutex);
-    if (ctx->cursorFd >= 0) { uint32_t position[]={x,y}; (void)write(ctx->cursorFd,position,sizeof(position)); }
+    ctx->cursorX=x;ctx->cursorY=y;
+    if (ctx->cursorFd >= 0) { uint32_t position[]={x,y}; (void)send(ctx->cursorFd,position,sizeof(position),MSG_DONTWAIT|MSG_NOSIGNAL); }
 }
 struct AHardwareBufferInfo { size_t num_fds; const int32_t *fds_ptr; size_t metadata_len; const uint8_t *metadata_ptr; };
 extern "C" void android_display_flip_to(AndroidDisplayContext *ctx,AndroidDisplaySurface *,const AHardwareBufferInfo *) {

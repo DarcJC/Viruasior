@@ -1,0 +1,63 @@
+diff --git a/src/gallium/drivers/zink/zink_bo.c b/src/gallium/drivers/zink/zink_bo.c
+index 7ec0c5f..f9e3ceb 100644
+--- a/src/gallium/drivers/zink/zink_bo.c
++++ b/src/gallium/drivers/zink/zink_bo.c
+@@ -30,6 +30,7 @@
+  */
+ 
+ #include "zink_context.h"
++#include "zink_venus_upload_policy.h"
+ #include "zink_bo.h"
+ #include "zink_resource.h"
+ #include "zink_screen.h"
+@@ -583,8 +584,19 @@ zink_bo_create(struct zink_screen *screen, uint64_t size, unsigned alignment, en
+    struct pb_slabs *last_slab = &bo_slabs[NUM_SLAB_ALLOCATORS - 1];
+    unsigned max_slab_entry_size = 1 << (last_slab->min_order + last_slab->num_orders - 1);
+ 
++   /* The paired DMA-BUF cache command synchronizes its entire allocation.
++    * Keep non-coherent upload BOs independently cacheable rather than placing
++    * tiny uploads in a 2 MiB slab. GPU-local/coherent/external BOs are unchanged.
++    */
++   const VkMemoryPropertyFlags properties = screen->info.mem_props.memoryTypes[mem_type_idx].propertyFlags;
++   const bool private_upload =
++      zink_venus_private_upload(screen->info.driver_props.driverID == VK_DRIVER_ID_MESA_VENUS,
++                                screen->info.props.vendorID,
++                                properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
++                                properties & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, pNext != NULL,
++                                getenv("VIRUAISOR_ZINK_SMALL_UPLOAD_ALLOCATIONS"));
+    /* Sub-allocate small buffers from slabs. */
+-   if (!(flags & (ZINK_ALLOC_NO_SUBALLOC | ZINK_ALLOC_SPARSE)) &&
++   if (!private_upload && !(flags & (ZINK_ALLOC_NO_SUBALLOC | ZINK_ALLOC_SPARSE)) &&
+        size <= max_slab_entry_size) {
+       struct pb_slab_entry *entry;
+ 
+diff --git a/src/gallium/drivers/zink/zink_context.c b/src/gallium/drivers/zink/zink_context.c
+index d264c0f..8df0b94 100644
+--- a/src/gallium/drivers/zink/zink_context.c
++++ b/src/gallium/drivers/zink/zink_context.c
+@@ -23,6 +23,7 @@
+ 
+ #include "zink_clear.h"
+ #include "zink_context.h"
++#include "zink_venus_upload_policy.h"
+ #include "zink_descriptors.h"
+ #include "zink_fence.h"
+ #include "zink_format.h"
+@@ -5390,8 +5391,15 @@ zink_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
+    slab_create_child(&ctx->transfer_pool, &screen->transfer_pool);
+    slab_create_child(&ctx->transfer_pool_unsync, &screen->transfer_pool);
+ 
+-   ctx->base.stream_uploader = u_upload_create_default(&ctx->base);
+-   ctx->base.const_uploader = u_upload_create_default(&ctx->base);
++   const bool private_upload =
++      zink_venus_private_upload(screen->info.driver_props.driverID == VK_DRIVER_ID_MESA_VENUS,
++                                screen->info.props.vendorID, true,
++                                screen->base.caps.buffer_map_persistent_coherent, false,
++                                getenv("VIRUAISOR_ZINK_SMALL_UPLOAD_ALLOCATIONS"));
++   const unsigned upload_size = private_upload ? 64 * 1024 : 1024 * 1024;
++   const unsigned upload_bind = PIPE_BIND_VERTEX_BUFFER | PIPE_BIND_INDEX_BUFFER | PIPE_BIND_CONSTANT_BUFFER;
++   ctx->base.stream_uploader = u_upload_create(&ctx->base, upload_size, upload_bind, PIPE_USAGE_STREAM, 0);
++   ctx->base.const_uploader = u_upload_create(&ctx->base, upload_size, upload_bind, PIPE_USAGE_STREAM, 0);
+    for (int i = 0; i < ARRAY_SIZE(ctx->fb_clears); i++)
+       util_dynarray_init(&ctx->fb_clears[i].clears, ctx);
+ 

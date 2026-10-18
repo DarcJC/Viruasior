@@ -21,7 +21,7 @@ TTYVTDisallocate=yes
 EnvironmentFile=/etc/viruaisor/venus.env
 WorkingDirectory=/home/droid
 ExecStartPre=/usr/bin/timeout 40 /opt/viruaisor/venus-preflight
-ExecStart=/usr/bin/startx /opt/viruaisor/plasma-session -- /usr/bin/Xorg :0 vt1 -keeptty -nolisten tcp
+ExecStart=/usr/bin/startx /opt/viruaisor/plasma-session -- /opt/viruaisor/desktop-xorg :0 vt1 -keeptty -nolisten tcp
 # The GPU preflight has its own 40-second bound. Keep the long-running X session
 # out of systemd's start timer; older systemd/PAM combinations otherwise leave
 # this long-running unit activating and hang up tty1 after 90+15 seconds.

@@ -33,6 +33,9 @@ class VsockControlClient(private val engine: AvfVmEngine) {
     fun resize(port: Long, mode: DisplayMode) =
         GuestDisplayProtocol.validateResize(exchange(port, GuestDisplayProtocol.resize(mode), 12_000), mode)
 
+    fun changeDroidPassword(port: Long, password: String) =
+        GuestPasswordProtocol.confirm(exchange(port,GuestPasswordProtocol.command(password),15_000))
+
     private fun request(port: Long, command: String, timeoutMillis: Int = COMMAND_TIMEOUT_MS) {
         GuestControlProtocol.validateResponse(exchange(port, command, timeoutMillis))
     }
@@ -42,12 +45,14 @@ class VsockControlClient(private val engine: AvfVmEngine) {
         try {
             GuestControlProtocol.validateGreeting(readLine(descriptor, timeoutMillis))
             val bytes = "$command\n".toByteArray(Charsets.UTF_8)
-            var offset = 0
-            while (offset < bytes.size) {
-                val written = Os.write(descriptor.fileDescriptor, bytes, offset, bytes.size - offset)
-                check(written > 0) { "Guest control command write returned $written" }
-                offset += written
-            }
+            try {
+                var offset = 0
+                while (offset < bytes.size) {
+                    val written = Os.write(descriptor.fileDescriptor, bytes, offset, bytes.size - offset)
+                    check(written > 0) { "Guest control command write returned $written" }
+                    offset += written
+                }
+            } finally { bytes.fill(0) }
             val response = readLine(descriptor, timeoutMillis)
             descriptor.close()
             return response

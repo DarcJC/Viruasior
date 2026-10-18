@@ -92,6 +92,7 @@ static binder_status_t releaseOnTransact(AIBinder *binder,transaction_code_t cod
     if (AParcel_readBool(input,&hasFence)!=STATUS_OK ||
         (hasFence && AParcel_readParcelFileDescriptor(input,&fence)!=STATUS_OK))
         return STATUS_BAD_VALUE;
+    if (hasFence && fence<0) return STATUS_BAD_VALUE;
     if (!value->buffer) { if (fence>=0) close(fence); return STATUS_BAD_VALUE; }
     releaseNativeBuffer(value->buffer,fence); value->buffer=nullptr;
     auto *status=AStatus_newOk();

@@ -1,10 +1,10 @@
 package pro.darc.viruaisor.display
 
 import android.content.Context
-import android.graphics.Matrix
 import android.os.SystemClock
 import android.view.InputDevice
 import android.view.MotionEvent
+import android.view.PointerIcon
 import android.view.SurfaceView
 import android.hardware.input.InputManager
 
@@ -12,7 +12,11 @@ import android.hardware.input.InputManager
 internal class DesktopSurfaceView(context: Context) : SurfaceView(context) {
     var fullscreen = false
         set(value) {
+            if (field == value) return
             field = value
+            // A null object means "inherit", not "hide". Keep only the guest
+            // cursor even during a brief pointer-capture transition.
+            pointerIcon=if(value) PointerIcon.getSystemIcon(context,PointerIcon.TYPE_NULL) else null
             if (!value) releaseInput()
             else post { requestFocus(); requestDesktopPointerCapture() }
         }
@@ -22,12 +26,19 @@ internal class DesktopSurfaceView(context: Context) : SurfaceView(context) {
     var inputWidth = 1280
     var inputHeight = 720
     var inputEnabled = true
-        set(value) { if (field && !value) releaseInput();field=value }
+        set(value) {
+            if(field == value) return
+            if(!value) releaseInput()
+            field=value
+            // A modeset releases capture but does not change window focus or
+            // fullscreen state. Reacquire it when input becomes ready again.
+            if(value && fullscreen) post { requestDesktopPointerCapture() }
+        }
     private val trackpad=DesktopTrackpad(InputBackendRegistry::sendTrackpad)
     private var capturedSource: Pair<Int,Int>?=null
     private val inputManager=context.getSystemService(InputManager::class.java)
     private val inputListener=object: InputManager.InputDeviceListener {
-        override fun onInputDeviceAdded(id: Int) = Unit
+        override fun onInputDeviceAdded(id: Int) { post { requestDesktopPointerCapture() } }
         override fun onInputDeviceChanged(id: Int) { trackpad.deviceRemoved(id) }
         override fun onInputDeviceRemoved(id: Int) { trackpad.deviceRemoved(id) }
     }
@@ -55,8 +66,24 @@ internal class DesktopSurfaceView(context: Context) : SurfaceView(context) {
         if (event.isFromSource(InputDevice.SOURCE_MOUSE)) return pointer(event, relative = false)
         if (event.actionMasked == MotionEvent.ACTION_CANCEL) { releaseInput(); return true }
         if (width <= 0 || height <= 0) return true
-        val mapped = MotionEvent.obtain(event)
-        mapped.transform(Matrix().apply { setScale(inputWidth.toFloat() / width, inputHeight.toFloat() / height) })
+        // Rebuild from local coordinates: transform/offsetLocation leave rawX/Y
+        // in screen space, while some AVF versions consume raw coordinates.
+        val properties=Array(event.pointerCount) { i -> MotionEvent.PointerProperties().also { event.getPointerProperties(i,it) } }
+        fun coordinates(history: Int) = Array(event.pointerCount) { i ->
+            MotionEvent.PointerCoords().also {
+                if (history < 0) event.getPointerCoords(i,it) else event.getHistoricalPointerCoords(i,history,it)
+                it.x=(it.x*inputWidth/width).coerceIn(0f,(inputWidth-1).toFloat())
+                it.y=(it.y*inputHeight/height).coerceIn(0f,(inputHeight-1).toFloat())
+            }
+        }
+        val history=if(event.actionMasked == MotionEvent.ACTION_MOVE) event.historySize else 0
+        val mapped=MotionEvent.obtain(event.downTime,
+            if(history > 0) event.getHistoricalEventTime(0) else event.eventTime,event.action,
+            event.pointerCount,properties,coordinates(if(history > 0) 0 else -1),
+            event.metaState,event.buttonState,event.xPrecision,event.yPrecision,
+            event.deviceId,event.edgeFlags,event.source,event.flags)
+        for(index in 1 until history) mapped.addBatch(event.getHistoricalEventTime(index),coordinates(index),event.metaState)
+        if(history > 0) mapped.addBatch(event.eventTime,coordinates(-1),event.metaState)
         InputBackendRegistry.setTouchScale(1f)
         InputBackendRegistry.sendTouch(mapped)
         touch?.recycle()
@@ -83,7 +110,10 @@ internal class DesktopSurfaceView(context: Context) : SurfaceView(context) {
     override fun onGenericMotionEvent(event: MotionEvent): Boolean {
         if (!inputEnabled) return true
         if (fullscreen && (event.isFromSource(InputDevice.SOURCE_MOUSE) ||
-                event.isFromSource(InputDevice.SOURCE_TOUCHPAD))) return pointer(event, relative = false)
+                event.isFromSource(InputDevice.SOURCE_TOUCHPAD))) {
+            if(!hasPointerCapture()) requestDesktopPointerCapture()
+            return pointer(event, relative = false)
+        }
         return super.onGenericMotionEvent(event)
     }
 
@@ -100,6 +130,7 @@ internal class DesktopSurfaceView(context: Context) : SurfaceView(context) {
 
     override fun onPointerCaptureChange(hasCapture: Boolean) {
         super.onPointerCaptureChange(hasCapture)
+        android.util.Log.i("ViruaisorInput","POINTER_CAPTURE enabled=$hasCapture fullscreen=$fullscreen input=$inputEnabled")
         absolute = null
         if (!hasCapture) { releaseButtons();trackpad.release() }
     }
@@ -111,13 +142,20 @@ internal class DesktopSurfaceView(context: Context) : SurfaceView(context) {
     }
 
     private fun requestDesktopPointerCapture() {
+        if(!fullscreen || !inputEnabled || !isAttachedToWindow || !hasWindowFocus() || hasPointerCapture()) return
+        requestFocus()
         // API 37's no-argument overload defaults to relative gesture emulation.
         requestPointerCapture(android.view.View.POINTER_CAPTURE_MODE_ABSOLUTE)
+    }
+
+    fun resumePointerCapture() {
+        if(fullscreen && inputEnabled && !hasPointerCapture()) post { requestDesktopPointerCapture() }
     }
 
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
         inputManager.registerInputDeviceListener(inputListener,handler)
+        post { requestDesktopPointerCapture() }
     }
     override fun onDetachedFromWindow() {
         inputManager.unregisterInputDeviceListener(inputListener)

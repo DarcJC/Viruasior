@@ -20,4 +20,6 @@ rustc --test "$repo/native/venus-crosvm/venus_init_policy.rs" -o "$work/venus_in
 "$work/venus_init_policy"
 rustc --test "$repo/native/venus-crosvm/venus_display_batch.rs" -o "$work/venus_display_batch"
 "$work/venus_display_batch"
+rustc --test "$repo/native/venus-crosvm/venus_gpu_arena.rs" -o "$work/venus_gpu_arena"
+"$work/venus_gpu_arena"
 printf 'Test artifacts: %s\n' "$work"

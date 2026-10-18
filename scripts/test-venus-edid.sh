@@ -45,6 +45,16 @@ mod virtio { pub mod gpu {
             let bytes=bytes(1280,720);
             assert!(bytes.as_bytes()[90..108].iter().all(|v|*v==0));
         }
+        #[test] fn tablet_gets_a_matching_aspect_1920_mode_without_losing_legacy_mode() {
+            let bytes=bytes(3408,2272);
+            let (w,h,hz)=timing(&bytes.as_bytes()[108..126]);
+            assert_eq!((w,h),(1920,1280));assert!((hz-120.0).abs()<0.01);
+        }
+        #[test] fn matching_mode_tracks_the_native_aspect_not_a_fixed_tablet_shape() {
+            let bytes=bytes(2560,1440);
+            let (w,h,hz)=timing(&bytes.as_bytes()[108..126]);
+            assert_eq!((w,h),(1920,1080));assert!((hz-120.0).abs()<0.01);
+        }
     }
 } }
 EOF

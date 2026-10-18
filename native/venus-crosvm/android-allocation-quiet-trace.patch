@@ -1,0 +1,76 @@
+--- a/src/venus/vkr_device_memory.c
++++ b/src/venus/vkr_device_memory.c
+@@ -80,9 +80,14 @@
+    return buffer;
+ }
+ 
++#include "venus_log_policy.h"
++
+ static void
+ vkr_trace_dma_buf_fd(const char *stage, uint64_t object_id, uint32_t res_id, int fd)
+ {
++   /* VIRUAISOR_ALLOCATION_QUIET_TRACE: skip diagnostic-only syscalls too. */
++   if (!venus_log_trace_enabled())
++      return;
+    struct stat st = {0};
+    const int stat_ret = fstat(fd, &st);
+    const int descriptor_flags = fcntl(fd, F_GETFD);
+@@ -259,7 +264,10 @@
+    if (!dev->proc_table.GetMemoryFdPropertiesKHR) { close(fd); venus_ahb_release(buffer); return VK_ERROR_FEATURE_NOT_PRESENT; }
+    VkResult ret = dev->proc_table.GetMemoryFdPropertiesKHR(dev->base.handle.device,
+       VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, fd, &properties);
+-   vkr_log("VIRUAISOR_GRALLOC_IMPORT bytes=%" PRIu64 " type=%u fd_types=%x vk=%d", bytes, info->memoryTypeIndex, properties.memoryTypeBits, ret);
++   vkr_log(ret == VK_SUCCESS
++      ? "VIRUAISOR_GRALLOC_IMPORT bytes=%" PRIu64 " type=%u fd_types=%x vk=%d"
++      : "VIRUAISOR_GRALLOC_IMPORT_FAILED bytes=%" PRIu64 " type=%u fd_types=%x vk=%d",
++      bytes, info->memoryTypeIndex, properties.memoryTypeBits, ret);
+    if (ret != VK_SUCCESS) {
+       close(fd);
+       venus_ahb_release(buffer);
+--- a/src/proxy/proxy_context.c
++++ b/src/proxy/proxy_context.c
+@@ -24,9 +24,14 @@
+    struct list_head head;
+ };
+ 
++#include "../venus/venus_log_policy.h"
++
+ static void
+ proxy_context_trace_fd(const char *stage, uint32_t ctx_id, uint32_t res_id, int fd)
+ {
++   /* VIRUAISOR_ALLOCATION_QUIET_TRACE: skip diagnostic-only syscalls too. */
++   if (!venus_log_trace_enabled())
++      return;
+    struct stat st = {0};
+    const int stat_ret = fstat(fd, &st);
+    char fd_path[64];
+--- a/server/render_context.c
++++ b/server/render_context.c
+@@ -14,9 +14,14 @@
+ 
+ #include "render_state.h"
+ 
++#include "../src/venus/venus_log_policy.h"
++
+ static void
+ render_context_trace_fd(const char *stage, uint32_t ctx_id, uint32_t res_id, int fd)
+ {
++   /* VIRUAISOR_ALLOCATION_QUIET_TRACE: skip diagnostic-only syscalls too. */
++   if (!venus_log_trace_enabled())
++      return;
+    struct stat st = {0};
+    const int stat_ret = fstat(fd, &st);
+    char fd_path[64];
+--- a/src/venus/vkr_image.c
++++ b/src/venus/vkr_image.c
+@@ -449,7 +449,9 @@
+    /* VIRUAISOR_AHB_IMAGE_VIEW: retain the guest attachment format so the
+     * dynamic-rendering pipeline and the compatible mutable image view agree. */
+    if (ahb_image)
+-      vkr_log("VIRUAISOR_AHB_COMPATIBLE_IMAGE_VIEW guest=%u host=%u width=%u height=%u vk=%d",
++      vkr_log(args->ret == VK_SUCCESS
++         ? "VIRUAISOR_AHB_COMPATIBLE_IMAGE_VIEW guest=%u host=%u width=%u height=%u vk=%d"
++         : "VIRUAISOR_AHB_COMPATIBLE_IMAGE_VIEW_FAILED guest=%u host=%u width=%u height=%u vk=%d",
+               guest_format, host_format, image->extent.width,
+               image->extent.height, args->ret);
+ #endif

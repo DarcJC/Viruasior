@@ -1,0 +1,20 @@
+--- a/devices/src/virtio/gpu/edid.rs
++++ b/devices/src/virtio/gpu/edid.rs
+@@ -69,5 +69,17 @@
+             populate_detailed_timing_descriptor(&mut edid[90..108], &desktop);
+         }
+ 
++        // VIRUAISOR_DESKTOP_ASPECT: keep native ABS geometry and advertise
++        // a 1920-wide desktop with the panel's aspect, alongside 1920x1200.
++        if info.width() >= 1920 && info.width() >= info.height() {
++            let height = (1920u64 * u64::from(info.height()) / u64::from(info.width())) as u32 & !1;
++            if height >= 16 && height != 1200 {
++                let mut desktop = *info;
++                desktop.resolution = Resolution::new(1920, height);
++                desktop.refresh_rate = 120;
++                populate_detailed_timing_descriptor(&mut edid[108..126], &desktop);
++            }
++        }
++
+         // We add one extension edid.
+         edid[126] = 1;

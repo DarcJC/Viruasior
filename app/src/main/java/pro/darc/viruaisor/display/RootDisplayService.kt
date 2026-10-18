@@ -25,6 +25,7 @@ class RootDisplayService : RootService() {
     private val lock = Any()
     private var display: IBinder? = null
     private var ownedSurface: RootOwnedSurface? = null
+    private var ownedCursor: RootCursorSurface? = null
     private var sessionToken: IBinder? = null
     private var sessionDeath: IBinder.DeathRecipient? = null
     private val watchdog = Executors.newSingleThreadScheduledExecutor { task ->
@@ -78,11 +79,14 @@ class RootDisplayService : RootService() {
                                 }
                                 token.linkToDeath(death, 0)
                                 var pending: RootOwnedSurface? = null
+                                var pendingCursor: RootCursorSurface? = null
                                 var requestedDisplay: IBinder? = null
                                 try {
                                     val owned = RootOwnedSurface.create(parent, width, height)
                                     pending = owned
                                     parentTransferred = true
+                                    val cursor=RootCursorSurface.create(parent,width,height)
+                                    pendingCursor=cursor
                                     val binder = connector.waitForDisplayService()
                                     check(token.isBinderAlive) { "Display session died during startup" }
                                     requestedDisplay = binder
@@ -118,6 +122,7 @@ class RootDisplayService : RootService() {
                                                 data.enforceNoDataAvail()
                                                 val frameIdentity = clearCallingIdentity()
                                                 try {
+                                                    cursor.setGuestSize(buffer.width,buffer.height)
                                                     owned.present(buffer, { frame,w,h ->
                                                         sendPresented(requireNotNull(observer), frame,w,h)
                                                     }) { fence ->
@@ -137,15 +142,28 @@ class RootDisplayService : RootService() {
                                         }
                                     }
                                     connector.setSurface(binder, owned.surface, frameSink)
+                                    connector.setCursorSurface(binder,cursor.surface)
+                                    val pipe=RootCursorSurface.positionChannel()
+                                    try {
+                                        connector.setCursorStream(binder,pipe[1])
+                                        cursor.startPositions(pipe[0])
+                                    } catch(error: Throwable) {
+                                        pipe[0].close()
+                                        throw error
+                                    } finally { pipe[1].close() }
                                     check(token.isBinderAlive) { "Display session died during attachment" }
                                     owned.show()
                                     display = binder
                                     ownedSurface = owned
+                                    ownedCursor = cursor
                                     sessionToken = token
                                     sessionDeath = death
                                     pending = null
+                                    pendingCursor = null
                                 } catch (error: Throwable) {
                                     runCatching { token.unlinkToDeath(death, 0) }
+                                    runCatching { requestedDisplay?.let { connector.removeCursor(it) } }
+                                    runCatching { pendingCursor?.close() }
                                     runCatching {
                                         pending?.close { requestedDisplay?.let { connector.removeSurface(it) } }
                                     }.onFailure { if (it !== error) error.addSuppressed(it) }
@@ -189,12 +207,11 @@ class RootDisplayService : RootService() {
             fence.writeToParcel(flattened, 0)
             flattened.setDataPosition(0)
             val valid = flattened.readBoolean()
-            data.writeBoolean(valid)
             if (valid) {
                 requireNotNull(flattened.readFileDescriptor()).use {
-                    it.writeToParcel(data, 0)
+                    BufferReleaseProtocol.write(data,it)
                 }
-            }
+            } else BufferReleaseProtocol.write(data,null)
             if (callback.transact(1, data, reply, 0)) reply.readException()
         } catch (error: Exception) {
             Log.w(TAG, "Buffer release delivery failed", error)
@@ -263,15 +280,23 @@ class RootDisplayService : RootService() {
     private fun removeSurface() {
         val binder = display
         val owned = ownedSurface
+        val cursor = ownedCursor
         val token = sessionToken
         val death = sessionDeath
         display = null
         ownedSurface = null
+        ownedCursor = null
         sessionToken = null
         sessionDeath = null
         if (token != null && death != null) runCatching { token.unlinkToDeath(death, 0) }
-        if (owned != null) owned.close {
-            if (binder != null) connector.removeSurface(binder)
+        try {
+            if (binder != null) connector.removeCursor(binder)
+        } finally {
+            try { cursor?.close() } finally {
+                if (owned != null) owned.close {
+                    if (binder != null) connector.removeSurface(binder)
+                }
+            }
         }
     }
 

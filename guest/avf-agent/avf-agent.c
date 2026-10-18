@@ -14,6 +14,8 @@
 #include <unistd.h>
 
 #include "desktop_protocol.h"
+#include "password_control.h"
+#include "command_reader.h"
 
 #define DEFAULT_PORT 4050U
 #define BACKLOG 8
@@ -111,16 +113,24 @@ static void handle_client(int fd) {
     char command[MAX_COMMAND] = {0};
     reply(fd, "READY\n");
 
-    ssize_t count;
-    do {
-        count = read(fd, command, sizeof(command) - 1);
-    } while (count < 0 && errno == EINTR);
-    if (count <= 0) return; /* A readiness-only connection. */
-    command[count] = '\0';
+    // A stream read can split a password or any other command arbitrarily.
+    if(read_command(fd,command,sizeof(command),15000)<0) {
+        explicit_bzero(command,sizeof(command));reply(fd,"ERROR incomplete-command\n");return;
+    }
     trim(command);
     struct desktop_operation desktop;
 
-    if (strcmp(command, "SHUTDOWN") == 0) {
+    if (strncmp(command,"SET_DROID_PASSWORD ",19)==0) {
+        struct sockaddr_vm peer={0};socklen_t peer_size=sizeof(peer);
+        unsigned char password[DROID_PASSWORD_MAX+1]={0};size_t length=0;
+        bool host=getpeername(fd,(struct sockaddr *)&peer,&peer_size)==0 &&
+            peer.svm_family==AF_VSOCK && peer.svm_cid==VMADDR_CID_HOST;
+        bool valid=host && decode_droid_password(command,password,&length);
+        explicit_bzero(command,sizeof(command));
+        int result=valid ? change_droid_password(password,length) : -1;
+        explicit_bzero(password,sizeof(password));
+        reply(fd,result==0 ? "OK PASSWORD\n" : "ERROR password-update\n");
+    } else if (strcmp(command, "SHUTDOWN") == 0) {
         reply(fd, "OK\n");
         (void)systemctl("poweroff", NULL, true);
     } else if (parse_desktop_operation(command, &desktop)) {
@@ -141,6 +151,7 @@ static void handle_client(int fd) {
     } else {
         reply(fd, "ERROR unknown-command\n");
     }
+    explicit_bzero(command,sizeof(command));
 }
 
 static uint32_t parse_port(int argc, char **argv) {

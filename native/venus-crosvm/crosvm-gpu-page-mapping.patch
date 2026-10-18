@@ -1,0 +1,37 @@
+--- a/vm_control/src/sys/linux.rs
++++ b/vm_control/src/sys/linux.rs
+@@ -4,6 +4,11 @@
+ 
+ #[cfg(feature = "gpu")]
+ pub(crate) mod gpu;
++
++// VIRUAISOR_GPU_PAGE_MAPPING: keep Mali PFNMAP blobs on base-page stage-2 mappings.
++#[cfg(target_os = "android")]
++#[path = "venus_gpu_arena.rs"]
++mod venus_gpu_arena;
+ 
+ use std::path::Path;
+ use std::sync::LazyLock;
+@@ -198,15 +203,20 @@
+                 Some(v) => v,
+                 None => return Err(SysError::new(ERANGE)),
+             };
+-            let arena = match MemoryMappingArena::new(size) {
++            #[cfg(target_os = "android")]
++            let arena = venus_gpu_arena::create(size, range.start);
++            #[cfg(not(target_os = "android"))]
++            let arena = MemoryMappingArena::new(size)
++                .map(|a| Box::new(a) as Box<dyn base::MappedRegion>);
++            let arena = match arena {
+                 Ok(a) => a,
+                 Err(MmapError::SystemCallFailed(e)) => return Err(e),
+                 _ => return Err(SysError::new(EINVAL)),
+             };
+ 
+             match vm.add_memory_region(
+                 GuestAddress(range.start),
+-                Box::new(arena),
++                arena,
+                 false,
+                 false,
+                 cache,

@@ -6,14 +6,22 @@ CFLAGS += -std=c11 -Wall -Wextra -Werror
 
 all: avf-agent
 
-avf-agent: avf-agent.c desktop_protocol.c desktop_protocol.h
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ avf-agent.c desktop_protocol.c
+avf-agent: avf-agent.c desktop_protocol.c desktop_protocol.h password_control.c password_control.h command_reader.h
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ avf-agent.c desktop_protocol.c password_control.c
 
 desktop-protocol-test: desktop_protocol_test.c desktop_protocol.c desktop_protocol.h
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ desktop_protocol_test.c desktop_protocol.c
 
-test: desktop-protocol-test
+password-control-test: password_control_test.c password_control.c password_control.h
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ password_control_test.c password_control.c
+
+command-reader-test: command_reader_test.c command_reader.h
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ command_reader_test.c
+
+test: desktop-protocol-test password-control-test command-reader-test
 	./desktop-protocol-test
+	./password-control-test
+	./command-reader-test
 
 arm64-static:
 	$(MAKE) clean
@@ -28,4 +36,4 @@ install: avf-agent
 		$(DESTDIR)/usr/lib/systemd/system/avf-desktop@.service
 
 clean:
-	rm -f avf-agent desktop-protocol-test
+	rm -f avf-agent desktop-protocol-test password-control-test command-reader-test
