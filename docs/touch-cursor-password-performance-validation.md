@@ -805,3 +805,112 @@ Enforcing; host hidden-API policy remains null and the existing exemption
 remains `Landroid/system/virtualmachine/VirtualMachine`. No host setting or
 prime-core binding was added. The App remains open in fit mode for the ongoing
 performance investigation. Stable 1920/120 and native/60 cadence remain open.
+
+## Native presentation cadence after buffer retention (2026-10-19)
+
+The built-in KWin software-vblank option was retested with the retained native
+buffer cache. A temporary guest `/run` override, independent bounded diagnostic
+service and recovery timer were used; no timer preload or production guest
+library was changed. KWin reported 59997 mHz and used cores 4–7 with the normal
+scoped sync-fd ICD. The 59.69-second native sample delivered 59.91
+presentations/s, p95/p99 16.690/24.998 ms, 74 intervals over 20 ms and a
+33.335-ms maximum. Frame-ready p99 was still 21.635 ms. The override was removed,
+the normal service/environment was verified, and the VM was fully restarted
+before the application experiments. Software-vblank alone is not retained.
+
+The next application prototype uses the public
+[desired presentation time API](https://developer.android.com/reference/android/view/SurfaceControl.Transaction#setDesiredPresentTimeNanos(long)).
+Only the high-resolution profile is paced. The synchronous frame sink waits
+until at most one nominal 60-Hz period before the target, then submits the
+existing buffer and release callback. This bounds producer back-pressure and
+future queue depth without changing GPU completion or physical refresh rate.
+Past slots are skipped and mode changes reset the schedule; failed transaction
+applications do not advance it. Android 17's
+[System.nanoTime implementation](https://android.googlesource.com/platform/libcore/+/refs/heads/android17-release/ojluni/src/main/native/System.c)
+uses the same CLOCK_MONOTONIC time base required by the presentation API.
+
+The first prototype, with an arbitrary initial clock phase, delivered 59.98
+presentations/s over 59.68 s, p95/p99 16.681/16.705 ms, but 17 intervals over
+20 ms and a 41.666-ms maximum. Sixteen of those long intervals had regular
+16.667-ms desired timestamps and timely frame-ready timestamps, followed by
+an 8.33-ms catch-up interval. The remaining event skipped a desired slot.
+This directed the next experiment toward Android presentation phase, rather
+than another guest timer-precision patch.
+
+The aligned prototype reads
+[Choreographer frame timelines](https://developer.android.com/reference/android/view/Choreographer.FrameData)
+on the root helper's main looper, copying only numeric values while the callback
+is valid. It aligns the native cadence to an integer number of physical refresh
+intervals near 60 Hz, with a 1-ms desired-time margin before the expected
+physical presentation. The clock callback runs only in the high-resolution
+profile and is removed on switching down or closing. An unavailable or
+incompatible clock falls back to the fixed 60-Hz schedule. Seven unit tests
+cover steady pacing, failed submissions, lateness, mode reset, phase alignment,
+odd/even 120-Hz tick updates and invalid/incompatible clock intervals. Four
+original scheduling tests and two phase tests were observed failing before
+their respective implementations; all tests and the debug build now pass.
+
+The first aligned native sample on fresh VM PID 20640 delivered 60.00
+presentations/s over 59.98 s. Its p95/p99 were 16.682/16.698 ms, maximum
+16.905 ms, with zero intervals over 20 ms. Median frame-ready-to-present
+latency was 17.342 ms, versus 24.558 ms for the unaligned prototype. Root logs
+confirmed receipt of roughly 8.333-ms physical refresh intervals. These results
+use actual own-layer presentation timestamps and passed RGB/motion/corner checks.
+
+Private evidence uses `vsync-cache-native`, `cadence-native` and
+`cadence-phase-native` capture names. The unaligned APK is
+`36d09f8dac084d3ce819364885cd6f8b07df696198601c9f13efccc0111bc630`;
+the aligned APK is
+`8f689fa7f350d3dbf5585f4640d87c0d769838b8f4b95ebd187de15d12224ca1`.
+Prototype sources, build logs and test-failure evidence are in the private
+`pipeline-trace/` directory. Native runtime and guest ICD pins are unchanged.
+
+The longer native run (`cadence-phase-native-long`) delivered 59.972
+presentations/s over 179.70 s, p95/p99 16.683/16.700 ms, with 9 intervals
+over 20 ms out of 10,777 intervals (0.084%) and a 33.337-ms maximum. This is
+not a zero-jank claim. Six of the long intervals cluster within 0.22 s around
+CLOCK_MONOTONIC 222907.55–222907.79. The root process had logged 10,000 live
+BinderProxies at 222904.610, then a GC at 222907.505. The correlation points
+to a remaining lifecycle/allocation cost, rather than sustained phase drift;
+it does not by itself prove which allocations dominate the pause.
+
+Source inspection confirms that `makeReleaseBinder` currently creates a new
+NDK Binder object for every frame, and the Java frame sink creates a proxy
+when reading it. The actual AHB/release-fence lifetime is already bounded at
+eight and each release is consumed once; replacing this with a persistent
+callback endpoint must preserve those constraints and the real sync-file.
+This is a separate follow-up, not part of the cadence patch. Also, Android 17
+accounts each Java HardwareBuffer reference using its full estimated pixel
+size, even for parcel imports, so per-frame wrapper allocation remains another
+candidate to measure. Private source copies and the correlated root log are
+saved beside the captures.
+
+After switching down, the unchanged 1920×1200 submission path passed another
+59.52-second motion sample: 91.49 presentations/s, p95/p99 16.673/16.700 ms,
+four long intervals. This remains far below stable 120 and is not described
+as a wide-mode performance improvement from the native-only scheduler.
+
+A full VM stop/start produced PID 24756 with the same APK/runtime/guest policy
+and no overrides. Its native sample (`cadence-phase-reboot-native`) delivered
+59.983 presentations/s over 59.30 s, p95/p99 16.684/16.698 ms, and one interval
+over 20 ms (maximum 33.343 ms). The normal, long and reboot runs all preserve
+the 60-Hz cadence at p99; the rare longer intervals remain explicit follow-up
+work. Neither average native throughput above 60 nor a 120-Hz mode declaration
+is being substituted for the requested presentation cadence.
+
+Final regression on VM 24756 passed native -> 1920x1200 -> 1920x1280 resize
+and all three five-point guest touch checks. Escape produced exactly one
+guest key-down/up pair; MainActivity remained focused and resumed. Two
+12-second traces had no error stats: the native trace recorded 1,436 root
+Choreographer callbacks and zero Graphite texture imports; the wide trace
+recorded zero root callbacks and 1,310 imports. This verifies that both the
+clock and retained-buffer path stop when switching to the 120-Hz profile.
+The native root main thread used 384.96 ms CPU during that traced sample;
+clock observation therefore has a measurable, profile-scoped cost.
+
+The final renderer and guest pins match the preceding baseline, Xorg/KWin
+remain on cores 4-7 with matching PID opt-in, and no service overrides remain.
+The droid account is still locked; SELinux is Enforcing and both host
+hidden-API settings are unchanged. No host-system change or prime-core
+binding was made. The native cadence patch is retained; stable wide-mode
+120 fps and rare native stalls remain under investigation.

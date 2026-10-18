@@ -27,6 +27,8 @@ internal class RootOwnedSurface private constructor(
     @Volatile private var closed = false
     private var lastSize = 0L
     private val buffers = RootDisplayBuffers<HardwareBuffer>(4)
+    private val cadence = RootDisplayCadence()
+    private val vsync = RootDisplayVsync()
 
     @Synchronized
     fun show() {
@@ -59,7 +61,8 @@ internal class RootOwnedSurface private constructor(
         // SurfaceComposerClient caches by native buffer ID and evicts when the
         // registered GraphicBuffer reference dies. Keep one bounded reference
         // per scanout buffer instead of rebuilding RenderEngine imports each frame.
-        val retained = if (frameWidth.toLong() * frameHeight > 4_194_304L) {
+        val highResolution = frameWidth.toLong() * frameHeight > 4_194_304L
+        val retained = if (highResolution) {
             // Match the high-resolution / <=60-Hz display budget. Paired trials
             // improved this profile; the <=4-Mpixel / 120-Hz path did not benefit.
             buffers.get(buffer.id, frameWidth, frameHeight) { retainHardwareBuffer(buffer) }
@@ -67,7 +70,19 @@ internal class RootOwnedSurface private constructor(
             buffers.clear()
             buffer
         }
+        vsync.setEnabled(highResolution)
+        val slot = cadence.plan(System.nanoTime(), if (highResolution) size else null, vsync.phase)
+        if (slot != null) {
+            // Back-pressure only this frame sink, at most one 60-Hz period. Keep
+            // the desired presentation one period ahead, never an unbounded queue.
+            while (true) {
+                val wait = slot.submitAtNanos - System.nanoTime()
+                if (wait <= 0L) break
+                Thread.sleep(wait / 1_000_000L, (wait % 1_000_000L).toInt())
+            }
+        }
         SurfaceControl.Transaction().use { transaction ->
+            if (slot != null) transaction.setDesiredPresentTimeNanos(slot.presentAtNanos)
             // Layer properties persist across buffer submissions. Resend geometry only
             // when the guest size changes, and keep every buffer's release callback.
             if (size != lastSize) {
@@ -95,6 +110,7 @@ internal class RootOwnedSurface private constructor(
             }
             transaction.setBuffer(child, retained, null, onRelease).apply()
         }
+        if (slot != null) cadence.submitted(slot)
         lastSize = size
         frames++
         if (frames == 1L || frames % 60L == 0L) {
@@ -103,7 +119,10 @@ internal class RootOwnedSurface private constructor(
     }
 
     fun close(stopProducer: () -> Unit = {}) {
-        synchronized(this) { closed = true }
+        synchronized(this) {
+            closed = true
+            vsync.close()
+        }
         try {
             cleanup.close(stopProducer)
         } catch (error: Throwable) {
