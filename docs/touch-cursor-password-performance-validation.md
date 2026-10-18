@@ -703,3 +703,105 @@ Android focus in the App. SELinux remained Enforcing, the two checked host hidde
 settings were unchanged, and the droid account remained locked. Only this
 experiment record is retained in Git; the earlier sync-fd optimization remains
 installed and the overall frame-rate/cadence goals remain open.
+
+## Bounded scanout reference retention (2026-10-19)
+
+A 12-second Perfetto capture exposed a separate application-side cost:
+`RootDisplayService` closed each received HardwareBuffer after submitting it.
+The Android 17 SurfaceComposerClient cache keys entries by GraphicBuffer ID,
+but registers a death callback on the particular GraphicBuffer used for the
+first submission. Destroying that reference sends an uncache transaction.
+Consequently, rotating the same scanout allocations still rebuilt the
+SurfaceFlinger texture import on practically every frame. See the
+[Android 17 BufferCache implementation](https://android.googlesource.com/platform/frameworks/native/+/refs/heads/android17-release/libs/gui/SurfaceComposerClient.cpp).
+
+The candidate retains at most four references by the system-wide
+HardwareBuffer ID, reusing the same retained object for repeated submissions.
+Parcel duplication acquires a reference to the existing allocation; it does
+not copy pixels or allocate a new image. A size change releases all old-size
+entries, LRU eviction bounds replacements at the same size, and session cleanup
+releases every entry even when stopping the producer fails. Incoming parcel
+wrappers are still closed. Real GPU dependencies, per-frame release callbacks,
+submission timing and the existing colour/CLIENT-composition workaround are
+unchanged. The previously rejected queue-completion cache remains absent.
+
+Six unit tests cover reference reuse, bounded eviction, resize, failed import,
+leaving the retained profile and failure-tolerant final cleanup. The reuse/eviction tests first failed with
+per-frame replacement and then passed with reuse. Two device tests verify that
+Parcel duplication preserves the native ID, incoming and retained references
+close independently, repeated IDs reuse the owned reference, and equal-size
+allocations remain distinct. Android unit tests, debug/test APK builds and the
+five-ELF packaging/source-pin check passed.
+
+In equal-duration 1920×1200 traces of the all-resolution prototype, baseline SurfaceFlinger created 1,348
+`GraphiteBackendTexture` imports; the warmed candidate created none and showed
+no map/unmap/import/free activity in that process. RenderEngine CPU time fell
+from 2,218.02 to 789.81 ms over the 12-second windows. SurfaceFlinger presented
+1,079 versus 1,149 compositions during those traces, so the CPU saving was not
+caused by doing fewer compositions. Both traces had no error stats. These
+tracing runs identify the mechanism; acceptance throughput is measured
+separately without active tracing.
+
+Four complete VM boots ran in A1/B1/A2/B2 order (A is the all-resolution
+prototype, B the installed baseline), native first and then 1920×1200 on
+each boot. All eight fullscreen captures passed motion, RGB and corner checks.
+The guest ICD and launcher hashes, large-core masks 4–7, and absence of service
+overrides were verified after every boot.
+
+| Mode / run | Seconds | Presentations/s | p95 / p99 ms | Intervals >20 ms |
+| --- | ---: | ---: | --- | ---: |
+| Native, A1 | 59.37 | 105.45 | 16.668 / 16.686 | 4 |
+| Native, B1 | 59.27 | 90.04 | 16.675 / 16.702 | 9 |
+| Native, A2 | 59.68 | 101.65 | 16.670 / 16.683 | 2 |
+| Native, B2 | 59.67 | 90.75 | 16.674 / 16.698 | 7 |
+| 1920×1200, A1 | 59.33 | 100.94 | 16.671 / 16.692 | 2 |
+| 1920×1200, B1 | 60.10 | 103.73 | 16.669 / 16.683 | 1 |
+| 1920×1200, A2 | 59.23 | 95.91 | 16.672 / 16.696 | 3 |
+| 1920×1200, B2 | 59.28 | 97.85 | 16.671 / 16.688 | 2 |
+
+Pooled native throughput rose from 90.40 to 103.55 presentations/s (+14.55%),
+with 16 versus 6 long intervals. This is a repeatable throughput improvement,
+but the nominal native 60-Hz mode still runs too fast and does not meet the
+requested cadence. Pooled 1920 throughput decreased from 100.81 to 98.43
+(-2.36%), with 3 versus 5 long intervals. The absolute 1920 results vary across
+boots, and both paired differences favour the baseline. Saving import work
+therefore does not establish a frame-rate benefit in that mode.
+
+Only the high-resolution profile is retained: buffers over 4,194,304 pixels,
+matching the existing display protocol's <=60-Hz pixel budget. Smaller buffers
+use the original direct submission path, and switching down clears all retained
+references. This keeps the repeatable native benefit without applying the
+unhelpful 1920 change. The 1920 Perfetto CPU saving above describes the discarded
+all-resolution prototype, not the final smaller-buffer path. No general
+120-fps improvement is claimed.
+
+The all-resolution APK was
+`5b3e385581c3f018d381595ae51d8ae2764a59707fdb14f4d9aa215a5c7a5c50`;
+the baseline was `f6729fea...`. Its source snapshot, APK, traces and build logs
+remain private under `touch-perf-20261018/pipeline-trace/`, with paired captures
+named `buffer-cache-{a1,b1,a2,b2}-{native,wide}`. The final scoped APK is
+`78d3a099d8462905ffddf53d246e235d620f94eadca4cd55f0ce4b5d88da6bcd`.
+The crosvm/renderer pin and guest ICD are unchanged.
+
+A fresh VM boot of the final scoped APK (PID 14911) passed another fullscreen
+motion/RGB/corner run: native delivered 101.91 presentations/s over 59.48 s,
+with p95/p99 16.669/16.682 ms and one interval over 20 ms; 1920×1200 delivered
+97.32 over 59.82 s, with p95/p99 16.671/16.692 ms and one long interval.
+This final smoke sample agrees with the retained native benefit and the
+recent baseline 1920 range. It is not an additional paired improvement claim.
+
+Final 12-second traces confirm the installed scope: warmed native had no
+SurfaceFlinger texture import/map/unmap calls, while 1920×1200 again created
+1,365 GraphiteBackendTexture imports. Neither trace reported error stats.
+Native → 1920×1200 → 1920×1280 mode changes and five-point guest-coordinate
+checks passed without restarting VM 14911. The fit mode filled the full
+3408×2272 viewport. Injected Escape produced exactly one guest down/up pair;
+MainActivity remained the focused and resumed Android activity.
+
+The final running renderer hash is still `0302b363...`, the guest ICD/launcher
+hashes match the baseline, Xorg/KWin remain on cores 4–7 with matching PID
+opt-in, no service overrides exist, and droid remains locked. SELinux is
+Enforcing; host hidden-API policy remains null and the existing exemption
+remains `Landroid/system/virtualmachine/VirtualMachine`. No host setting or
+prime-core binding was added. The App remains open in fit mode for the ongoing
+performance investigation. Stable 1920/120 and native/60 cadence remain open.

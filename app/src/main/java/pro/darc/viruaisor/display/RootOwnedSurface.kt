@@ -26,6 +26,7 @@ internal class RootOwnedSurface private constructor(
     private var frames = 0L
     @Volatile private var closed = false
     private var lastSize = 0L
+    private val buffers = RootDisplayBuffers<HardwareBuffer>(4)
 
     @Synchronized
     fun show() {
@@ -55,6 +56,17 @@ internal class RootOwnedSurface private constructor(
         val frame = frames+1
         val frameWidth = buffer.width
         val frameHeight = buffer.height
+        // SurfaceComposerClient caches by native buffer ID and evicts when the
+        // registered GraphicBuffer reference dies. Keep one bounded reference
+        // per scanout buffer instead of rebuilding RenderEngine imports each frame.
+        val retained = if (frameWidth.toLong() * frameHeight > 4_194_304L) {
+            // Match the high-resolution / <=60-Hz display budget. Paired trials
+            // improved this profile; the <=4-Mpixel / 120-Hz path did not benefit.
+            buffers.get(buffer.id, frameWidth, frameHeight) { retainHardwareBuffer(buffer) }
+        } else {
+            buffers.clear()
+            buffer
+        }
         SurfaceControl.Transaction().use { transaction ->
             // Layer properties persist across buffer submissions. Resend geometry only
             // when the guest size changes, and keep every buffer's release callback.
@@ -81,7 +93,7 @@ internal class RootOwnedSurface private constructor(
                     .setVisibility(producerControl, false)
                     .setVisibility(child, true)
             }
-            transaction.setBuffer(child, buffer, null, onRelease).apply()
+            transaction.setBuffer(child, retained, null, onRelease).apply()
         }
         lastSize = size
         frames++
@@ -92,7 +104,14 @@ internal class RootOwnedSurface private constructor(
 
     fun close(stopProducer: () -> Unit = {}) {
         synchronized(this) { closed = true }
-        cleanup.close(stopProducer)
+        try {
+            cleanup.close(stopProducer)
+        } catch (error: Throwable) {
+            runCatching { synchronized(this) { buffers.close() } }
+                .onFailure { if (it !== error) error.addSuppressed(it) }
+            throw error
+        }
+        synchronized(this) { buffers.close() }
     }
 
     companion object {
