@@ -71,13 +71,16 @@ cp "$repo/native/venus-crosvm/venus_cache_sync.h" "$renderer_work/virglrenderer/
 cp "$repo/native/venus-crosvm/venus_dma_buf_size_policy.h" "$renderer_work/virglrenderer/src/venus/"
 cp "$repo/native/venus-crosvm/venus_import_type_policy.h" "$renderer_work/virglrenderer/src/venus/"
 cp "$repo/native/venus-crosvm/venus_ahb_registry.h" "$renderer_work/virglrenderer/src/venus/"
+cp "$repo/native/venus-crosvm/venus_log_policy.h" "$renderer_work/virglrenderer/src/venus/"
+cp "$repo/native/venus-crosvm/venus_display_fence.h" "$renderer_work/virglrenderer/src/venus/"
 if [[ ${VENUS_CROSVM_DISPLAY:-0} == 1 ]]; then
     patch="$repo/native/venus-crosvm/crosvm-fixed-blob-mapping.patch"
     git -C "$work/crosvm" apply --reverse --check "$patch" 2>/dev/null || \
         git -C "$work/crosvm" apply "$patch"
     patch="$repo/native/venus-crosvm/android-dmabuf-display.patch"
-    git -C "$work/crosvm" apply --reverse --check "$patch" 2>/dev/null || \
+    if ! grep -Fq DmabufFrameInfo "$work/crosvm/gpu_display/src/gpu_display_android.rs"; then
         git -C "$work/crosvm" apply "$patch"
+    fi
     patch="$repo/native/venus-crosvm/crosvm-context-scanout-trace.patch"
     if grep -Fq 'VIRUAISOR_CONTEXT_COMMAND op=create' \
             "$work/crosvm/devices/src/virtio/gpu/mod.rs" && \
@@ -118,7 +121,7 @@ if [[ ${VENUS_CROSVM_DISPLAY:-0} == 1 ]]; then
         exit 1
     fi
     patch="$repo/native/venus-crosvm/crosvm-display-sync.patch"
-    if grep -Fq 'rutabaga.display_flush()?' \
+    if grep -Fq 'rutabaga.display_flush()' \
             "$work/crosvm/devices/src/virtio/gpu/virtio_gpu.rs"; then
         : # already applied
     elif git -C "$work/crosvm" apply --unidiff-zero --check "$patch" 2>/dev/null; then
@@ -134,12 +137,25 @@ if [[ ${VENUS_CROSVM_DISPLAY:-0} == 1 ]]; then
         "$node_runner" "$repo/scripts/assert-crosvm-gpu-trace.cjs" "$work/crosvm"
     fi
     apply_renderer_patch android-vulkan-loader-trace VIRUAISOR_VK_LOADER_LOAD_BEGIN src/venus/vkr_library.c
+    apply_renderer_patch android-display-quiet-trace venus_log_is_verbose src/venus/vkr_common.c
     apply_renderer_patch android-shmem-trace VIRUAISOR_BLOB_EXPORT_READY src/venus/vkr_context.c
     apply_renderer_patch android-memory-detach-free 'generated destroy helper resolves' src/venus/vkr_device_memory.c
     apply_renderer_patch android-ring-trace VIRUAISOR_CONTEXT_SUBMIT src/venus/vkr_context.c
     apply_renderer_patch android-display-sync VIRUAISOR_DISPLAY_SYNC_BOUNDED_RING_DRAIN src/venus/vkr_renderer.c
     apply_renderer_patch android-display-gpu-completion VIRUAISOR_DISPLAY_SYNC_GPU_FENCE src/venus/vkr_renderer.c
     apply_renderer_patch android-display-gpu-null-slot VIRUAISOR_DISPLAY_SYNC_GPU_NULL_SLOT src/venus/vkr_context.c
+    apply_renderer_patch android-display-fence-lifetime VIRUAISOR_DISPLAY_FENCE_LIFETIME src/venus/vkr_queue.c
+    apply_renderer_patch android-display-sync-logging display_last_report_ns src/venus/vkr_renderer.c
+    patch="$repo/native/venus-crosvm/crosvm-display-deferred.patch"
+    if ! grep -Fq 'code == -libc::EAGAIN' "$work/crosvm/devices/src/virtio/gpu/virtio_gpu.rs"; then
+        git -C "$work/crosvm" apply "$patch"
+    fi
+    if ! grep -Fq VIRUAISOR_SCANOUT_IMPORT_GENERATION "$work/crosvm/devices/src/virtio/gpu/virtio_gpu.rs"; then
+        git -C "$work/crosvm" apply "$repo/native/venus-crosvm/crosvm-scanout-import-generation.patch"
+    fi
+    if ! grep -Fq VIRUAISOR_DISPLAY_IMPORT_RELEASE "$work/crosvm/devices/src/virtio/gpu/virtio_gpu.rs"; then
+        git -C "$work/crosvm" apply "$repo/native/venus-crosvm/crosvm-display-import-lifetime.patch"
+    fi
     patch="$repo/native/venus-crosvm/crosvm-memory-map-trace.patch"
     git -C "$work/crosvm" apply --reverse --check "$patch" 2>/dev/null || \
         git -C "$work/crosvm" apply "$patch"

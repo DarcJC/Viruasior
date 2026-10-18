@@ -1,8 +1,12 @@
 # Manjaro Plasma / Venus 准备与实机验收
 
-2026-10-17，目标设备 M367FC（Android 17 / API 37）。硬件加速是验收条件。
+2026-10-18，目标设备 M367FC（Android 17 / API 37）。硬件加速是验收条件。
 
 ## 当前状态
+
+AHB 直接提交、KWin OpenGL 和动态分辨率已经完成实机联调。正常路径 `cpuCopies=0`；实体屏幕绿色由该层的 HWC 输出引起，限定为 SurfaceFlinger CLIENT 合成后，用户已确认恢复正常。四种客体支持的分辨率往返切换与三个分辨率的角落输入已通过，短时动画约由 28.7 fps 提升至 48.0 fps。具体证据、权限边界和限制见 [本轮验收记录](ahb-kwin-resize-validation.md)。新镜像需要最新 agent、XRandR、私有 Zink LINEAR pixmap 修正和桌面会话；重建入口仍在下文。
+
+## 2026-10-17 历史记录
 
 - 最终 Debug APK 已通过普通 ADB 更新安装，原有 AVF 两项授权保留。
 - 第五版最终候选 Manjaro 镜像已在 Debug 应用的普通 UID 10278 下完成 ZIP 与四个输入文件校验，并以同一文件系统内原子改名替换：当前 `files/vms/default/vm.json` 为 `osName=manjaro` / `gpuProfile=venus`，设备内根盘摘要 `d3f83489af045f0455be9f7e2d748bfad3e4a9952a4058c10f2bf131e6c95f6c` 与候选产物一致。上一版保存在 `default-before-mutable-import-20261017`，待最终硬件验收通过后连同更早诊断镜像一起删除。
@@ -14,7 +18,7 @@
 
 最新收尾：第五版候选 ZIP `2ff29ecf27b1fd452ab1b44c852bc2cfb46ce32e24f1f6450177da8c4a494a7e` 已解包并切换到 `files/vms/default`，设备端四个输入文件再次匹配 `SHA256SUMS`。最近的失败会话中 crosvm 正常退出 0，随后取得 `DESKTOP_LEASE_END native_exit=0` 和 `ROLLBACK=PASS`。当前无 VM/helper/显示层，临时绑定已撤销，屏幕处于锁定息屏状态，`screen_off_timeout=120000` 和 Enforcing 均保留。最终 AVF/UI 验证等待用户再次解锁。
 
-## 最新实机联调结果
+## 2026-10-17 实机联调结果
 
 首次启动发现候选 crosvm 缺少 `composite-disk` 构建功能，把 AVF 的 95 字节组合磁盘描述文件当作原始盘，客体看到 0 个块并发生根盘挂载 panic。已补齐该功能和 Cargo 的本地 protobuf 生成模块接入；实际启动证实磁盘变为 8 GiB、`vda1` 成功挂载、Manjaro systemd 和 vsock agent 正常运行。去掉 `pci=nomsi` 的对照测试没有解决问题，现已恢复原参数，没有保留这一无效改动。
 
@@ -58,7 +62,7 @@
 
 桌面用户 `droid`（UID 1000）的密码登录已锁定，桌面由 vsock 命令启动。该用户在 **Linux 客体内**可用 `sudo` 管理客体，不赋予 Android 权限。启动到 multi-user，Surface 就绪后才启动 Plasma。切到 Android 后台时保留 Linux 会话，重新接入 Surface 时呈现保留的真实客体帧。
 
-应用接入 Android 17 crosvm Direct Surface Binder / native window，当前候选路径把 GPU 渲染的扫描输出拷贝并转换为 Android 窗口像素。保留帧缓存用于 Surface 分离与重接。**这不是零拷贝或 AHardwareBuffer 直接翻转的验收结论**；后者没有合格实现，会明确失败。CPU 呈现拷贝不替代必须通过的 GPU 渲染检查。
+应用接入 Android 17 crosvm Direct Surface Binder / native window。当前已将同一 AHB 直接提交到独立子层，保留 AHB 引用用于 Surface 分离与重接；CPU 映射/拷贝只作为显式诊断回退，不计为通过。该设备需要对这一层使用 GPU 合成来避开 HWC 的绿色输出，详见本轮验收记录。
 
 点击内嵌视口进入全屏；Activity 捕获键盘，使用 evdev 扫描码及明确的 Android 键码映射，双击 ESC 的两组按下/释放均转发。全屏请求鼠标指针捕获，转发相对移动、按键、双轴滚动与触摸坐标。失焦/退出时释放已按下的键、按钮和触摸槽。`Ctrl+Shift+Alt+Q` 退出全屏与输入捕获；Android Back / Home 导航保留。连接设备的具体行为还需要实测。
 
@@ -92,12 +96,12 @@ Direct Surface 平台接口没有 VM 所有者参数，因此桥接先要求唯�
 
 ## 解锁后的验收步骤
 
-私有临时绑定已获用户明确允许；下一轮由用户解锁屏幕后，先验证第四版的普通 linear 导入图像越过 Xorg `vkCreateImage`，再验收 Plasma / 实际 Surface 帧。若仍有错误，使用新 renderer 日志记录具体失败，避免重做已通过的独立宿主测试。所有后续设备启动均保持 SELinux Enforcing；不要修改 APEX 或全局策略。完成验收后按用户要求关闭 VM、撤销绑定、退出应用，让平板按原设置自行息屏。
+私有临时绑定已获用户明确允许。重复验收需屏幕已解锁，不修改 APEX 或全局策略。完成后关闭 VM、撤销绑定、退出应用，让平板按原设置自行息屏。
 
 1. 确认没有其他 VM，确认应用已导入 `osName=manjaro` / `gpuProfile=venus` 的最终镜像。
-2. 在 Git Bash 运行 `bash scripts/test-root-direct-surface.sh 180`。脚本先检查屏幕已解锁，失败时不会启动 VM。它通过仅表示 Surface 接入和桌面命令成功。
-3. 对其输出目录运行 `node scripts/assert-manjaro-desktop.cjs <目录>/logcat.txt`，必须同时看到本次租约/执行校验、Venus capset、Mali Venus Vulkan、真实着色器读回、KWin OpenGL/Zink/Mali、Plasma ready、Surface 接入、真实 `FRAME_POSTED`。旧 compute 成功或单独 setSurface 成功不够。
-4. PowerShell 运行 `scripts/assert-surface-frame.ps1 -OutDir <输出目录>`，并查看截图，确认桌面画面且能随窗口操作变化。非黑像素计数也不能单独证明正确画面。
+2. 在 Git Bash 运行 `bash scripts/test-root-direct-surface.sh 180`。脚本检查屏幕已解锁，持续保存本次日志，同时验证 KWin OpenGL、直接提交和截图像素；失败时保留证据。
+3. 可重复运行 `node scripts/assert-manjaro-desktop.cjs <目录>/logcat.txt <目录>/frame-report.json`，旧 compute 成功、CPU fallback 或单独 setSurface 成功不够。
+4. PowerShell 运行 `scripts/assert-surface-frame.ps1 -OutDir <输出目录>`；另核对实体屏幕，因为 HWC 绿色输出不会出现在截图中。`scripts/test-display-resize.ps1` 可测试运行时 mode 往返与 PID 不变。
 5. 在 Plasma 打开桌面上的 **Viruaisor Input Check**，其 30 秒记录只读 VM 虚拟输入、不 grab 设备，写入 `~/viruaisor-input-check.jsonl`。确认两次 ESC 各有按下/释放，字母/修饰键、触控板移动/点击/双轴滚动、触屏点击/拖动/多点、窗口拖动均有效。
 6. 验证 `Ctrl+Shift+Alt+Q` 退出捕获；Back / Home 能切出 Android；返回应用后 Konsole/桌面会话仍在，且没有粘住的按键、按钮或触摸点。
 7. 运行 `bash scripts/test-root-display-cleanup.sh <输出目录>` 停止自身 VM。对于 Venus 捕获，脚本还会生成 `venus-cleanup-report.json`，要求最新租约的匹配 `DESKTOP_LEASE_END`、native exit 0、结束记录后的 `ROLLBACK=PASS`、无回收错误/VM/helper/显示层遗留；在同一次停止请求内等待结束日志，最多约 30 秒。再只读核对原始 crosvm/virtmgr 摘要、AVF 授权及全局设置。crosvm 对 shell 不可读，需要时仅用固定文件的只读 `su -c sha256sum` 检查；不更改权限。

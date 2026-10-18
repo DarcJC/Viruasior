@@ -16,6 +16,7 @@ import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
@@ -58,6 +59,11 @@ class VmService : Service() {
     private var venusLease: VenusDesktopLease? = null
     private val lifecycleMutex=Mutex()
     private val pendingLifecycleCommands = PendingLifecycleCommands()
+    private val displayMutex = Mutex()
+    private val resizeRequests = Channel<Pair<Int,DisplaySize>>(Channel.CONFLATED)
+    private var displayMonitor: Job? = null
+    private var resizeTimeout: Job? = null
+    @Volatile private var displayGeneration = 0
 
     override fun onCreate() {
         super.onCreate()
@@ -70,6 +76,37 @@ class VmService : Service() {
         engine = AvfVmEngine(this, executor, ::onEngineEvent) { venusLease?.active == true }
         InputBackendRegistry.bind(engine)
         controlClient = VsockControlClient(engine)
+        scope.launch {
+            for ((generation,size) in resizeRequests) {
+                displayMutex.withLock {
+                    val selected = bundle
+                    if (generation != displayGeneration || selected == null || !desktopStartGate.started) return@withLock
+                    val result = runCatching {
+                        check(size in VmRuntime.state.value.display.modes) { "Guest does not support this resolution" }
+                        controlClient.resize(selected.vsockPort, size)
+                    }
+                    if (generation == displayGeneration) {
+                        result.onFailure {
+                            if (VmRuntime.state.value.display.requested == size) VmRuntime.displayFailure(it.rootMessage())
+                        }
+                        if (result.isSuccess) {
+                            val previous = VmRuntime.state.value.display.presented
+                            resizeTimeout?.cancel()
+                            resizeTimeout = scope.launch {
+                                delay(12_000)
+                                displayMutex.withLock {
+                                    val display = VmRuntime.state.value.display
+                                    if (generation == displayGeneration && display.requested == size && display.presented != size) {
+                                        if (previous != null) runCatching { controlClient.resize(selected.vsockPort,previous) }
+                                        VmRuntime.displayFailure("新分辨率画面未提交，已尝试恢复上一分辨率")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
         scope.launch {
             VmRuntime.initialize(this@VmService)
             bundle = VmRuntime.state.value.bundle
@@ -100,6 +137,14 @@ class VmService : Service() {
                 // Detaching Android's window must preserve the user's Linux session.
                 // Explicit VM Stop still stops the desktop before guest shutdown.
             }
+            ACTION_RESIZE -> {
+                val size = runCatching { DisplaySize(intent.getIntExtra("width",0),intent.getIntExtra("height",0)) }.getOrNull()
+                if (size != null && desktopStartGate.started) {
+                    resizeTimeout?.cancel()
+                    VmRuntime.requestResize(size)
+                    resizeRequests.trySend(displayGeneration to size)
+                }
+            }
             ACTION_DEBUG_CONSOLE -> scope.launch {
                 runCatching { engine.sendConsoleInput(intent.getStringExtra(EXTRA_TEXT).orEmpty()) }
                     .onFailure { fail("Console input failed: ${it.rootMessage()}") }
@@ -114,6 +159,9 @@ class VmService : Service() {
     override fun onDestroy() {
         Log.d(TAG, "onDestroy service=${System.identityHashCode(this)} status=${VmRuntime.state.value.status}")
         readinessJob?.cancel()
+        displayMonitor?.cancel()
+        resizeTimeout?.cancel()
+        displayGeneration++
         InputBackendRegistry.unbind(engine)
         engine.clearCallback()
         venusLease?.let { lease ->
@@ -189,6 +237,9 @@ class VmService : Service() {
         if (state.isActive) return
 
         bundle = selectedBundle
+        displayGeneration++
+        displayMonitor?.cancel()
+        VmRuntime.resetDisplay()
         desktopStartGate.reset()
         VmRuntime.setStatus(VmStatus.Starting, "VM starting")
         updateNotification("VM starting")
@@ -222,6 +273,9 @@ class VmService : Service() {
         if (!VmRuntime.state.value.isActive || VmRuntime.state.value.status is VmStatus.Stopping) return
 
         readinessJob?.cancel()
+        displayGeneration++
+        displayMonitor?.cancel()
+        resizeTimeout?.cancel()
         VmRuntime.setStatus(VmStatus.Stopping, "Requesting guest shutdown over vsock")
         updateNotification("VM stopping")
         val desktopStopCompleted = runCatching {
@@ -281,6 +335,8 @@ class VmService : Service() {
             }
             is VmEngineEvent.Stopped -> {
                 readinessJob?.cancel()
+                displayGeneration++
+                displayMonitor?.cancel()
                 if (event.expected) {
                     VmRuntime.setStatus(VmStatus.Stopped, "VM stopped")
                 } else {
@@ -326,6 +382,7 @@ class VmService : Service() {
             .onSuccess {
                 desktopStartGate.succeeded()
                 VmRuntime.setStatus(VmStatus.GuestAgentReady, "Guest agent ready; desktop requested")
+                beginDisplayMonitor(selectedBundle)
             }
             .onFailure { error ->
                 desktopStartGate.failed()
@@ -334,6 +391,22 @@ class VmService : Service() {
                     "Guest agent ready; desktop start failed: ${error.rootMessage()}",
                 )
             }
+    }
+
+    private fun beginDisplayMonitor(selected: VmBundle) {
+        if (selected.gpuProfile != VmGpuProfile.VENUS) return
+        displayMonitor?.cancel()
+        val generation = displayGeneration
+        displayMonitor = scope.launch {
+            while (generation == displayGeneration && desktopStartGate.started) {
+                displayMutex.withLock {
+                    runCatching { controlClient.displayModes(selected.vsockPort) }.onSuccess {
+                        if (generation == displayGeneration) VmRuntime.setDisplayModes(it)
+                    }
+                }
+                delay(2_000)
+            }
+        }
     }
 
     private fun closeVenusLease() {
@@ -429,6 +502,7 @@ class VmService : Service() {
         private const val ACTION_SURFACE_READY = "pro.darc.viruaisor.action.SURFACE_READY"
         private const val ACTION_SURFACE_GONE = "pro.darc.viruaisor.action.SURFACE_GONE"
         private const val ACTION_DEBUG_CONSOLE = "pro.darc.viruaisor.action.DEBUG_CONSOLE"
+        private const val ACTION_RESIZE = "pro.darc.viruaisor.action.RESIZE"
         private const val EXTRA_TEXT = "text"
         private const val CHANNEL_ID = "vm_runtime"
         private const val NOTIFICATION_ID = 1001
@@ -454,6 +528,10 @@ class VmService : Service() {
 
         fun surfaceGoneIntent(context: Context) =
             Intent(context, VmService::class.java).setAction(ACTION_SURFACE_GONE)
+
+        fun resizeIntent(context: Context, size: DisplaySize) =
+            Intent(context, VmService::class.java).setAction(ACTION_RESIZE)
+                .putExtra("width",size.width).putExtra("height",size.height)
 
         fun debugConsoleIntent(context: Context, text: String) =
             Intent(context, VmService::class.java)

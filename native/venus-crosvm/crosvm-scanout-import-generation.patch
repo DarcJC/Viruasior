@@ -1,0 +1,69 @@
+--- a/devices/src/virtio/gpu/virtio_gpu.rs
++++ b/devices/src/virtio/gpu/virtio_gpu.rs
+@@ -104,7 +104,7 @@
+     size: u64,
+     shmem_offset: Option<u64>,
+     scanout_data: Option<VirtioScanoutBlobData>,
+-    display_import: Option<u32>,
++    display_import: Option<(u32, u32)>,
+     rutabaga_external_mapping: bool,
+     guest_cpu_mappable: bool,
+ 
+@@ -467,8 +467,14 @@
+         resource: &mut VirtioGpuResource,
+         rutabaga: &mut Rutabaga,
+     ) -> Option<u32> {
+-        if let Some(import_id) = resource.display_import {
+-            return Some(import_id);
++        // VIRUAISOR_SCANOUT_IMPORT_GENERATION: Android imports belong to one surface.
++        // A modeset destroys its import map even when the guest reuses the same resource.
++        if let Some((owner_surface, import_id)) = resource.display_import {
++            if owner_surface == surface_id {
++                return Some(import_id);
++            }
++            display.borrow_mut().release_import(import_id, owner_surface);
++            resource.display_import = None;
+         }
+         let blob = rutabaga.export_blob(resource.resource_id).ok()?;
+ 
+@@ -481,7 +487,7 @@
+                         DisplayExternalResourceImport::AHardwareBuffer { info },
+                     )
+                     .ok()?;
+-                resource.display_import = Some(import_id);
++                resource.display_import = Some((surface_id, import_id));
+                 return Some(import_id);
+             }
+             other => RutabagaMesaHandle::try_from(other).ok()?,
+@@ -525,7 +531,7 @@
+                 },
+             )
+             .ok()?;
+-        resource.display_import = Some(import_id);
++        resource.display_import = Some((surface_id, import_id));
+         Some(import_id)
+     }
+ }
+@@ -1440,6 +1446,11 @@
+ 
+         let _ = self.rutabaga.set_scanout(scanout_id, resource_id, info);
+ 
++        if resource.scanout_data != scanout_data {
++            if let Some((owner_surface, import_id)) = resource.display_import.take() {
++                self.display.borrow_mut().release_import(import_id, owner_surface);
++            }
++        }
+         resource.scanout_data = scanout_data;
+ 
+         // `resource_id` has already been verified to be non-zero
+--- a/devices/src/virtio/gpu/mod.rs
++++ b/devices/src/virtio/gpu/mod.rs
+@@ -118,7 +118,7 @@
+     Vulkan,
+ }
+ 
+-#[derive(Copy, Clone, Debug, Serialize, Deserialize)]
++#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+ pub struct VirtioScanoutBlobData {
+     pub width: u32,
+     pub height: u32,

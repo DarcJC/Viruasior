@@ -1,0 +1,41 @@
+--- a/src/venus/vkr_context.h
++++ b/src/venus/vkr_context.h
+@@ -103,6 +103,7 @@
+ 
+    struct list_head head;
+    struct vulkan_library vulkan_library;
++   uint64_t display_last_report_ns;
+ };
+ 
+ struct vkr_context *
+--- a/src/venus/vkr_renderer.c
++++ b/src/venus/vkr_renderer.c
+@@ -4,6 +4,7 @@
+  */
+ 
+ #include "vkr_common.h"
++#include <time.h>
+ 
+ #include "vn_protocol_renderer_info.h"
+ #include "virtgpu_drm.h"
+@@ -265,10 +266,16 @@
+       free(wait);
+       return 0;
+    }
+-   vkr_log("VIRUAISOR_DISPLAY_SYNC_GPU_READY ctx=%u queues=%u",
+-           wait->ctx_id, queue_count);
+-   vkr_log("VIRUAISOR_DISPLAY_SYNC_READY ctx=%u rings=%u",
+-           wait->ctx_id, wait->ring_count);
++   struct timespec timestamp;
++   clock_gettime(CLOCK_MONOTONIC, &timestamp);
++   const uint64_t now_ns = (uint64_t)timestamp.tv_sec * UINT64_C(1000000000) + timestamp.tv_nsec;
++   if (now_ns - wait->ctx->display_last_report_ns >= UINT64_C(1000000000)) {
++      wait->ctx->display_last_report_ns = now_ns;
++      vkr_log("VIRUAISOR_DISPLAY_SYNC_GPU_READY ctx=%u queues=%u",
++              wait->ctx_id, queue_count);
++      vkr_log("VIRUAISOR_DISPLAY_SYNC_READY ctx=%u rings=%u",
++              wait->ctx_id, wait->ring_count);
++   }
+    free(wait);
+    return 1;
+ }

@@ -8,7 +8,15 @@ cross=/tmp/viruaisor-manjaro/venus-build/cross.ini
 [[ $(git -C "$source" rev-parse HEAD) == 742a20f48c59e8649533c84c4d49dd95b403f5da ]]
 [[ -f "$cross" ]]
 patch="$repo/native/venus-crosvm/zink-venus-upload-coherence.patch"
-git -C "$source" apply --reverse --check "$patch" 2>/dev/null || git -C "$source" apply "$patch"
+if ! grep -Fq VIRUAISOR_ZINK_BUFFER_COHERENCE "$source/src/gallium/drivers/zink/zink_screen.c"; then
+    git -C "$source" apply "$patch"
+fi
+cp "$repo/native/venus-crosvm/zink_venus_dmabuf_policy.h" "$source/src/gallium/drivers/zink/"
+if ! grep -Fq zink_venus_linear_dmabuf "$source/src/gallium/drivers/zink/zink_resource.c"; then
+    git -C "$source" apply "$repo/native/venus-crosvm/zink-venus-pixmap-linear.patch"
+fi
+gcc -Wall -Wextra -Werror "$repo/native/venus-crosvm/zink_venus_dmabuf_policy_test.c" -o /tmp/viruaisor-zink-dmabuf-test
+/tmp/viruaisor-zink-dmabuf-test
 unset PKG_CONFIG_SYSROOT_DIR PKG_CONFIG_LIBDIR PKG_CONFIG_PATH
 setup=()
 [[ ! -f "$work/build.ninja" ]] || setup=(--reconfigure --clearcache)

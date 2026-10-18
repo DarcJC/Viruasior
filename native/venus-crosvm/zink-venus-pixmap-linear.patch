@@ -1,0 +1,45 @@
+--- a/src/gallium/drivers/zink/zink_resource.c
++++ b/src/gallium/drivers/zink/zink_resource.c
+@@ -22,6 +22,7 @@
+  */
+ 
+ #include "zink_resource.h"
++#include "zink_venus_dmabuf_policy.h"
+ 
+ #include "zink_batch.h"
+ #include "zink_clear.h"
+@@ -1317,10 +1318,9 @@
+          (PIPE_BIND_SHARED | PIPE_BIND_SCANOUT);
+    const bool viruaisor_import_dmabuf =
+       alloc_info->whandle &&
+-      alloc_info->whandle->modifier == DRM_FORMAT_MOD_INVALID &&
+-      !screen->info.have_EXT_image_drm_format_modifier &&
+-      screen->info.driver_props.driverID == VK_DRIVER_ID_MESA_VENUS &&
+-      screen->info.props.vendorID == 0x13b5 &&
++      zink_venus_linear_dmabuf(screen->info.have_EXT_image_drm_format_modifier,
++                              screen->info.driver_props.driverID == VK_DRIVER_ID_MESA_VENUS,
++                              screen->info.props.vendorID, alloc_info->whandle->modifier) &&
+       (templ->bind & ZINK_BIND_DMABUF);
+    if (viruaisor_scanout_dmabuf) {
+       ici.tiling = VK_IMAGE_TILING_LINEAR;
+@@ -2087,15 +2087,13 @@
+ {
+ #ifdef ZINK_USE_DMABUF
+    struct zink_screen *screen = zink_screen(pscreen);
++   const bool viruaisor_linear_dmabuf =
++      zink_venus_linear_dmabuf(screen->info.have_EXT_image_drm_format_modifier,
++                              screen->info.driver_props.driverID == VK_DRIVER_ID_MESA_VENUS,
++                              screen->info.props.vendorID, whandle->modifier);
+    if (whandle->modifier != DRM_FORMAT_MOD_INVALID &&
+-       !screen->info.have_EXT_image_drm_format_modifier)
++       !screen->info.have_EXT_image_drm_format_modifier && !viruaisor_linear_dmabuf)
+       return NULL;
+-
+-   const bool viruaisor_linear_dmabuf =
+-      whandle->modifier == DRM_FORMAT_MOD_INVALID &&
+-      !screen->info.have_EXT_image_drm_format_modifier &&
+-      screen->info.driver_props.driverID == VK_DRIVER_ID_MESA_VENUS &&
+-      screen->info.props.vendorID == 0x13b5;
+ 
+    struct pipe_resource templ2 = *templ;
+    if (templ->format == PIPE_FORMAT_NONE)

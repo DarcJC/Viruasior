@@ -11,23 +11,29 @@
 #include <android/surface_control.h>
 #include <linux/dma-buf.h>
 #include <mutex>
+#include <condition_variable>
+#include <thread>
+#include <vector>
+#include <poll.h>
+#include <atomic>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <cstdint>
+#include <chrono>
 #include <dlfcn.h>
 #include "dmabuf_frame_policy.h"
 #include "dmabuf_sync.h"
 #include "scanout_buffer.h"
 
 extern "C" uid_t AIBinder_getCallingUid();
+#include "ahb_release.h"
 using ErrorCallback = void (*)(const char *);
 static constexpr const char *DISPLAY = "android.crosvm.ICrosvmAndroidDisplayService";
 static constexpr const char *INTERNAL = "android.system.virtualizationservice_internal.IVirtualizationServiceInternal";
 static constexpr const char *FRAME_SINK = "pro.darc.viruaisor.display.IRootFrameSink";
 
-extern "C" void viruaisor_ahb_sample_registry(void);
 
 static void *frameSinkOnCreate(void *arg) { return arg; }
 static void frameSinkOnDestroy(void *) {}
@@ -51,6 +57,16 @@ struct AndroidDisplaySurface {
     bool writing=false;
     uint64_t frames=0;
     uint64_t frameSinkFailures=0;
+    uint64_t cpuCopies=0;
+    uint64_t deferredFrames=0;
+    AHardwareBuffer *retainedBuffer=nullptr;
+    std::chrono::steady_clock::time_point lastPostLog{};
+    bool logPost() {
+        const auto now=std::chrono::steady_clock::now();
+        if (frames!=1 && frames%60!=0 && now-lastPostLog<std::chrono::seconds(1)) return false;
+        lastPostLog=now;
+        return true;
+    }
     ~AndroidDisplaySurface() { detach(); }
     void releaseControlLocked() {
         if (!control) return;
@@ -72,6 +88,8 @@ struct AndroidDisplaySurface {
         frameSink = nullptr;
         if (window) ANativeWindow_release(window);
         window = nullptr;
+        if (retainedBuffer) AHardwareBuffer_release(retainedBuffer);
+        retainedBuffer=nullptr;
     }
     binder_status_t ensureControlLocked() {
         if (!window || !width || !height) return STATUS_OK;
@@ -99,11 +117,13 @@ struct AndroidDisplaySurface {
         window = value;
         auto result = ensureControlLocked();
         if (result != STATUS_OK) return result;
+        if (window && width && height && retainedBuffer)
+            return presentHardwareBufferLocked(retainedBuffer);
         if (window && width && height && frame.available() && !writing)
             return presentLocked();
         return STATUS_OK;
     }
-    int presentHardwareBufferLocked(AHardwareBuffer *hardware_buffer) {
+    int presentHardwareBufferLocked(AHardwareBuffer *hardware_buffer, int dma_fd=-1) {
         if (!hardware_buffer || !width || !height ||
             (!frameSink && (!window || !control))) {
             __android_log_print(
@@ -117,12 +137,11 @@ struct AndroidDisplaySurface {
         AHardwareBuffer_describe(hardware_buffer, &description);
         const uint64_t display_usage =
             AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE |
-            AHARDWAREBUFFER_USAGE_GPU_FRAMEBUFFER |
             AHARDWAREBUFFER_USAGE_COMPOSER_OVERLAY;
         if (description.format != AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM ||
             description.width != width || description.height != height ||
             description.layers != 1 ||
-            !(description.usage & display_usage)) {
+            (description.usage & display_usage) != display_usage) {
             __android_log_print(
                 ANDROID_LOG_WARN, "ViruaisorVenusDisplay",
                 "SURFACE_BUFFER_REJECTED descriptor width=%u height=%u layers=%u format=%u usage=%llx expected=%ux%u",
@@ -131,60 +150,28 @@ struct AndroidDisplaySurface {
                 static_cast<unsigned long long>(description.usage), width, height);
             return STATUS_BAD_VALUE;
         }
-        if (frames < 2 || frames % 60 == 0) {
-            void *mapping = nullptr;
-            const int lock_result = AHardwareBuffer_lock(
-                hardware_buffer, AHARDWAREBUFFER_USAGE_CPU_READ_OFTEN, -1,
-                nullptr, &mapping);
-            if (lock_result == STATUS_OK && mapping) {
-                const auto *pixels = static_cast<const uint8_t *>(mapping);
-                uint64_t colored = 0, opaque = 0;
-                uint64_t hash = UINT64_C(1469598103934665603);
-                for (uint32_t y = 0; y < height; ++y) {
-                    const uint8_t *row = pixels +
-                        static_cast<size_t>(y) * description.stride * 4;
-                    for (uint32_t x = 0; x < width; ++x) {
-                        const uint8_t *pixel = row + static_cast<size_t>(x) * 4;
-                        colored += (pixel[0] | pixel[1] | pixel[2]) != 0;
-                        opaque += pixel[3] != 0;
-                        for (size_t channel = 0; channel < 4; ++channel) {
-                            hash ^= pixel[channel];
-                            hash *= UINT64_C(1099511628211);
-                        }
-                    }
-                }
-                int release_fence = -1;
-                const int unlock_result = AHardwareBuffer_unlock(
-                    hardware_buffer, &release_fence);
-                if (release_fence >= 0) close(release_fence);
-                __android_log_print(
-                    ANDROID_LOG_INFO, "ViruaisorVenusDisplay",
-                    "FRAME_SOURCE frame=%llu path=ahb-image-direct colored=%llu opaque=%llu hash=%016llx lock=%d unlock=%d",
-                    static_cast<unsigned long long>(frames + 1),
-                    static_cast<unsigned long long>(colored),
-                    static_cast<unsigned long long>(opaque),
-                    static_cast<unsigned long long>(hash), lock_result,
-                    unlock_result);
-            } else {
-                __android_log_print(
-                    ANDROID_LOG_WARN, "ViruaisorVenusDisplay",
-                    "FRAME_SOURCE_DIRECT_UNAVAILABLE frame=%llu lock=%d mapping=%d",
-                    static_cast<unsigned long long>(frames + 1), lock_result,
-                    mapping != nullptr);
-            }
-        }
         if (frameSink) {
             AParcel *input = nullptr, *output = nullptr;
             auto status = AIBinder_prepareTransaction(frameSink, &input);
+            AIBinder *release = makeReleaseBinder(hardware_buffer, dma_fd);
+            if (status == STATUS_OK && !release) {
+                AParcel_delete(input);
+                return -EAGAIN; // Bounded consumer backlog: retain the last visible frame.
+            }
+            if (status == STATUS_OK) status = AParcel_writeStrongBinder(input, release);
             if (status == STATUS_OK)
                 status = AHardwareBuffer_writeToParcel(hardware_buffer, input);
             if (status == STATUS_OK)
                 status = AIBinder_transact(frameSink, 1, &input, &output, 0);
+            if (release) AIBinder_decStrong(release);
             AStatus *header = nullptr;
             const auto header_status = status == STATUS_OK && output
                 ? AParcel_readStatusHeader(output, &header) : STATUS_BAD_VALUE;
             const bool okay = status == STATUS_OK && output &&
                 header_status == STATUS_OK && AStatus_isOk(header);
+            if (!okay && header && (frameSinkFailures < 2 || frameSinkFailures % 60 == 0))
+                __android_log_print(ANDROID_LOG_WARN,"ViruaisorVenusDisplay","FRAME_SINK_ERROR exception=%d message=%s",
+                    AStatus_getExceptionCode(header),AStatus_getMessage(header));
             if (header) AStatus_delete(header);
             if (input) AParcel_delete(input);
             if (output) AParcel_delete(output);
@@ -199,11 +186,11 @@ struct AndroidDisplaySurface {
                 return status == STATUS_OK ? STATUS_BAD_VALUE : status;
             }
             ++frames;
-            if (frames == 1 || frames % 60 == 0)
+            if (logPost())
                 __android_log_print(
                     ANDROID_LOG_INFO, "ViruaisorVenusDisplay",
-                    "FRAME_POSTED count=%llu path=root-surface-control",
-                    static_cast<unsigned long long>(frames));
+                    "FRAME_POSTED count=%llu path=root-surface-control cpuCopies=%llu width=%u height=%u",
+                    static_cast<unsigned long long>(frames), static_cast<unsigned long long>(cpuCopies), width, height);
             return STATUS_OK;
         }
         auto *transaction = ASurfaceTransaction_create();
@@ -213,7 +200,12 @@ struct AndroidDisplaySurface {
         const ARect destination = source;
         // Renderer synchronization completes the producing Vulkan queues before
         // this call, so no additional acquire fence is needed.
-        ASurfaceTransaction_setBuffer(transaction, control, hardware_buffer, -1);
+        auto *release = ReleaseBuffer::create(hardware_buffer, dma_fd);
+        if (!release) { ASurfaceTransaction_delete(transaction); return -EAGAIN; }
+        ASurfaceTransaction_setBufferWithRelease(transaction, control, hardware_buffer, -1,
+                                                release, releaseNativeBuffer);
+        ASurfaceTransaction_setBufferTransparency(transaction, control,
+                                                  ASURFACE_TRANSACTION_TRANSPARENCY_OPAQUE);
         ASurfaceTransaction_setGeometry(
             transaction, control, source, destination, 0);
         ASurfaceTransaction_setVisibility(
@@ -221,15 +213,16 @@ struct AndroidDisplaySurface {
         ASurfaceTransaction_apply(transaction);
         ASurfaceTransaction_delete(transaction);
         ++frames;
-        if (frames == 1 || frames % 60 == 0)
+        if (logPost())
             __android_log_print(
                 ANDROID_LOG_INFO, "ViruaisorVenusDisplay",
-                "FRAME_POSTED count=%llu path=surface-control",
-                static_cast<unsigned long long>(frames));
+                "FRAME_POSTED count=%llu path=surface-control cpuCopies=%llu width=%u height=%u",
+                static_cast<unsigned long long>(frames), static_cast<unsigned long long>(cpuCopies), width, height);
         return STATUS_OK;
     }
     int presentLocked() {
         if (!window || !frame.available()) return 0; // Retain pixels while the UI is absent.
+        ++cpuCopies;
         ANativeWindow_Buffer buffer{};
         int result=ANativeWindow_lock(window,&buffer,nullptr);
         if (result) return result;
@@ -373,11 +366,19 @@ extern "C" AndroidDisplaySurface *create_android_surface(AndroidDisplayContext *
     auto &surface=cursor ? ctx->cursor : ctx->scanout;
     std::lock_guard guard(surface.mutex);
     if (!surface.frame.configure(width,height)) return nullptr;
+    if ((surface.width!=width || surface.height!=height) && surface.retainedBuffer) {
+        AHardwareBuffer_release(surface.retainedBuffer); surface.retainedBuffer=nullptr;
+    }
     surface.width=width; surface.height=height;
     if (surface.ensureControlLocked() != STATUS_OK) return nullptr;
     return &surface;
 }
-extern "C" void destroy_android_surface(AndroidDisplayContext *,AndroidDisplaySurface *surface) { if (surface) surface->detach(); }
+extern "C" void destroy_android_surface(AndroidDisplayContext *,AndroidDisplaySurface *surface) {
+    if (!surface) return;
+    // A guest modeset destroys scanout resources, not the Android UI attachment.
+    std::lock_guard guard(surface->mutex);
+    surface->writing=false;
+}
 extern "C" uint32_t get_android_surface_buffer(AndroidDisplayContext *,AndroidDisplaySurface *surface,ANativeWindow_Buffer *buffer) {
     if (!surface || !buffer) return 0;
     std::lock_guard guard(surface->mutex);
@@ -463,9 +464,14 @@ static int presentSourceLocked(AndroidDisplaySurface *surface,
 extern "C" int32_t android_display_flip_to_dmabuf(
     AndroidDisplayContext *ctx, AndroidDisplaySurface *surface,
     const DmabufFrameInfo *info) {
-    if (!ctx || !surface || !info || info->fd < 0 ||
-        info->width != surface->width || info->height != surface->height) {
-        if (ctx) ctx->report("DMA-BUF scanout metadata rejected");
+    if (!ctx || !surface || !info || info->fd < 0) {
+        if (ctx) {
+            __android_log_print(ANDROID_LOG_ERROR,"ViruaisorVenusDisplay",
+                "DMA-BUF scanout metadata rejected actual=%ux%u expected=%ux%u",
+                info ? info->width : 0, info ? info->height : 0,
+                surface ? surface->width : 0, surface ? surface->height : 0);
+            ctx->report("DMA-BUF scanout metadata rejected");
+        }
         return 0;
     }
     uint64_t mapping_bytes = 0;
@@ -481,6 +487,15 @@ extern "C" int32_t android_display_flip_to_dmabuf(
         ctx->report("DMA-BUF scanout size rejected");
         return 0;
     }
+    if (info->width != surface->width || info->height != surface->height) {
+        // XRandR grows the framebuffer before updating the scanout rectangle.
+        // Keep the prior frame during that valid intermediate state.
+        if (++surface->deferredFrames==1 || surface->deferredFrames%60==0)
+            __android_log_print(ANDROID_LOG_INFO,"ViruaisorVenusDisplay",
+                "DISPLAY_DEFERRED reason=mode-transition width=%u height=%u scanout=%ux%u",
+                info->width,info->height,surface->width,surface->height);
+        return 1;
+    }
 
     // The Mali gralloc mapper owns cache and layout handling for this exact AHB.
     // The renderer has already completed a bounded Vulkan fence before flip.
@@ -494,48 +509,27 @@ extern "C" int32_t android_display_flip_to_dmabuf(
             description.width == info->width &&
             description.height == info->height && description.layers == 1 &&
             description.stride >= description.width;
-        const bool root_producer = surface->usesRootProducer();
-        if (rgba_image && root_producer) {
-            void *mapping = nullptr;
-            const int lock_result = AHardwareBuffer_lock(
-                hardware_buffer, AHARDWAREBUFFER_USAGE_CPU_READ_OFTEN, -1,
-                nullptr, &mapping);
-            int result = STATUS_BAD_VALUE;
-            if (lock_result == STATUS_OK && mapping) {
-                DmabufFrameInfo mapped_info = *info;
-                mapped_info.offset = 0;
-                mapped_info.stride = description.stride * 4;
-                result = presentSourceLocked(
-                    surface, &mapped_info,
-                    static_cast<const uint8_t *>(mapping),
-                    "ahb-image-blast");
-            }
-            int release_fence = -1;
-            const int unlock_result = lock_result == STATUS_OK ?
-                AHardwareBuffer_unlock(hardware_buffer, &release_fence) :
-                lock_result;
-            if (release_fence >= 0) close(release_fence);
-            if (result == STATUS_OK && unlock_result == STATUS_OK) {
-                AHardwareBuffer_release(hardware_buffer);
-                return 1;
-            }
-            __android_log_print(
-                ANDROID_LOG_WARN, "ViruaisorVenusDisplay",
-                "BLAST producer scanout unavailable; trying generic mapper fallback");
-        }
-        if (rgba_image && !root_producer) {
+        if (rgba_image && info->offset == 0) {
             int surface_result = STATUS_BAD_VALUE;
             {
                 std::lock_guard guard(surface->mutex);
-                surface_result =
-                    surface->presentHardwareBufferLocked(hardware_buffer);
+                surface_result = surface->presentHardwareBufferLocked(hardware_buffer, info->fd);
+                if (surface_result == STATUS_OK) {
+                    AHardwareBuffer_acquire(hardware_buffer);
+                    if (surface->retainedBuffer) AHardwareBuffer_release(surface->retainedBuffer);
+                    surface->retainedBuffer=hardware_buffer;
+                }
             }
             if (surface_result == STATUS_OK) {
                 AHardwareBuffer_release(hardware_buffer);
                 return 1;
             }
+            if (surface_result == -EAGAIN) {
+                AHardwareBuffer_release(hardware_buffer);
+                return 1;
+            }
             __android_log_print(ANDROID_LOG_WARN, "ViruaisorVenusDisplay",
-                                "SurfaceControl AHardwareBuffer submission unavailable; using mapper");
+                                "DIRECT_SCANOUT_FALLBACK status=%d", surface_result);
         }
         void *mapping = nullptr;
         const bool blob = description.format == AHARDWAREBUFFER_FORMAT_BLOB &&

@@ -7,7 +7,7 @@ import android.view.InputDevice
 import android.view.MotionEvent
 import android.view.SurfaceView
 
-/** Owns pointer capture and maps the visible viewport into the fixed guest buffer. */
+/** Touch uses the boot-time virtio ABS range; relative mouse deltas use the current guest mode. */
 internal class DesktopSurfaceView(context: Context) : SurfaceView(context) {
     var fullscreen = false
         set(value) {
@@ -18,6 +18,9 @@ internal class DesktopSurfaceView(context: Context) : SurfaceView(context) {
     var enterFullscreen: () -> Unit = {}
     var guestWidth = 1280
     var guestHeight = 720
+    var inputWidth = 1280
+    var inputHeight = 720
+    var inputEnabled = true
     private var absolute: Pair<Float, Float>? = null
     private var touch: MotionEvent? = null
     private val buttons = linkedSetOf<Int>()
@@ -32,6 +35,7 @@ internal class DesktopSurfaceView(context: Context) : SurfaceView(context) {
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
+        if (!inputEnabled) return true
         if (!fullscreen) {
             if (event.actionMasked == MotionEvent.ACTION_UP) { performClick(); enterFullscreen() }
             return true
@@ -41,7 +45,7 @@ internal class DesktopSurfaceView(context: Context) : SurfaceView(context) {
         if (event.actionMasked == MotionEvent.ACTION_CANCEL) { releaseInput(); return true }
         if (width <= 0 || height <= 0) return true
         val mapped = MotionEvent.obtain(event)
-        mapped.transform(Matrix().apply { setScale(guestWidth.toFloat() / width, guestHeight.toFloat() / height) })
+        mapped.transform(Matrix().apply { setScale(inputWidth.toFloat() / width, inputHeight.toFloat() / height) })
         InputBackendRegistry.setTouchScale(1f)
         InputBackendRegistry.sendTouch(mapped)
         touch?.recycle()
@@ -66,13 +70,14 @@ internal class DesktopSurfaceView(context: Context) : SurfaceView(context) {
     }
 
     override fun onGenericMotionEvent(event: MotionEvent): Boolean {
+        if (!inputEnabled) return true
         if (fullscreen && (event.isFromSource(InputDevice.SOURCE_MOUSE) ||
                 event.isFromSource(InputDevice.SOURCE_TOUCHPAD))) return pointer(event, relative = false)
         return super.onGenericMotionEvent(event)
     }
 
     override fun onCapturedPointerEvent(event: MotionEvent): Boolean =
-        if (fullscreen) pointer(event, relative = true) else false
+        if (!inputEnabled) true else if (fullscreen) pointer(event, relative = true) else false
 
     override fun onPointerCaptureChange(hasCapture: Boolean) {
         super.onPointerCaptureChange(hasCapture)
@@ -116,7 +121,8 @@ internal class DesktopSurfaceView(context: Context) : SurfaceView(context) {
         val dx = if (relative) currentX else previous?.let { currentX - it.first } ?: 0f
         val dy = if (relative) currentY else previous?.let { currentY - it.second } ?: 0f
         absolute = currentX to currentY
-        val x = whole(0, dx); val y = whole(1, dy)
+        val x = whole(0, dx*guestWidth/width.coerceAtLeast(1))
+        val y = whole(1, dy*guestHeight/height.coerceAtLeast(1))
         if (x != 0 || y != 0) mouse(MotionEvent.ACTION_MOVE, x.toFloat(), y.toFloat())
     }
 

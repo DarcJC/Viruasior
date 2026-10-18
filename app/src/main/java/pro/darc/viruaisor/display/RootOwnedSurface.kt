@@ -1,6 +1,7 @@
 package pro.darc.viruaisor.display
 
 import android.hardware.HardwareBuffer
+import android.hardware.SyncFence
 import android.graphics.PixelFormat
 import android.graphics.Rect
 import android.os.Process
@@ -8,6 +9,7 @@ import android.util.Log
 import android.view.Surface
 import android.view.SurfaceControl
 import java.lang.reflect.Method
+import java.util.concurrent.Executor
 
 /** The BLAST queue and its producer Binder are constructed ONLY in the UID-0 helper. */
 internal class RootOwnedSurface private constructor(
@@ -17,10 +19,15 @@ internal class RootOwnedSurface private constructor(
     private val width: Int,
     private val height: Int,
     private val setTrustedOverlay: Method,
+    private val setColorTransform: Method,
+    private val setCornerRadius: Method,
     private val cleanup: RootDisplayCleanup,
 ) {
     private var frames = 0L
+    @Volatile private var closed = false
+    private var lastSize = 0L
 
+    @Synchronized
     fun show() {
         SurfaceControl.Transaction().use { transaction ->
             setTrustedOverlay.invoke(transaction, producerControl, true)
@@ -28,23 +35,50 @@ internal class RootOwnedSurface private constructor(
                 .setPosition(producerControl, 0f, 0f)
                 .setScale(producerControl, 1f, 1f)
                 .setCrop(producerControl, Rect(0, 0, width, height))
-                .setVisibility(producerControl, true)
-                .setVisibility(child, false)
+                .setVisibility(producerControl, frames == 0L)
+                .setVisibility(child, frames != 0L)
                 .apply()
         }
     }
 
-    fun present(buffer: HardwareBuffer) {
+    @Synchronized
+    fun present(buffer: HardwareBuffer, onPresented: (Long,Int,Int) -> Unit, onRelease: (SyncFence) -> Unit) {
+        check(!closed) { "Stale display session" }
         require(child.isValid) { "Display layer is no longer valid" }
-        require(buffer.width == width && buffer.height == height && buffer.layers == 1 &&
+        RootDisplaySize.validate(buffer.width, buffer.height)
+        require(buffer.layers == 1 &&
             buffer.format == HardwareBuffer.RGBA_8888) { "Unexpected scanout HardwareBuffer" }
         val displayUsage = HardwareBuffer.USAGE_COMPOSER_OVERLAY or
-            HardwareBuffer.USAGE_GPU_SAMPLED_IMAGE or HardwareBuffer.USAGE_GPU_COLOR_OUTPUT
-        require(buffer.usage and displayUsage != 0L) { "HardwareBuffer is not displayable" }
-        val bounds = Rect(0, 0, width, height)
+            HardwareBuffer.USAGE_GPU_SAMPLED_IMAGE
+        require(buffer.usage and displayUsage == displayUsage) { "HardwareBuffer is not displayable" }
+        val source = Rect(0, 0, buffer.width, buffer.height)
+        val destination = Rect(0, 0, width, height)
+        val size = (buffer.width.toLong() shl 32) or buffer.height.toLong()
+        val frame = frames+1
+        val frameWidth = buffer.width
+        val frameHeight = buffer.height
         SurfaceControl.Transaction().use { transaction ->
-            transaction.setBuffer(child, buffer)
-                .setGeometry(child, bounds, bounds, 0)
+            if (size != lastSize) {
+                transaction.addTransactionCommittedListener(Executor { it.run() }) {
+                    if (!closed) onPresented(frame,frameWidth,frameHeight)
+                }
+                lastSize = size
+            }
+            setTrustedOverlay.invoke(transaction, child, true)
+            // The qualified DRM ARGB/XRGB scanout has BGRA bytes in the Vulkan-
+            // compatible RGBA AHB. Let the compositor swap R/B without touching
+            // or copying pixels on the CPU, or allocating an extra blit target.
+            setColorTransform.invoke(transaction, child,
+                floatArrayOf(0f,0f,1f, 0f,1f,0f, 1f,0f,0f), floatArrayOf(0f,0f,0f))
+            // This device's HWC reports support for the R/B transform but displays
+            // green while screenshots are correct. A subpixel rounded edge keeps
+            // only this layer in RenderEngine, sampling this same AHB directly.
+            setCornerRadius.invoke(transaction, child, CLIENT_COMPOSITION_RADIUS_PX)
+            transaction.setBuffer(child, buffer, null, onRelease)
+                .setGeometry(child, source, destination, 0)
+                .setCrop(child, source)
+                .setLayer(child, 2)
+                .setVisibility(producerControl, false)
                 .setVisibility(child, true)
                 .apply()
         }
@@ -54,10 +88,14 @@ internal class RootOwnedSurface private constructor(
         }
     }
 
-    fun close(stopProducer: () -> Unit = {}) = cleanup.close(stopProducer)
+    fun close(stopProducer: () -> Unit = {}) {
+        synchronized(this) { closed = true }
+        cleanup.close(stopProducer)
+    }
 
     companion object {
         private const val TAG = "ViruaisorRootDisplay"
+        private const val CLIENT_COMPOSITION_RADIUS_PX = 0.01f
 
         /** On success owns the received parent HANDLE, never the parent's layer lifecycle. */
         fun create(parent: SurfaceControl, width: Int, height: Int): RootOwnedSurface {
@@ -105,7 +143,7 @@ internal class RootOwnedSurface private constructor(
                 }
                 return RootOwnedSurface(
                     createdSurface, control, createdProducerControl, width, height,
-                    api.setTrustedOverlay, cleanup(
+                    api.setTrustedOverlay, api.setColorTransform, api.setCornerRadius, cleanup(
                     control, producerControl, createdSurface, createdQueue, api.destroy,
                     parent::release,
                 ))
@@ -155,6 +193,12 @@ internal class RootOwnedSurface private constructor(
         val destroy: Method = type.getMethod("destroy")
         val setTrustedOverlay: Method = SurfaceControl.Transaction::class.java.getMethod(
             "setTrustedOverlay", SurfaceControl::class.java, Boolean::class.javaPrimitiveType,
+        )
+        val setColorTransform: Method = SurfaceControl.Transaction::class.java.getMethod(
+            "setColorTransform", SurfaceControl::class.java, FloatArray::class.java, FloatArray::class.java,
+        )
+        val setCornerRadius: Method = SurfaceControl.Transaction::class.java.getMethod(
+            "setCornerRadius", SurfaceControl::class.java, Float::class.javaPrimitiveType,
         )
 
         fun create(child: SurfaceControl, width: Int, height: Int): Any {

@@ -6,20 +6,20 @@ keeps VM lifecycle ownership in `VmService`, and controls guest services over vs
 
 ## Current scope and limitations
 
-- A Manjaro ARM / Plasma 5.27 bundle with a paired Venus ICD is installed. On the test device,
-  Manjaro boots, Venus enumerates the Mali GPU and Direct Surface attaches. Zink/EGL currently
-  hits a Venus ring timeout in the initial build. An import-compatible memory path and private
-  Zink 25 now pass real Mali shader readbacks in a rootless app-private diagnostic; the updated
-  AVF desktop, Surface frames and input qualification remain pending. See
-  [Manjaro preparation and device checklist](docs/manjaro-plasma-preparation.md).
+- On M367FC / Android 17, Manjaro Plasma 5.27 runs KWin OpenGL on Zink/Venus/Mali.
+  The root display bridge submits the original AHardwareBuffer without CPU pixel copies.
+  This device needs SurfaceFlinger GPU composition for that layer because its hardware
+  composer produces green output despite correct screenshots. Runtime resolution selection
+  uses guest-supported XRandR modes and updates display and input geometry. See
+  [validation and measured limits](docs/ahb-kwin-resize-validation.md).
 
 - A single VM bundle is imported into app-private `filesDir/vms/default/` storage.
 - Guests boot headlessly to `multi-user.target`; desktop services start only on an explicit
   `START_DESKTOP` request after the Android Surface is ready.
 - Guest GPU acceleration is the graphics development target. The ordinary VM default remains
   crosvm `2d`, a diagnostic baseline, not GPU acceleration. A fixed app-private Venus candidate
-  now executes real guest GPU compute with shared memory; it does not upgrade the user's VM or
-  provide a desktop. See [Venus guest validation](docs/venus-guest-runtime-validation.md) and the
+  executes guest GPU compute and the qualified desktop path; existing guest images need the
+  paired agent and private Mesa updates. See [Venus guest validation](docs/venus-guest-runtime-validation.md) and the
   historical [gfxstream validation](docs/gfxstream-validation.md).
 - The app requests root through KernelSU-compatible `su` on first launch. The Root card shows
   authorization status and provides a retry after enabling Viruaisor in KernelSU's Superuser list.

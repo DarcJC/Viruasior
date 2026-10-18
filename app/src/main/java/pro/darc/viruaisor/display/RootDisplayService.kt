@@ -2,6 +2,7 @@ package pro.darc.viruaisor.display
 
 import android.content.Intent
 import android.hardware.HardwareBuffer
+import android.hardware.SyncFence
 import android.os.Binder
 import android.os.IBinder
 import android.os.Parcel
@@ -55,6 +56,7 @@ class RootDisplayService : RootService() {
             try {
                 val width = if (parent != null) data.readInt() else 0
                 val height = if (parent != null) data.readInt() else 0
+                val observer = if (parent != null) requireNotNull(data.readStrongBinder()) { "Missing frame observer" } else null
                 data.enforceNoDataAvail()
                 val identity = clearCallingIdentity()
                 try {
@@ -110,16 +112,24 @@ class RootDisplayService : RootService() {
                                             data.enforceInterface(FRAME_SINK_DESCRIPTOR)
                                             calls++
                                             if (calls == 1L) Log.i(TAG, "FRAME_SINK_RECEIVED uid=${getCallingUid()}")
+                                            val released = requireNotNull(data.readStrongBinder()) { "Missing buffer release callback" }
                                             val buffer = HardwareBuffer.CREATOR.createFromParcel(data)
                                             try {
                                                 data.enforceNoDataAvail()
                                                 val frameIdentity = clearCallingIdentity()
                                                 try {
-                                                    synchronized(lock) { owned.present(buffer) }
+                                                    owned.present(buffer, { frame,w,h ->
+                                                        sendPresented(requireNotNull(observer), frame,w,h)
+                                                    }) { fence ->
+                                                        sendBufferRelease(released, fence)
+                                                    }
                                                 } finally {
                                                     restoreCallingIdentity(frameIdentity)
                                                 }
                                                 reply.writeNoException()
+                                            } catch (error: Exception) {
+                                                if (calls <= 2 || calls % 60L == 0L) Log.e(TAG,"AHB frame submission failed",error)
+                                                throw error
                                             } finally {
                                                 buffer.close()
                                             }
@@ -166,6 +176,48 @@ class RootDisplayService : RootService() {
             .onFailure { Log.w(TAG, "Display cleanup failed", it) }
         watchdog.shutdownNow()
         Log.i(TAG, "Helper destroyed; normal libsu root process exits when its last service is gone")
+    }
+
+    private fun sendBufferRelease(callback: IBinder, fence: SyncFence) {
+        // SurfaceFlinger invokes this on a callback thread. Never wait for the GPU
+        // or hold the session lock; transfer the actual release fence to crosvm.
+        val data = Parcel.obtain()
+        val reply = Parcel.obtain()
+        val flattened = Parcel.obtain()
+        try {
+            data.writeInterfaceToken("pro.darc.viruaisor.display.IBufferRelease")
+            fence.writeToParcel(flattened, 0)
+            flattened.setDataPosition(0)
+            val valid = flattened.readBoolean()
+            data.writeBoolean(valid)
+            if (valid) {
+                requireNotNull(flattened.readFileDescriptor()).use {
+                    it.writeToParcel(data, 0)
+                }
+            }
+            if (callback.transact(1, data, reply, 0)) reply.readException()
+        } catch (error: Exception) {
+            Log.w(TAG, "Buffer release delivery failed", error)
+        } finally {
+            fence.close()
+            flattened.recycle()
+            reply.recycle()
+            data.recycle()
+        }
+    }
+
+    private fun sendPresented(observer: IBinder, frame: Long, width: Int, height: Int) {
+        val data = Parcel.obtain()
+        val reply = Parcel.obtain()
+        try {
+            data.writeInterfaceToken("pro.darc.viruaisor.display.IDisplayFrame")
+            data.writeLong(frame)
+            data.writeInt(width)
+            data.writeInt(height)
+            if (observer.transact(1,data,reply,0)) reply.readException()
+        } catch (error: Exception) {
+            Log.w(TAG,"Frame observer delivery failed",error)
+        } finally { data.recycle(); reply.recycle() }
     }
 
     private fun requireSingleCrosvm() {

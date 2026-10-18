@@ -6,9 +6,10 @@ fi
 mkdir -p "$HOME/.config"
 cat > "$HOME/.config/kwinrc" <<'EOF'
 [Compositing]
-Enabled=false
+Enabled=true
+Backend=OpenGL
 EOF
-export KWIN_COMPOSE=N
+export KWIN_COMPOSE=O2
 startplasma-x11 &
 plasma_pid=$!
 trap 'kill "$plasma_pid" 2>/dev/null || true' EXIT HUP INT TERM
@@ -17,12 +18,15 @@ count=0
 while [ "$count" -lt 90 ]; do
     kill -0 "$plasma_pid" || exit 1
     if qdbus org.kde.KWin /KWin supportInformation > "$report" 2>/dev/null &&
-        grep -q 'Compositing is not active' "$report"; then
+        grep -q 'Compositing is active' "$report" &&
+        grep -q 'Compositing Type: OpenGL' "$report" &&
+        grep -Eiq 'OpenGL renderer string:.*zink.*mali' "$report" &&
+        ! grep -Eiq 'llvmpipe|lavapipe|swiftshader|softpipe' "$report"; then
         cat "$report"
         # avf-plasma.service only starts this session after venus-preflight has
         # proved MESA_VENUS on Mali and completed a GPU draw/readback.
+        echo 'VIRUAISOR_KWIN_COMPOSITING=opengl'
         echo 'VIRUAISOR_PLASMA_HARDWARE_READY=true'
-        echo 'VIRUAISOR_KWIN_COMPOSITING=disabled'
         wait "$plasma_pid"
         exit $?
     fi
@@ -30,5 +34,5 @@ while [ "$count" -lt 90 ]; do
     count=$((count+1))
 done
 cat "$report" >&2 2>/dev/null || true
-echo 'Plasma session did not confirm disabled KWin compositing' >&2
+echo 'Plasma session did not confirm KWin OpenGL on Zink/Venus/Mali' >&2
 exit 1

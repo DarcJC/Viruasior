@@ -13,6 +13,14 @@ static void expect_mapping(const char *command, const char *verb, const char *un
 }
 
 int main(void) {
+    uint32_t width=0,height=0;
+    assert(parse_resize_command("RESIZE 1920 1080", &width, &height));
+    assert(width==1920 && height==1080);
+    const char *bad_sizes[]={"RESIZE 0 720", "RESIZE -1 720", "RESIZE 4097 1",
+        "RESIZE 4096 4096", "RESIZE 1280 720; reboot", "RESIZE 1280 720 ",
+        "RESIZE 1 999999999999999999999", "RESIZE +1 720", "RESIZE 1 2 3"};
+    for (size_t i=0;i<sizeof(bad_sizes)/sizeof(bad_sizes[0]);++i)
+        assert(!parse_resize_command(bad_sizes[i], &width, &height));
     expect_mapping("START_DESKTOP venus", "start", "avf-plasma.service", false);
     expect_mapping("STOP_DESKTOP venus", "stop", "avf-plasma.service", false);
     expect_mapping("START_DESKTOP 2d", "start", "avf-desktop@2d.service", false);

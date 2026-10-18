@@ -1,0 +1,21 @@
+--- a/src/venus/vkr_common.c
++++ b/src/venus/vkr_common.c
+@@ -4,6 +4,7 @@
+  */
+ 
+ #include "vkr_common.h"
++#include "venus_log_policy.h"
+ 
+ #include <stdarg.h>
+ #include <stdio.h>
+@@ -246,6 +247,10 @@
+ void
+ vkr_log(const char *fmt, ...)
+ {
++   const char *trace=getenv("VIRUAISOR_GRAPHICS_TRACE");
++   if (venus_log_is_verbose(fmt) && (!trace || strcmp(trace,"1")))
++      return;
++
+    va_list va;
+ 
+    va_start(va, fmt);

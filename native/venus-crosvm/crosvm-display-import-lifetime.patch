@@ -1,0 +1,34 @@
+--- a/gpu_display/src/gpu_display_android.rs
++++ b/gpu_display/src/gpu_display_android.rs
+@@ -440,14 +440,10 @@
+         Ok(())
+     }
+ 
+-    fn release_import(&mut self, surface_id: u32, import_id: u32) {
+-        let mut imports = self
+-            .surface_imports_map
+-            .entry(surface_id)
+-            .or_default()
+-            .write()
+-            .expect("failed to get a lock");
+-        imports.remove(&import_id);
++    fn release_import(&mut self, import_id: u32, surface_id: u32) {
++        if let Some(imports) = self.surface_imports_map.get(&surface_id) {
++            imports.write().expect("failed to get a lock").remove(&import_id);
++        }
+     }
+ }
+ 
+--- a/devices/src/virtio/gpu/virtio_gpu.rs
++++ b/devices/src/virtio/gpu/virtio_gpu.rs
+@@ -1073,6 +1073,10 @@
+             .remove(&resource_id)
+             .ok_or(ErrInvalidResourceId)?;
+ 
++        // VIRUAISOR_DISPLAY_IMPORT_RELEASE: release display FDs at resource teardown.
++        if let Some((surface_id, import_id)) = resource.display_import {
++            self.display.borrow_mut().release_import(import_id, surface_id);
++        }
+         if resource.rutabaga_external_mapping {
+             self.rutabaga.unmap(resource_id)?;
+         }

@@ -65,6 +65,7 @@ data class VmUiState(
     val status: VmStatus = VmStatus.Stopped,
     val bundle: VmBundle? = null,
     val detail: String? = null,
+    val display: VmDisplayState = VmDisplayState(),
 ) {
     val canImport: Boolean
         get() = support is AvfSupport.Available && status !is VmStatus.Importing && !isActive

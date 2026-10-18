@@ -18,6 +18,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import pro.darc.viruaisor.root.RootAccess
 import pro.darc.viruaisor.root.RootRuntime
+import pro.darc.viruaisor.vm.DisplaySize
+import pro.darc.viruaisor.vm.VmRuntime
 import java.util.concurrent.Executor
 import java.util.concurrent.Executors
 
@@ -99,8 +101,30 @@ class RootAvfSurfaceBackend(context: Context) : DisplayBackend {
                     return
                 }
                 binder = service
+                var observedFrame = 0L
+                val observer = object : Binder() {
+                    init { attachInterface(null,"pro.darc.viruaisor.display.IDisplayFrame") }
+                    override fun onTransact(code: Int, data: Parcel, reply: Parcel?, flags: Int): Boolean {
+                        check(getCallingUid() == 0) { "Unexpected display observer caller" }
+                        if (code == IBinder.INTERFACE_TRANSACTION) return super.onTransact(code,data,reply,flags)
+                        require(code == 1 && reply != null && flags and IBinder.FLAG_ONEWAY == 0)
+                        data.enforceInterface("pro.darc.viruaisor.display.IDisplayFrame")
+                        val frame = data.readLong()
+                        val size = DisplaySize(data.readInt(),data.readInt())
+                        data.enforceNoDataAvail()
+                        main.post {
+                            if (!closed && running && generation == expectedGeneration && target === expectedTarget && frame > observedFrame) {
+                                observedFrame = frame
+                                VmRuntime.setPresentedSize(size)
+                                Log.i("ViruaisorDisplay","DISPLAY_PRESENTED frame=$frame width=${size.width} height=${size.height} generation=$expectedGeneration")
+                            }
+                        }
+                        reply.writeNoException()
+                        return true
+                    }
+                }
                 worker.execute {
-                    runCatching { rpc(service, RootDisplayAuthorization.ATTACH, expectedTarget) }
+                    runCatching { rpc(service, RootDisplayAuthorization.ATTACH, expectedTarget, observer) }
                         .onSuccess { identity -> main.post {
                             if (connection === this && generation == expectedGeneration && target === expectedTarget && running) {
                                 mutableStatus.value = "Root Direct Surface attached ($identity)"
@@ -179,7 +203,7 @@ class RootAvfSurfaceBackend(context: Context) : DisplayBackend {
             .onFailure { Log.w(TAG, "Root display connection already released", it) }
     }
 
-    private fun rpc(binder: IBinder, transaction: Int, target: DisplayTarget? = null): String {
+    private fun rpc(binder: IBinder, transaction: Int, target: DisplayTarget? = null, observer: IBinder? = null): String {
         val data = Parcel.obtain()
         val reply = Parcel.obtain()
         try {
@@ -191,6 +215,7 @@ class RootAvfSurfaceBackend(context: Context) : DisplayBackend {
                 data.writeTypedObject(displayTarget.parent, 0)
                 data.writeInt(displayTarget.bufferWidth)
                 data.writeInt(displayTarget.bufferHeight)
+                data.writeStrongBinder(requireNotNull(observer))
             }
             check(binder.transact(transaction, data, reply, 0)) { "Root display RPC not handled" }
             reply.readException()

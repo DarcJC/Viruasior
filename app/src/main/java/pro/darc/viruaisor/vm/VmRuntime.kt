@@ -6,6 +6,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update as updateState
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -52,8 +53,29 @@ object VmRuntime {
         it.copy(status = status, detail = detail)
     }
 
+    internal fun setDisplayModes(modes: DisplayModes) = update {
+        it.copy(display = it.display.copy(modes = modes.available, actual = modes.current))
+    }
+
+    internal fun setPresentedSize(size: DisplaySize) = update {
+        if (!it.isActive) it else it.copy(display = it.display.copy(
+            presented = size,
+            requested = it.display.requested.takeUnless { requested -> requested == size },
+        ))
+    }
+
+    internal fun requestResize(size: DisplaySize) = update { state ->
+        state.copy(display = state.display.copy(requested = size.takeUnless { size == state.display.presented }, error = null))
+    }
+
+    internal fun displayFailure(message: String) = update {
+        it.copy(display = it.display.copy(requested = null, error = message))
+    }
+
+    internal fun resetDisplay() = update { it.copy(display = VmDisplayState()) }
+
     private inline fun update(transform: (VmUiState) -> VmUiState) {
-        mutableState.value = transform(mutableState.value)
+        mutableState.updateState(transform)
         val state = mutableState.value
         Log.i(TAG, "status=${state.status} detail=${state.detail.orEmpty()}")
     }

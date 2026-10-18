@@ -23,10 +23,14 @@ function run(windowDump, ready, failure = '', omitDesktopMarker = false) {
     fs.writeFileSync(mock, `
 const fs = require('node:fs');
 const args = process.argv.slice(2).join(' ');
+const {png,xml}=require(${JSON.stringify(path.resolve(__dirname,'test-fixtures/surface-png.cjs'))});
 fs.appendFileSync(process.env.TEST_TRACE, args + '\\n');
 if (args === 'shell dumpsys window policy') console.log(process.env.TEST_WINDOW);
 else if (args.startsWith('shell date ')) console.log('10-14 10:50:00.000');
 else if (args.includes('getenforce')) console.log('Enforcing\\nnull\\nnull');
+else if (args === 'exec-out screencap -p') process.stdout.write(png(100,100,(x,y)=>[x*2,y*2,(x+y)%256]));
+else if (args.startsWith('pull ')) fs.writeFileSync(process.argv.at(-1),xml);
+else if (args === 'shell dumpsys SurfaceFlinger') { console.log(' - Output Layer 0x1(ViruaisorRootDisplay#123)'); console.log(' hwc: layer=0x1 composition=CLIENT (1)'); }
 else if (args.startsWith('logcat ') && process.env.TEST_READY === 'true') {
   console.log('I ViruaisorRootDisplay: DESKTOP_LEASE_READY token=${'a'.repeat(32)} uid=10278 pid=123');
   console.log('I ViruaisorRootDisplay: DESKTOP_EXECUTION_VERIFIED token=${'a'.repeat(32)} name=crosvm_default caps=0');
@@ -38,12 +42,13 @@ else if (args.startsWith('logcat ') && process.env.TEST_READY === 'true') {
   console.log('I virtmgr: driverID = DRIVER_ID_MESA_VENUS');
   console.log('I virtmgr: GL_RENDERER=zink Vulkan 1.3 (Virtio-GPU Venus (Mali-G2-Ultra-NX MC16))');
   console.log('I virtmgr: GPU_DRAW_READBACK_PASS');
-  console.log('I virtmgr: Compositing is not active');
+  console.log('I virtmgr: Compositing is active');
+  console.log('I virtmgr: Compositing Type: OpenGL');
+  console.log('I virtmgr: OpenGL renderer string: zink Vulkan Venus Mali');
   console.log('I virtmgr: VIRUAISOR_PLASMA_HARDWARE_READY=true');
-  console.log('I virtmgr: VIRUAISOR_KWIN_COMPOSITING=disabled');
+  console.log('I virtmgr: VIRUAISOR_KWIN_COMPOSITING=opengl');
   console.log('I ViruaisorVenusRenderer: VIRUAISOR_DISPLAY_SYNC_READY ctx=2 rings=1');
-  console.log('I ViruaisorVenusDisplay: FRAME_SOURCE frame=181 path=ahb-image-blast fd=607 offset=0 stride=5120 fourcc=34325258 colored=123456 opaque=921600 hash=1234567890abcdef');
-  console.log('I ViruaisorVenusDisplay: FRAME_POSTED count=240');
+  console.log('I ViruaisorVenusDisplay: FRAME_POSTED count=240 path=root-surface-control cpuCopies=0 width=1280 height=720');
 }
 else if (args.startsWith('logcat ') && process.env.TEST_FAILURE) {
   console.log(process.env.TEST_FAILURE);

@@ -1,0 +1,262 @@
+--- a/src/venus/vkr_queue.c
++++ b/src/venus/vkr_queue.c
+@@ -111,36 +111,55 @@
+    return true;
+ }
+ 
++/* VIRUAISOR_DISPLAY_FENCE_LIFETIME: never destroy an in-flight fence. */
++static bool
++vkr_display_fence_create(void *opaque, uintptr_t *handle)
++{
++   struct vkr_queue *queue = opaque;
++   struct vkr_device *dev = queue->device;
++   const VkFenceCreateInfo info = { .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
++   VkFence fence = VK_NULL_HANDLE;
++   if (dev->proc_table.CreateFence(dev->base.handle.device, &info, NULL, &fence) != VK_SUCCESS)
++      return false;
++   *handle = (uintptr_t)fence;
++   return true;
++}
++static bool
++vkr_display_fence_submit(void *opaque, uintptr_t handle)
++{
++   struct vkr_queue *queue = opaque;
++   mtx_lock(&queue->vk_mutex);
++   VkResult result = queue->device->proc_table.QueueSubmit(
++      queue->base.handle.queue, 0, NULL, (VkFence)handle);
++   mtx_unlock(&queue->vk_mutex);
++   return result == VK_SUCCESS;
++}
++static int
++vkr_display_fence_wait(void *opaque, uintptr_t handle, uint64_t timeout_ns)
++{
++   struct vkr_queue *queue = opaque;
++   struct vkr_device *dev = queue->device;
++   VkFence fence = (VkFence)handle;
++   VkResult result = dev->proc_table.WaitForFences(
++      dev->base.handle.device, 1, &fence, VK_TRUE, timeout_ns);
++   return result == VK_SUCCESS ? 1 : result == VK_TIMEOUT ? 0 : -1;
++}
++static void
++vkr_display_fence_destroy(void *opaque, uintptr_t handle)
++{
++   struct vkr_queue *queue = opaque;
++   queue->device->proc_table.DestroyFence(queue->device->base.handle.device,
++                                         (VkFence)handle, NULL);
++}
++static const struct venus_display_fence_ops vkr_display_fence_ops = {
++   vkr_display_fence_create, vkr_display_fence_submit,
++   vkr_display_fence_wait, vkr_display_fence_destroy,
++};
+ int
+ vkr_queue_wait_for_display(struct vkr_queue *queue, uint64_t timeout_ns)
+ {
+-   struct vkr_device *dev = queue->device;
+-   struct vn_device_proc_table *vk = &dev->proc_table;
+-   const VkFenceCreateInfo create_info = {
+-      .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+-   };
+-   VkFence fence = VK_NULL_HANDLE;
+-   VkResult result = vk->CreateFence(dev->base.handle.device,
+-                                     &create_info, NULL, &fence);
+-   if (result != VK_SUCCESS)
+-      return -1;
+-
+-   /* Order this fence after the render submissions already decoded from the
+-    * Venus ring.  Release the queue lock before waiting so new work can be
+-    * submitted and the guest cannot be stalled by display refresh. */
+-   mtx_lock(&queue->vk_mutex);
+-   result = vk->QueueSubmit(queue->base.handle.queue, 0, NULL, fence);
+-   mtx_unlock(&queue->vk_mutex);
+-   if (result == VK_SUCCESS)
+-      result = vk->WaitForFences(dev->base.handle.device, 1, &fence,
+-                                 VK_TRUE, timeout_ns);
+-   vk->DestroyFence(dev->base.handle.device, fence, NULL);
+-
+-   if (result == VK_SUCCESS)
+-      return 1;
+-   if (result == VK_TIMEOUT)
+-      return 0;
+-   return -1;
++   return venus_display_fence_wait(&queue->display_fence, &vkr_display_fence_ops,
++                                    queue, timeout_ns);
+ }
+ 
+ static void
+@@ -165,6 +184,7 @@
+ vkr_queue_destroy(struct vkr_context *ctx, struct vkr_queue *queue)
+ {
+    vkr_queue_sync_thread_fini(queue);
++   venus_display_fence_finish_idle(&queue->display_fence, &vkr_display_fence_ops, queue);
+ 
+    list_del(&queue->base.track_head);
+ 
+--- a/src/venus/vkr_queue.h
++++ b/src/venus/vkr_queue.h
+@@ -19,8 +19,11 @@
+    struct list_head head;
+ };
+ 
++#include "venus_display_fence.h"
++
+ struct vkr_queue {
+    struct vkr_object base;
++   struct venus_display_fence display_fence;
+ 
+    struct vkr_context *context;
+    struct vkr_device *device;
+@@ -49,20 +52,24 @@
+       bool join;
+    } sync_thread;
+ };
++_Static_assert(offsetof(struct vkr_queue, base) == 0, "Vulkan object base ABI");
+ VKR_DEFINE_OBJECT_CAST(queue, VK_OBJECT_TYPE_QUEUE, VkQueue)
+ 
+ struct vkr_fence {
+    struct vkr_object base;
++   struct venus_display_fence display_fence;
+ };
+ VKR_DEFINE_OBJECT_CAST(fence, VK_OBJECT_TYPE_FENCE, VkFence)
+ 
+ struct vkr_semaphore {
+    struct vkr_object base;
++   struct venus_display_fence display_fence;
+ };
+ VKR_DEFINE_OBJECT_CAST(semaphore, VK_OBJECT_TYPE_SEMAPHORE, VkSemaphore)
+ 
+ struct vkr_event {
+    struct vkr_object base;
++   struct venus_display_fence display_fence;
+ };
+ VKR_DEFINE_OBJECT_CAST(event, VK_OBJECT_TYPE_EVENT, VkEvent)
+ 
+--- a/src/venus/vkr_renderer.c
++++ b/src/venus/vkr_renderer.c
+@@ -209,12 +209,12 @@
+    return wait;
+ }
+ 
+-bool
++int
+ vkr_renderer_finish_wait_idle(struct vkr_renderer_wait *wait)
+ {
+    TRACE_FUNC();
+    if (!wait)
+-      return false;
++      return -1;
+ 
+    /* VIRUAISOR_DISPLAY_SYNC_BOUNDED_RING_DRAIN
+     * prepare runs under renderer_mutex, keeping context lookup and ring
+@@ -232,7 +232,7 @@
+          vkr_log("VIRUAISOR_DISPLAY_SYNC_RING_FAILED ctx=%u ring=%" PRIu64
+                  " tail=%u", wait->ctx_id, ring->id, tail);
+          free(wait);
+-         return false;
++         return -1;
+       }
+       if (!drained) {
+          all_rings_drained = false;
+@@ -244,7 +244,7 @@
+ 
+    if (!all_rings_drained) {
+       free(wait);
+-      return true;
++      return 0;
+    }
+ 
+    /* VIRUAISOR_DISPLAY_SYNC_GPU_FENCE: an empty queue submission supplies
+@@ -257,20 +257,20 @@
+       vkr_log("VIRUAISOR_DISPLAY_SYNC_GPU_FAILED ctx=%u queues=%u",
+               wait->ctx_id, queue_count);
+       free(wait);
+-      return false;
++      return -1;
+    }
+    if (!gpu_ready) {
+       vkr_log("VIRUAISOR_DISPLAY_SYNC_GPU_DEFERRED ctx=%u queues=%u",
+               wait->ctx_id, queue_count);
+       free(wait);
+-      return true;
++      return 0;
+    }
+    vkr_log("VIRUAISOR_DISPLAY_SYNC_GPU_READY ctx=%u queues=%u",
+            wait->ctx_id, queue_count);
+    vkr_log("VIRUAISOR_DISPLAY_SYNC_READY ctx=%u rings=%u",
+            wait->ctx_id, wait->ring_count);
+    free(wait);
+-   return true;
++   return 1;
+ }
+ 
+ void
+--- a/src/venus/vkr_renderer.h
++++ b/src/venus/vkr_renderer.h
+@@ -46,7 +46,7 @@
+ struct vkr_renderer_wait *
+ vkr_renderer_prepare_wait_idle(uint32_t ctx_id);
+ 
+-bool
++int
+ vkr_renderer_finish_wait_idle(struct vkr_renderer_wait *wait);
+ 
+ void
+--- a/server/render_state.c
++++ b/server/render_state.c
+@@ -207,7 +207,7 @@
+    return vkr_renderer_submit_cmd(ctx_id, cmd, size);
+ }
+ 
+-bool
++int
+ render_state_wait_idle(uint32_t ctx_id)
+ {
+    struct vkr_renderer_wait *wait;
+--- a/server/render_state.h
++++ b/server/render_state.h
+@@ -26,7 +26,7 @@
+ bool
+ render_state_submit_cmd(uint32_t ctx_id, void *cmd, uint32_t size);
+ 
+-bool
++int
+ render_state_wait_idle(uint32_t ctx_id);
+ 
+ bool
+--- a/server/render_protocol.h
++++ b/server/render_protocol.h
+@@ -206,7 +206,7 @@
+ };
+ 
+ struct render_context_op_wait_idle_reply {
+-   bool ok;
++   int32_t status;
+ };
+ 
+ struct render_context_op_submit_fence_request {
+--- a/server/render_context.c
++++ b/server/render_context.c
+@@ -52,7 +52,7 @@
+                                   UNUSED int fd_count)
+ {
+    const struct render_context_op_wait_idle_reply reply = {
+-      .ok = render_state_wait_idle(ctx->ctx_id),
++      .status = render_state_wait_idle(ctx->ctx_id),
+    };
+    return render_socket_send_reply(&ctx->socket, &reply, sizeof(reply));
+ }
+--- a/src/proxy/proxy_context.c
++++ b/src/proxy/proxy_context.c
+@@ -299,11 +299,11 @@
+    }
+ 
+    struct render_context_op_wait_idle_reply reply;
+-   if (!proxy_socket_receive_reply(&ctx->socket, &reply, sizeof(reply)) || !reply.ok) {
++   if (!proxy_socket_receive_reply(&ctx->socket, &reply, sizeof(reply))) {
+       proxy_log("display synchronization failed for ctx %u", base->ctx_id);
+       return -1;
+    }
+-   return 0;
++   return reply.status > 0 ? 0 : reply.status == 0 ? -EAGAIN : -EIO;
+ }
+ 
+ static int

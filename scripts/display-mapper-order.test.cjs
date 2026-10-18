@@ -38,7 +38,8 @@ test('Android graphics-buffer mapping precedes the generic DMA-BUF fallback', ()
     'device evidence must retain the legacy BLOB mapper identity');
 });
 
-test('strict desktop gates accept the BLAST producer and synchronized mapper fallbacks', () => {
-  assert.match(gate, /path=\(\?:ahb-image-blast\|ahb-image-lock\|ahb-lock\|dmabuf-sync-mmap\)/);
-  assert.match(deviceTest, /path=\(ahb-image-blast\|ahb-image-lock\|ahb-lock\|dmabuf-sync-mmap\)/);
+test('strict desktop gates require direct submission and independent pixel proof', () => {
+  assert.match(gate, /path=root-surface-control cpuCopies=0/);
+  assert.match(gate, /visiblePixels/);
+  assert.match(deviceTest, /assert-surface-pixels\.cjs/);
 });

@@ -32,6 +32,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.foundation.layout.Box
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -71,6 +74,7 @@ import pro.darc.viruaisor.vm.VmService
 import pro.darc.viruaisor.vm.VmStatus
 import pro.darc.viruaisor.vm.VmUiState
 import pro.darc.viruaisor.vm.VmGpuProfile
+import pro.darc.viruaisor.vm.DisplaySize
 import pro.darc.viruaisor.gpu.VenusHostRuntime
 
 class MainActivity : ComponentActivity() {
@@ -135,6 +139,7 @@ class MainActivity : ComponentActivity() {
                             VmService.stopIntent(this),
                         )
                     },
+                    onResize = { size -> ContextCompat.startForegroundService(this,VmService.resizeIntent(this,size)); Unit },
                     onSurfaceReady = {
                         ContextCompat.startForegroundService(
                             this,
@@ -163,6 +168,10 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (fullscreen && VmRuntime.state.value.display.switching) {
+            keyboard.release()
+            return true
+        }
         if (exitQPending && event.keyCode == KeyEvent.KEYCODE_Q) {
             if (event.action == KeyEvent.ACTION_UP) {
                 exitQPending = false
@@ -206,6 +215,10 @@ class MainActivity : ComponentActivity() {
             ACTION_DEBUG_STOP -> ContextCompat.startForegroundService(this, VmService.stopIntent(this))
             ACTION_DEBUG_GRANT_AVF -> AvfPermissionRuntime.grantMissing(this)
             ACTION_DEBUG_ROOT_DISPLAY -> useRootDisplay = true
+            "pro.darc.viruaisor.action.DEBUG_RESIZE" -> {
+                val size = runCatching { DisplaySize(intent.getIntExtra("width",0),intent.getIntExtra("height",0)) }.getOrNull()
+                if (size != null) ContextCompat.startForegroundService(this,VmService.resizeIntent(this,size))
+            }
             ACTION_DEBUG_CONSOLE -> {
                 val encoded = intent.getStringExtra(EXTRA_TEXT_BASE64).orEmpty()
                 val text = String(Base64.decode(encoded, Base64.DEFAULT), Charsets.UTF_8)
@@ -247,6 +260,7 @@ private fun VmScreen(
     onPreparedBundle: (() -> Unit)?,
     onStart: () -> Unit,
     onStop: () -> Unit,
+    onResize: (DisplaySize) -> Unit,
     onSurfaceReady: () -> Unit,
     onSurfaceGone: () -> Unit,
 ) {
@@ -260,6 +274,9 @@ private fun VmScreen(
         onDispose { view.keepScreenOn = previous }
     }
     val context = LocalContext.current
+    val bufferSize = state.bundle?.display?.let { DisplaySize(it.width,it.height) } ?: DisplaySize(1280,720)
+    val guestSize = state.display.presented ?: bufferSize
+    val aspect = guestSize.width.toFloat()/guestSize.height
     val venusHost by VenusHostRuntime.state.collectAsState()
     val venusAvf by VenusHostRuntime.avfState.collectAsState()
     val rootBackend = remember { RootAvfSurfaceBackend(context) }
@@ -292,16 +309,20 @@ private fun VmScreen(
                 VmSurface(
                     modifier = if (fullscreen) Modifier.fillMaxWidth().weight(1f) else Modifier
                         .heightIn(max = 360.dp)
-                        .aspectRatio(DISPLAY_ASPECT_RATIO)
+                        .aspectRatio(aspect)
                         .fillMaxWidth(),
                     backend = if (useRootDisplay) rootBackend else DisplayBackendRegistry.active,
                     fullscreen = fullscreen,
                     onEnterFullscreen = { if (state.isActive) onFullscreen(true) },
                     onReadyChanged = { surfaceReady = it },
+                    guestSize = guestSize,
+                    bufferSize = bufferSize,
+                    inputEnabled = !state.display.switching,
                 )
             }
             if (!fullscreen) {
                 StatusCard(state)
+                if (state.display.modes.isNotEmpty()) ResolutionControl(state,onResize)
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     OutlinedButton(onClick = onChooseBundle, enabled = state.canImport && !venusHost.running && !venusAvf.running) {
                         Text(if (state.bundle == null) "Choose VM bundle" else "Replace VM bundle")
@@ -337,6 +358,25 @@ private fun VmScreen(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun ResolutionControl(state: VmUiState, onResize: (DisplaySize) -> Unit) {
+    var expanded by remember { mutableStateOf(false) }
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Box {
+            OutlinedButton(onClick = { expanded=true }, enabled = !state.display.switching) {
+                Text(if (state.display.switching) "正在切换到 ${state.display.requested}…"
+                    else "分辨率：${state.display.presented ?: state.display.actual}")
+            }
+            DropdownMenu(expanded=expanded,onDismissRequest={expanded=false}) {
+                state.display.modes.forEach { size ->
+                    DropdownMenuItem(text={Text(size.toString())},onClick={expanded=false; onResize(size)})
+                }
+            }
+        }
+        state.display.error?.let { Text(it,color=MaterialTheme.colorScheme.error) }
     }
 }
 
@@ -452,16 +492,24 @@ private fun VmSurface(
     fullscreen: Boolean,
     onEnterFullscreen: () -> Unit,
     onReadyChanged: (Boolean) -> Unit,
+    guestSize: DisplaySize,
+    bufferSize: DisplaySize,
+    inputEnabled: Boolean,
 ) {
     val context = LocalContext.current
     BoxWithConstraints(modifier=modifier.background(Color.Black)) {
-    val fitted=if (maxWidth/maxHeight > DISPLAY_ASPECT_RATIO) Modifier.fillMaxHeight().aspectRatio(DISPLAY_ASPECT_RATIO)
-        else Modifier.fillMaxWidth().aspectRatio(DISPLAY_ASPECT_RATIO)
+    val aspect = guestSize.width.toFloat()/guestSize.height
+    val fitted=if (maxWidth/maxHeight > aspect) Modifier.fillMaxHeight().aspectRatio(aspect)
+        else Modifier.fillMaxWidth().aspectRatio(aspect)
     AndroidView(
         modifier = fitted.align(Alignment.Center),
         factory = {
             DesktopSurfaceView(context).apply {
-                holder.setFixedSize(DISPLAY_WIDTH, DISPLAY_HEIGHT)
+                // The Android parent and virtio touch ABS ranges keep their boot dimensions.
+                // New guest scanouts scale into this space; input uses the confirmed guest mode.
+                holder.setFixedSize(bufferSize.width, bufferSize.height)
+                inputWidth=bufferSize.width
+                inputHeight=bufferSize.height
                 holder.addCallback(object : SurfaceHolder.Callback {
                     override fun surfaceCreated(holder: SurfaceHolder) = Unit
                     override fun surfaceChanged(
@@ -484,6 +532,10 @@ private fun VmSurface(
             }
         },
         update = { view ->
+            if (view.guestWidth != guestSize.width || view.guestHeight != guestSize.height || !inputEnabled) view.releaseInput()
+            view.guestWidth=guestSize.width
+            view.guestHeight=guestSize.height
+            view.inputEnabled=inputEnabled
             view.enterFullscreen = onEnterFullscreen
             if (view.fullscreen != fullscreen) view.fullscreen = fullscreen
         },
@@ -496,9 +548,6 @@ private fun VmSurface(
     }
 }
 
-private const val DISPLAY_WIDTH = 1280
-private const val DISPLAY_HEIGHT = 720
-private const val DISPLAY_ASPECT_RATIO = 16f / 9f
 
 private fun statusLabel(status: VmStatus): String = when (status) {
     VmStatus.Stopped -> "VM stopped"

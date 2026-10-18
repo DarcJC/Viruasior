@@ -2,6 +2,7 @@
 #define VIRUAISOR_DESKTOP_PROTOCOL_H
 
 #include <stdbool.h>
+#include <stdint.h>
 
 struct desktop_operation {
     const char *verb;
@@ -10,5 +11,6 @@ struct desktop_operation {
 };
 
 bool parse_desktop_operation(const char *command, struct desktop_operation *operation);
+bool parse_resize_command(const char *command, uint32_t *width, uint32_t *height);
 
 #endif

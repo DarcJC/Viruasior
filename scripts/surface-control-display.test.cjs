@@ -24,7 +24,7 @@ const desktopSurface = fs.readFileSync(path.join(
   repo, 'app', 'src', 'main', 'java', 'pro', 'darc', 'viruaisor',
   'display', 'DesktopSurfaceView.kt'), 'utf8');
 
-test('root-owned scanout is posted through the visible BLAST producer queue', () => {
+test('root-owned scanout submits the shared AHB through its own visible buffer layer', () => {
   assert.match(display, /#include <android\/surface_control\.h>/);
   assert.match(display, /ASurfaceControl_createFromWindow/);
   assert.match(display, /ASurfaceTransaction_setBuffer/);
@@ -54,7 +54,9 @@ test('root-owned scanout is posted through the visible BLAST producer queue', ()
   assert.match(rootService, /data\.enforceInterface\(FRAME_SINK_DESCRIPTOR\)/,
     'the Java frame sink must consume the token emitted by AIBinder_prepareTransaction');
   assert.match(rootService, /HardwareBuffer\.CREATOR\.createFromParcel\(data\)/);
-  assert.match(rootService, /owned\.present\(buffer\)/);
+  assert.match(rootService, /owned\.present\(buffer,/);
+  assert.match(rootService, /sendBufferRelease/);
+  assert.match(rootSurface, /setBuffer\(child, buffer, null, onRelease\)/);
   assert.match(rootSurface,
     /setName\("ViruaisorRootDisplayProducer"\)[\s\S]*api\.create\(producerControl, width, height\)/,
     'the BLAST producer must use a layer separate from the direct-buffer fallback');
@@ -64,11 +66,11 @@ test('root-owned scanout is posted through the visible BLAST producer queue', ()
     /private val producerControl: SurfaceControl/,
     'the root-owned surface must retain the BLAST producer layer');
   assert.match(rootSurface,
-    /setVisibility\(producerControl, true\)/,
-    'the layer receiving ANativeWindow posts must be visible');
+    /setVisibility\(producerControl, false\)/,
+    'the unused producer must not cover the directly submitted AHB');
   assert.match(rootSurface,
-    /setVisibility\(child, false\)/,
-    'the stale direct-buffer fallback must not cover the BLAST producer');
+    /setVisibility\(child, true\)/,
+    'the directly submitted AHB must be visible');
   assert.match(rootSurface,
     /getMethod\([\s\S]*"setTrustedOverlay", SurfaceControl::class\.java, Boolean::class\.javaPrimitiveType/,
     'the root-owned top layer must be trusted so Android forwards touches to the app window');
@@ -82,9 +84,6 @@ test('root-owned scanout is posted through the visible BLAST producer queue', ()
   const acquire = flip.indexOf('viruaisor_ahb_acquire_from_fd');
   const submit = flip.indexOf('presentHardwareBufferLocked', acquire);
   const cpuLock = flip.indexOf('AHardwareBuffer_lock', acquire);
-  assert.ok(acquire >= 0 && cpuLock > acquire && submit > cpuLock,
-    'the synchronized BLAST producer path must run before direct-buffer fallback');
-  assert.match(flip.slice(acquire, submit),
-    /root_producer[\s\S]*AHardwareBuffer_lock/,
-    'a root-owned surface must map and post through its producer queue');
+  assert.ok(acquire >= 0 && submit > acquire && cpuLock > submit,
+    'direct submission must precede every CPU mapping fallback');
 });

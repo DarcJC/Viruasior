@@ -48,9 +48,18 @@ assert.match(rutabagaCoreSource,
 assert.match(virglRendererSource,
   /fn display_flush\(&self\)[\s\S]*virgl_renderer_context_wait_idle/,
   'missing Venus renderer idle synchronization');
-const syncIndex = scanoutSource.indexOf('rutabaga.display_flush()?');
+const syncIndex = scanoutSource.indexOf('rutabaga.display_flush()');
 const flipIndex = scanoutSource.indexOf('.flip_to(surface_id, import_id');
 assert.ok(syncIndex >= 0 && flipIndex > syncIndex,
   'Venus display synchronization must complete before scanout flip');
+if (scanoutSource.includes('VIRUAISOR_SCANOUT_IMPORT_GENERATION')) {
+  assert.match(scanoutSource,/owner_surface == surface_id/);
+}
+if (scanoutSource.includes('VIRUAISOR_DISPLAY_IMPORT_RELEASE')) {
+  assert.match(displaySource,/fn release_import\(&mut self, import_id: u32, surface_id: u32\)/,
+    'DisplayT passes import id first, surface id second');
+}
+assert.equal((scanoutSource.match(/rutabaga\.display_flush\(\)/g)||[]).length,1,
+  'incremental patch application must not duplicate the blocking renderer synchronization');
 
 console.log('PASS: crosvm scanout synchronizes Venus before traced Android display flips');

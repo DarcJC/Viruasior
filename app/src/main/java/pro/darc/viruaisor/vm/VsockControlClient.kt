@@ -28,7 +28,16 @@ class VsockControlClient(private val engine: AvfVmEngine) {
     fun stopDesktop(port: Long, profile: VmGpuProfile) =
         request(port, GuestDesktopProtocol.stop(profile))
 
+    fun displayModes(port: Long) = GuestDisplayProtocol.parseModes(exchange(port, "DISPLAY_MODES", 12_000))
+
+    fun resize(port: Long, size: DisplaySize) =
+        GuestDisplayProtocol.validateResize(exchange(port, GuestDisplayProtocol.resize(size), 12_000), size)
+
     private fun request(port: Long, command: String, timeoutMillis: Int = COMMAND_TIMEOUT_MS) {
+        GuestControlProtocol.validateResponse(exchange(port, command, timeoutMillis))
+    }
+
+    private fun exchange(port: Long, command: String, timeoutMillis: Int): String? {
         val descriptor = engine.connectVsock(port)
         try {
             GuestControlProtocol.validateGreeting(readLine(descriptor, timeoutMillis))
@@ -39,8 +48,9 @@ class VsockControlClient(private val engine: AvfVmEngine) {
                 check(written > 0) { "Guest control command write returned $written" }
                 offset += written
             }
-            GuestControlProtocol.validateResponse(readLine(descriptor, timeoutMillis))
+            val response = readLine(descriptor, timeoutMillis)
             descriptor.close()
+            return response
         } catch (error: Throwable) {
             runCatching { descriptor.close() }
             throw error
@@ -90,7 +100,7 @@ class VsockControlClient(private val engine: AvfVmEngine) {
         const val READY = "READY"
         const val SHUTDOWN = "SHUTDOWN"
         const val COMMAND_TIMEOUT_MS = 15_000
-        const val MAX_REPLY_BYTES = 256
+        const val MAX_REPLY_BYTES = 2048
     }
 }
 

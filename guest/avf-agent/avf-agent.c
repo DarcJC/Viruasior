@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include <errno.h>
+#include <fcntl.h>
 #include <linux/vm_sockets.h>
 #include <signal.h>
 #include <stdbool.h>
@@ -62,6 +63,44 @@ static void trim(char *command) {
     command[strcspn(command, "\r\n")] = '\0';
 }
 
+static void display_control(int client, const char *verb, uint32_t width, uint32_t height) {
+    int output[2];
+    if (pipe2(output,O_CLOEXEC)) { reply(client,"ERROR display-control\n"); return; }
+    pid_t child=fork();
+    if (child==0) {
+        dup2(output[1],STDOUT_FILENO);
+        close(output[0]); close(output[1]);
+        close(client);
+        char w[16],h[16];
+        snprintf(w,sizeof(w),"%u",width); snprintf(h,sizeof(h),"%u",height);
+        if (strcmp(verb,"QUERY")==0)
+            execl("/usr/sbin/runuser","runuser","-u","droid","--","/usr/bin/timeout","10",
+                  "/opt/viruaisor/display-control.py","QUERY",(char *)NULL);
+        else
+            execl("/usr/sbin/runuser","runuser","-u","droid","--","/usr/bin/timeout","10",
+                  "/opt/viruaisor/display-control.py","RESIZE",w,h,(char *)NULL);
+        _exit(127);
+    }
+    close(output[1]);
+    if (child<0) { close(output[0]); reply(client,"ERROR display-control\n"); return; }
+    char response[2048]={0};
+    size_t used=0;
+    ssize_t count;
+    while (used<sizeof(response)-1) {
+        count=read(output[0],response+used,sizeof(response)-1-used);
+        if (count<0 && errno==EINTR) continue;
+        if (count<=0) break;
+        used+=(size_t)count;
+    }
+    close(output[0]);
+    int status=0;
+    while (waitpid(child,&status,0)<0) { if (errno!=EINTR) { status=-1; break; } }
+    if (status==0 && used>0 && response[used-1]=='\n' &&
+        strncmp(response,"OK ",3)==0 && strchr(response,'\n')==response+used-1)
+        reply(client,response);
+    else reply(client,"ERROR display-control\n");
+}
+
 static void handle_client(int fd) {
     char command[MAX_COMMAND] = {0};
     reply(fd, "READY\n");
@@ -81,9 +120,12 @@ static void handle_client(int fd) {
     } else if (parse_desktop_operation(command, &desktop)) {
         if (systemctl(desktop.verb, desktop.unit, desktop.no_block) == 0) reply(fd, "OK\n");
         else reply(fd, "ERROR systemctl\n");
+    } else if (strcmp(command, "DISPLAY_MODES") == 0) {
+        display_control(fd,"QUERY",0,0);
     } else if (strncmp(command, "RESIZE ", 7) == 0) {
-        /* Display plumbing is outside the headless MVP. Keep the protocol stable. */
-        reply(fd, "ERROR display-unavailable\n");
+        uint32_t width=0,height=0;
+        if (parse_resize_command(command,&width,&height)) display_control(fd,"RESIZE",width,height);
+        else reply(fd,"ERROR invalid-resolution\n");
     } else {
         reply(fd, "ERROR unknown-command\n");
     }

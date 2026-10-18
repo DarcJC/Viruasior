@@ -10,6 +10,8 @@ REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 export MSYS_NO_PATHCONV=1
 OUT=".pi/device-debug/root-direct-$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$OUT"
+OUT=$(cd "$OUT" && pwd -P)
+if [[ "$(uname -s)" == MINGW* ]]; then OUT=$(cygpath -m "$OUT"); fi
 if $ADB shell ps -A | grep -q 'crosvm'; then
     echo "FAIL: an existing crosvm may own the global display; stop it before this single-VM test" >&2
     exit 1
@@ -40,6 +42,9 @@ if ! awk '
 fi
 START=$($ADB shell "date '+%m-%d %H:%M:%S.000'" | tr -d '\r')
 $ADB shell 'getenforce; settings get global hidden_api_policy; settings get global hidden_api_blacklist_exemptions' > "$OUT/policy-before.txt"
+$ADB logcat -v threadtime -T "$START" -s ViruaisorRootDisplay ViruaisorState ViruaisorVenusDisplay ViruaisorVenusRenderer ViruaisorVenusDesktop ViruaisorDisplay virtmgr crosvm > "$OUT/logcat-live.txt" &
+recorder=$!
+trap 'kill "$recorder" 2>/dev/null || true; wait "$recorder" 2>/dev/null || true' EXIT
 
 # A prepared app with root, AVF grants and an imported bundle is required. Never modify policy.
 # Replace a stale task base intent so a process restart cannot replay an earlier
@@ -50,10 +55,13 @@ $ADB shell am start -W -f 0x20000000 -n pro.darc.viruaisor/.MainActivity \
     -a pro.darc.viruaisor.action.DEBUG_START
 
 capture() {
-    $ADB logcat -d -T "$START" -b all > "$OUT/logcat.txt"
+    cp "$OUT/logcat-live.txt" "$OUT/logcat.txt"
     $ADB shell 'getenforce; settings get global hidden_api_policy; settings get global hidden_api_blacklist_exemptions' > "$OUT/policy-after.txt"
     $ADB shell 'ps -AZ | grep -E "viruaisor|crosvm|virtualization"' > "$OUT/processes.txt" || true
+    $ADB shell dumpsys SurfaceFlinger > "$OUT/surfaceflinger.txt"
     $ADB exec-out screencap -p > "$OUT/screen.png"
+    $ADB shell uiautomator dump /sdcard/Android/data/pro.darc.viruaisor/files/viruaisor-frame.xml >/dev/null
+    $ADB pull /sdcard/Android/data/pro.darc.viruaisor/files/viruaisor-frame.xml "$OUT/frame-ui.xml" >/dev/null
 }
 
 attached=false
@@ -63,10 +71,10 @@ plasma=false
 frame=false
 synced=false
 nonblack=false
-fatal_pattern='bootstrap failed|binding timed out|attach failed|operation exceeded|status=Crashed|GPU_DRAW_READBACK_FAIL|VIRUAISOR_DISPLAY_SYNC_(RING|DEVICE)_FAILED|Plasma session did not confirm disabled KWin compositing|MESA: error: ZINK: .* failed|AddScreen/ScreenInit failed|failed to bind extensions|couldn.t get display device|glamor initialization failed'
+fatal_pattern='bootstrap failed|binding timed out|attach failed|operation exceeded|status=Crashed|GPU_DRAW_READBACK_FAIL|DIRECT_SCANOUT_FALLBACK|cpuCopies=[1-9]|VIRUAISOR_DISPLAY_SYNC_(RING|DEVICE)_FAILED|Plasma session did not confirm KWin OpenGL|MESA: error: ZINK: .* failed|AddScreen/ScreenInit failed|failed to bind extensions|couldn.t get display device|glamor initialization failed'
 deadline=$((SECONDS + TIMEOUT))
 while (( SECONDS < deadline )); do
-    $ADB logcat -d -T "$START" -s ViruaisorRootDisplay ViruaisorState ViruaisorVenusDisplay ViruaisorVenusRenderer virtmgr > "$OUT/progress.txt"
+    cp "$OUT/logcat-live.txt" "$OUT/progress.txt"
     if grep -Eq "$fatal_pattern" "$OUT/progress.txt"; then
         capture
         echo "FAIL: root display/VM error. Evidence: $OUT" >&2
@@ -77,22 +85,14 @@ while (( SECONDS < deadline )); do
     if grep -q 'GPU_DRAW_READBACK_PASS' "$OUT/progress.txt"; then gpu=true; fi
     if grep -q 'VIRUAISOR_PLASMA_HARDWARE_READY=true' "$OUT/progress.txt"; then
         plasma=true
-        # This marker is emitted only after the service's Venus draw preflight
-        # passed and Plasma confirmed the no-compositor policy.
+        # Requires the Venus draw preflight and active KWin OpenGL.
         desktop=true
     fi
     if grep -Eq 'FRAME_POSTED count=[1-9][0-9]*' "$OUT/progress.txt"; then frame=true; fi
     if awk '
         /VIRUAISOR_PLASMA_HARDWARE_READY=true/ { ready=1 }
         ready && /VIRUAISOR_DISPLAY_SYNC_READY/ && /rings=[1-9][0-9]*/ && $0 !~ /devices=/ { sync=1 }
-        ready && sync && /FRAME_SOURCE .*path=(ahb-image-blast|ahb-image-lock|ahb-lock|dmabuf-sync-mmap)/ {
-            colored=opaque=0
-            for (i=1; i<=NF; i++) {
-                if ($i ~ /^colored=/) { split($i,a,"="); colored=a[2]+0 }
-                if ($i ~ /^opaque=/) { split($i,a,"="); opaque=a[2]+0 }
-            }
-            if (colored >= 6000 && opaque >= 500000) { found=1; exit }
-        }
+        ready && sync && /FRAME_POSTED .*path=root-surface-control cpuCopies=0/ { found=1; exit }
         END { exit !found }
     ' "$OUT/progress.txt"; then
         synced=true
@@ -105,14 +105,21 @@ while (( SECONDS < deadline )); do
             exit 1
         fi
         grep -q 'Enforcing' "$OUT/policy-after.txt" || { echo "FAIL: SELinux not Enforcing" >&2; exit 1; }
-        if ! (cd "$REPO" && "$NODE" scripts/assert-manjaro-desktop.cjs -) \
+        token=$(sed -n 's/.*DESKTOP_LEASE_READY token=\([0-9a-f]\{32\}\).*/\1/p' "$OUT/logcat.txt" | tail -1)
+        if ! (cd "$REPO" && "$NODE" scripts/assert-surface-pixels.cjs "$OUT/screen.png" "$OUT/frame-ui.xml" "$token" "$OUT/surfaceflinger.txt") > "$OUT/frame-report.json"; then
+            # KWin can become active before Plasma finishes drawing its wallpaper.
+            # Keep the original bounded deadline and require real pixels on a later frame.
+            sleep 1
+            continue
+        fi
+        if ! (cd "$REPO" && "$NODE" scripts/assert-manjaro-desktop.cjs - "$OUT/frame-report.json") \
             < "$OUT/logcat.txt" > "$OUT/manjaro-desktop-report.json"; then
             cat "$OUT/manjaro-desktop-report.json" >&2
             echo "FAIL: strict Manjaro/Venus desktop evidence did not pass. Evidence: $OUT" >&2
             exit 1
         fi
-        echo "PASS: Venus shader readback, stable Plasma no-compositor session, renderer synchronization and a post-ready non-black Direct Surface frame verified; policy snapshot unchanged."
-        echo "VISUAL CHECK REQUIRED: inspect $OUT/screen.png for the expected Plasma desktop."
+        echo "PASS: KWin OpenGL, direct AHB, renderer synchronization and a post-ready non-black Direct Surface frame verified; policy snapshot unchanged."
+        echo "VISUAL CHECK REQUIRED: verify physical panel colours too; screenshots cannot detect HWC green output."
         echo "Evidence: $OUT"
         exit 0
     fi

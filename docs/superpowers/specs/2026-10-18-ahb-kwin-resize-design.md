@@ -1,6 +1,6 @@
 # AHB 直接提交、KWin OpenGL 与运行时分辨率切换
 
-日期：2026-10-18。状态：用户已批准，实施中。
+日期：2026-10-18。状态：已实施；设备验证见 [验收记录](../../ahb-kwin-resize-validation.md)。
 
 ## 目标
 
@@ -64,7 +64,7 @@
 - 建议 mode 查询回复为有界单行：`OK MODES currentWidth currentHeight width1 height1 ...`；`RESIZE` 在 XRandR 确认实际尺寸后返回 `OK SIZE width height`。未支持的 mode、桌面未就绪和超时返回明确错误。现有 START/STOP/READY 协议保持兼容。
 - guest modeset 后，crosvm 按实际新 scanout 尺寸重建 native 资源；资源销毁与 Android UI 接入寿命分离，保持当前有效 window/sink。新尺寸首帧附带 session/generation 信息传到 app。
 - helper 的 source bounds 采用实际 AHB 尺寸，destination 始终落在当前 SurfaceView parent 的坐标范围内；避免旧 crop 截断新帧或重复缩放。必要的 queue update 只更新自有 BLAST queue。
-- app 在确认新尺寸/首帧后统一更新显示比例、holder 尺寸和触摸/绝对指针映射。切换期间释放活动触点和按键；输入暂停到新几何生效，避免旧尺寸坐标送入新桌面。
+- holder 和 virtio ABS 输入范围保持启动尺寸，避免每次 modeset 重启 helper；新帧按实际 AHB source 裁剪并缩放到固定 parent。app 确认新尺寸后更新显示比例和相对鼠标比例，触摸归一化到固定 ABS 范围，再由客体映射到当前输出。切换期间释放活动触点和按键，暂停输入直到新几何生效。
 - 快速连续请求只保留最新目标；失败保持或恢复已确认 mode，并报告实际尺寸。detach/recreate 使用新 generation，拒绝旧请求、旧帧和迟到的回调。
 - 沿用现有上限：每边不超过 4096、总像素不超过 4,194,304；新旧分辨率合计 in-flight 分配也受有界预算控制。实际可选 mode 以 guest 查询结果为准，不承诺任意 modeline。
 

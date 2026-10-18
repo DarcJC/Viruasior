@@ -89,6 +89,7 @@ static int venus_gralloc_allocate_rgba_image(uint32_t width, uint32_t height,
         .width=width, .height=height, .layers=layers,
         .format=AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM,
         .usage=AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE |
+               AHARDWAREBUFFER_USAGE_COMPOSER_OVERLAY |
                AHARDWAREBUFFER_USAGE_GPU_FRAMEBUFFER |
                AHARDWAREBUFFER_USAGE_CPU_READ_OFTEN |
                AHARDWAREBUFFER_USAGE_CPU_WRITE_RARELY,

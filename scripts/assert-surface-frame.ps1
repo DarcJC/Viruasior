@@ -42,23 +42,9 @@ try {
     if ($p.ExitCode -ne 0) { throw $stderr.Result }
 } finally { $p.Dispose() }
 
-Add-Type -AssemblyName System.Drawing
-$bitmap = New-Object System.Drawing.Bitmap($imagePath)
-$lit = 0
-try {
-    if ($coords[0] -lt 0 -or $coords[1] -lt 0 -or $coords[2] -gt $bitmap.Width -or $coords[3] -gt $bitmap.Height) {
-        throw 'UI bounds exceed screenshot; retry after layout settles'
-    }
-    for ($iy = 1; $iy -le 20; $iy++) {
-        for ($ix = 1; $ix -le 20; $ix++) {
-            # Central 80% avoids edges, shadows and navigation-bar clipping.
-            $x = $coords[0] + [int](($coords[2]-$coords[0])*(0.1+0.8*$ix/21))
-            $y = $coords[1] + [int](($coords[3]-$coords[1])*(0.1+0.8*$iy/21))
-            $pixel = $bitmap.GetPixel($x, $y)
-            if ([int]$pixel.R + [int]$pixel.G + [int]$pixel.B -gt 12) { $lit++ }
-        }
-    }
-} finally { $bitmap.Dispose() }
-Write-Output "Surface bounds=$($surface.bounds); non-black samples=$lit/400; evidence=$imagePath"
-if ($lit -lt 4) { Write-Output 'RED: Surface viewport is black'; exit 1 }
-Write-Output 'GREEN: Non-black Surface content; inspect the image to confirm guest frames, not just attachment'
+$report = & node (Join-Path $repo 'scripts/assert-surface-pixels.cjs') $imagePath $xmlPath
+$verdict = $LASTEXITCODE
+$report | Set-Content -Encoding utf8 (Join-Path $output 'frame-report.json')
+Write-Output $report
+Write-Output "Evidence=$imagePath; physical panel colours still require visual verification"
+exit $verdict

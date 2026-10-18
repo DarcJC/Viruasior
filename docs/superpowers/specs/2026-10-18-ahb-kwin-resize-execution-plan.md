@@ -2,6 +2,8 @@
 
 Approved design: [2026-10-18-ahb-kwin-resize-design.md](2026-10-18-ahb-kwin-resize-design.md).
 
+Completed on 2026-10-18. See [device validation, performance and limitations](../../ahb-kwin-resize-validation.md).
+
 1. Capture the existing visible CPU-copy desktop and preserve rollback artifacts.
 2. Add red regressions for direct submission, attachment preservation, composer usage,
    pending GPU fences, supported display modes, resize validation and rollback.

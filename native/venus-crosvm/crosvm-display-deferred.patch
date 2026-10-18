@@ -1,0 +1,18 @@
+--- a/devices/src/virtio/gpu/virtio_gpu.rs
++++ b/devices/src/virtio/gpu/virtio_gpu.rs
+@@ -414,7 +414,14 @@
+         if let Some(import_id) =
+             VirtioGpuScanout::import_resource_to_display(display, surface_id, resource, rutabaga)
+         {
+-            rutabaga.display_flush()?;
++            match rutabaga.display_flush() {
++                Ok(()) => {}
++                Err(rutabaga_gfx::RutabagaError::ComponentError(code)) if code == -libc::EAGAIN => {
++                    // GPU/ring work is pending. Keep the last completed frame.
++                    return Ok(OkNoData);
++                }
++                Err(error) => return Err(ErrRutabaga(error)),
++            }
+             info!(
+                 "VIRUAISOR_SCANOUT_FLIP resource_id={} surface_id={} import_id={} width={} height={}",
+                 resource.resource_id, surface_id, import_id, self.width, self.height
