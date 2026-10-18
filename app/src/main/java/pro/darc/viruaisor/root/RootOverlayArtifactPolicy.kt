@@ -9,7 +9,7 @@ internal object RootOverlayArtifactPolicy {
     const val CANDIDATE_SHA256 = "a4a71002533174408d0acdbfe3d4980482087bc9a29d0428ac423579bce9029b"
     const val CANDIDATE_BYTES = 13277408L
     const val DESKTOP_LIBRARY = "libvenus_desktop_crosvm.so"
-    const val DESKTOP_SHA256 = "81d45ebb8a55a5f212be3a76ce3da1a78dc3b68f0d5f718f27b22844a0bfae5b"
+    const val DESKTOP_SHA256 = "0302b363b9e9cfa434cf86f5cfda7a57b84fa69ea8f7b20af6a647def252470a"
     const val DESKTOP_BYTES = 14116096L
     fun enforceDesktopCandidate(hash: String, bytes: Long, owner: Int, mode: Int) {
         if (hash != DESKTOP_SHA256 || bytes != DESKTOP_BYTES || owner !in setOf(0,1000) ||

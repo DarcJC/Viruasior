@@ -1,0 +1,188 @@
+--- a/src/venus/vkr_device_memory.c
++++ b/src/venus/vkr_device_memory.c
+@@ -78,6 +78,42 @@
+       AHardwareBuffer_acquire(buffer);
+    pthread_mutex_unlock(&viruaisor_ahb_registry_mutex);
+    return buffer;
++}
++
++/* VIRUAISOR_AHB_RESOURCE_LIFETIME: a guest DMA-BUF outlives VkDeviceMemory.
++ * Keep both the AHB and its lookup entry until every exported resource is gone. */
++bool
++viruaisor_ahb_resource_acquire(int fd, void **out_buffer)
++{
++   *out_buffer = NULL;
++   struct stat st;
++   if (fd < 0 || fstat(fd, &st))
++      return false;
++   pthread_mutex_lock(&viruaisor_ahb_registry_mutex);
++   AHardwareBuffer *buffer = venus_ahb_registry_find(
++      viruaisor_ahb_registry, VIRUAISOR_AHB_REGISTRY_CAPACITY,
++      (uint64_t)st.st_dev, (uint64_t)st.st_ino);
++   bool retained = true;
++   if (buffer) {
++      retained = venus_ahb_registry_add(
++         viruaisor_ahb_registry, VIRUAISOR_AHB_REGISTRY_CAPACITY,
++         (uint64_t)st.st_dev, (uint64_t)st.st_ino, buffer);
++      if (retained) {
++         AHardwareBuffer_acquire(buffer);
++         *out_buffer = buffer;
++      }
++   }
++   pthread_mutex_unlock(&viruaisor_ahb_registry_mutex);
++   return retained;
++}
++
++void
++viruaisor_ahb_resource_release(int fd, void *buffer)
++{
++   if (!buffer)
++      return;
++   viruaisor_ahb_unregister(fd, buffer);
++   AHardwareBuffer_release(buffer);
+ }
+ 
+ #include "venus_log_policy.h"
+--- a/src/venus/vkr_context.h
++++ b/src/venus/vkr_context.h
+@@ -32,6 +32,9 @@
+    } u;
+ 
+    size_t size;
++#ifdef __ANDROID__
++   void *android_buffer;
++#endif
+ };
+ 
+ enum vkr_context_validate_level {
+--- a/src/venus/vkr_context.c
++++ b/src/venus/vkr_context.c
+@@ -35,6 +35,9 @@
+ #include "vkr_render_pass.h"
+ #include "vkr_ring.h"
+ #include "vkr_transport.h"
++#ifdef __ANDROID__
++#include "venus_ahb_registry.h"
++#endif
+ 
+ void
+ vkr_context_add_instance(struct vkr_context *ctx,
+@@ -195,6 +198,10 @@
+ vkr_context_free_resource(struct hash_entry *entry)
+ {
+    struct vkr_resource *res = entry->data;
++#ifdef __ANDROID__
++   if (res->android_buffer)
++      viruaisor_ahb_resource_release(res->u.fd, res->android_buffer);
++#endif
+    if (res->fd_type == VIRGL_RESOURCE_FD_SHM)
+       munmap(res->u.data, res->size);
+    else if (res->u.fd >= 0)
+@@ -243,6 +250,14 @@
+    res->res_id = res_id;
+    res->fd_type = fd_type;
+    res->size = blob_size;
++#ifdef __ANDROID__
++   res->android_buffer = NULL;
++   if (fd_type == VIRGL_RESOURCE_FD_DMABUF && fd >= 0 &&
++       !viruaisor_ahb_resource_acquire(fd, &res->android_buffer)) {
++      free(res);
++      return false;
++   }
++#endif
+ 
+    /* fd and mmap_ptr cannot be valid at the same time, but allowed to be -1 and NULL */
+    assert(fd < 0 || !mmap_ptr);
+@@ -252,6 +267,9 @@
+       res->u.fd = fd;
+ 
+    if (!vkr_context_add_resource(ctx, res)) {
++#ifdef __ANDROID__
++      viruaisor_ahb_resource_release(fd, res->android_buffer);
++#endif
+       free(res);
+       return false;
+    }
+@@ -339,7 +357,7 @@
+ 
+    /* Resource creation runs on the server thread while vkFreeMemory can run on
+     * a ring thread. Keep the object table lock until independent fd copies
+-    * have been made so vkFreeMemory cannot release the backing allocation.
++    * and resource-owned AHB references retain the backing allocation.
+     */
+    mtx_lock(&ctx->object_mutex);
+    const struct hash_entry *entry = _mesa_hash_table_search(ctx->object_table, &blob_id);
+@@ -365,7 +383,7 @@
+     */
+    const bool might_export = mem->might_export;
+    int res_fd = -1;
+-   if (might_export) {
++   if (might_export || mem->android_buffer) {
+       res_fd = os_dupfd_cloexec(blob.u.fd);
+       if (res_fd < 0) {
+          const int dup_errno = errno;
+@@ -377,10 +395,14 @@
+          return false;
+       }
+    }
++   /* Preserve the allocation until the context resource has acquired its AHB
++    * reference. This also bridges the server-thread fd reply to the global
++    * virgl_resource, which independently retains the AHB on receipt. */
++   const bool imported = vkr_context_import_resource_internal(
++      ctx, res_id, blob_size, blob.type, res_fd, NULL);
+    mtx_unlock(&ctx->object_mutex);
+ 
+-   if (!vkr_context_import_resource_internal(ctx, res_id, blob_size, blob.type, res_fd,
+-                                             NULL)) {
++   if (!imported) {
+       vkr_log("VIRUAISOR_BLOB_EXPORT_REJECT res=%u blob=%" PRIu64
+               " reason=resource-table fd=%d retained=%d", res_id, blob_id,
+               blob.u.fd, res_fd);
+--- a/src/virgl_resource.h
++++ b/src/virgl_resource.h
+@@ -86,6 +86,9 @@
+    /* valid fd or handle type: */
+    enum virgl_resource_fd_type fd_type;
+    int fd;
++#ifdef __ANDROID__
++   void *android_buffer;
++#endif
+ 
+    /**
+     * For fd_type==VIRGL_RESOURCE_OPAQUE_HANDLE, the id of the context
+--- a/src/virgl_resource.c
++++ b/src/virgl_resource.c
+@@ -35,6 +35,9 @@
+ #include "util/u_pointer.h"
+ #include "virgl_util.h"
+ #include "virgl_context.h"
++#if defined(__ANDROID__) && defined(ENABLE_VENUS)
++#include "venus/venus_ahb_registry.h"
++#endif
+ 
+ static struct util_hash_table *virgl_resource_table;
+ static struct virgl_resource_pipe_callbacks pipe_callbacks;
+@@ -44,6 +47,9 @@
+ {
+    struct virgl_resource *res = (struct virgl_resource *)val;
+ 
++#if defined(__ANDROID__) && defined(ENABLE_VENUS)
++   viruaisor_ahb_resource_release(res->fd, res->android_buffer);
++#endif
+    if (res->pipe_resource)
+       pipe_callbacks.unref(res->pipe_resource, pipe_callbacks.data);
+    if ((res->fd_type != VIRGL_RESOURCE_FD_INVALID) &&
+@@ -151,6 +157,13 @@
+    res->fd_type = fd_type;
+    /* take ownership */
+    res->fd = fd;
++#if defined(__ANDROID__) && defined(ENABLE_VENUS)
++   if (fd_type == VIRGL_RESOURCE_FD_DMABUF &&
++       !viruaisor_ahb_resource_acquire(fd, &res->android_buffer)) {
++      virgl_resource_remove(res_id);
++      return NULL;
++   }
++#endif
+ 
+    res->iov = iov;
+    res->iov_count = iov_count;

@@ -306,3 +306,39 @@ library in both runs, while KWin's mapped library confirms the intended change.
 This does not establish an X11 performance gain or explain the change in native
 cadence relative to earlier runs; retain the patch for the reproduced Xwayland
 export repair, not as a queue or X11 performance optimization.
+
+## Exported AHB lifetime regression (2026-10-19)
+
+An experimental partial-repaint Wayland run reached 81.35 fps at native
+resolution, but its p95/p99 regressed to 24.99/25.01 ms (344 intervals over 20 ms).
+The subsequent mode query exposed a separate crash: KWin imported a 1×1 image
+after its short-lived exporting client exited. The AHB registry entry had been
+removed with the exporting Vulkan memory, although the guest still held the
+exported DMA-BUF. The fallback raw-fd allocation returned
+`VK_ERROR_INVALID_EXTERNAL_HANDLE`, and KWin subsequently exited with status 134.
+The attempted 1920 sample failed the visible-motion check and was not measured.
+
+`ahb_lifetime_guest_probe.c` reproduces the lifetime bug independently of KWin
+and partial repainting, with separate Vulkan producer and consumer instances.
+Keeping the producer alive passes; destroying it before importing the same
+exported fd reproduces a fatal Venus ring error. The fix reference-counts registry
+ownership and retains AHB references in both the server's context resource and
+the global exported resource. The object-table lock covers the handoff from
+Vulkan memory to the server resource; each resource releases its registration
+and AHB before closing its fd, including resource-table insertion failures.
+No GPU fences are removed.
+
+The registry lifetime test fails before the repair and passes afterward with
+AddressSanitizer/UndefinedBehaviorSanitizer, including last-owner removal,
+identity mismatch, slot reuse and reference-count overflow. On the installed
+runtime, the producer-alive control and producer-exited regression both pass.
+Two additional batches of 16 producer-exited runs all pass; sampled runtime fd
+counts remain in the 926–935 range rather than growing with each run. All four
+existing guest image-layout checks also pass. Android unit tests, native build,
+APK build and packaged artifact verification pass. The runtime is 14,116,096
+bytes, SHA-256
+`0302b363b9e9cfa434cf86f5cfda7a57b84fa69ea8f7b20af6a647def252470a`.
+
+The production X11 desktop still uses hardware OpenGL, with Xorg/KWin on large
+cores 4–7 and Plasma unrestricted. Partial repainting remains experimental and
+is not retained as a production optimization on the strength of its average fps.

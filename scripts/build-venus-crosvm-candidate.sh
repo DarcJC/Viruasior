@@ -217,6 +217,7 @@ if [[ ${VENUS_CROSVM_IMPORT_FILTER:-0} == 1 ]]; then
     apply_renderer_patch android-allocation-quiet-trace VIRUAISOR_ALLOCATION_QUIET_TRACE src/venus/vkr_device_memory.c
     apply_renderer_patch android-ahb-bind-contract VIRUAISOR_AHB_BIND_CONTRACT src/venus/vkr_image.c
     apply_renderer_patch android-ahb-layout-requirements VIRUAISOR_AHB_LAYOUT_REQUIREMENTS src/venus/vkr_image.c
+    apply_renderer_patch android-ahb-resource-lifetime VIRUAISOR_AHB_RESOURCE_LIFETIME src/venus/vkr_device_memory.c
     apply_renderer_patch android-display-batch-sync virgl_renderer_context_wait_idle_begin src/virglrenderer.c
     gcc -Wall -Wextra -Werror "$repo/native/venus-crosvm/venus_import_memory_policy_test.c" -o /tmp/viruaisor-venus-import-policy-test
     /tmp/viruaisor-venus-import-policy-test
