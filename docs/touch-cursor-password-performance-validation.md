@@ -439,3 +439,61 @@ depend on a private ABI, and still fail the frame-interval criterion. Default X1
 startup is retained. The next investigation is the timing of application-owned
 Surface submissions and how producer completion relates to actual presentation,
 without dropping producer/consumer synchronization or modifying Android globally.
+
+## Retained Surface property submission optimization (2026-10-19)
+
+`RootOwnedSurface.present()` previously submitted geometry, crop, colour transform,
+corner radius, trust, layer order and visibility on every buffer. The candidate
+initializes fixed properties on the first frame and updates geometry/crop only
+when the guest size changes. Every frame still submits its original AHB and real
+release callback immediately; producer waits and consumer release fences are
+unchanged. The submitted-size cache advances only after `apply()` succeeds.
+Reattachment creates a new layer and initializes its complete state again.
+
+The same X11 moving-colour-window workload was tested in fullscreen, with a
+nominal 60-second unique own-Surface presentation capture and real RGB/motion/
+corner checks. Candidate A1, baseline B1, candidate A2 and baseline B2 each
+received a fresh VM start and the same initial native-mode sequence. The first
+pair then also tested 1920×1200@120. Xorg/KWin remained on large cores 4–7;
+SELinux and host hidden-API settings were unchanged. The native runtime was the
+same `0302b363b9e9cfa434cf86f5cfda7a57b84fa69ea8f7b20af6a647def252470a`
+in every APK. The candidate APK SHA-256 was
+`2e8ca3808a7e9474c87a78f95f7704a5b130dad72e04fd844f1365b6e0ed180d`.
+
+| Mode / run | Seconds | Presentations/s | p95 / p99 ms | Intervals >20 ms |
+| --- | ---: | ---: | --- | ---: |
+| Native, baseline B1 | 59.28 | 62.78 | 24.99 / 25.01 | 203 |
+| Native, candidate A1 | 59.94 | 63.46 | 16.70 / 25.01 | 134 |
+| Native, baseline B2 | 59.70 | 62.28 | 24.98 / 25.01 | 192 |
+| Native, candidate A2 | 59.38 | 62.70 | 16.70 / 25.01 | 149 |
+| 1920×1200, baseline B1 | 59.84 | 73.28 | 16.69 / 25.00 | 65 |
+| 1920×1200, candidate A1 | 60.10 | 72.86 | 16.69 / 24.99 | 58 |
+
+Pooling the two native runs gives approximately 5.3% long intervals for the
+baseline and 3.8% for the candidate, a roughly 29% relative reduction. This is
+retained as a modest native-cadence improvement. It does not establish a 1920
+throughput improvement, stable 120 fps, or stable native 60 fps: native p99
+remains around 25 ms. An earlier long-running-VM baseline had 901 long intervals;
+it is excluded from the paired comparison because only the candidate had been
+restarted. The fresh-start controls prevent attributing that outlier to this
+change.
+
+Private captures use the `surface-static-state-` prefix under
+`.pi/device-debug/perf-60-20261018/`; candidate and control repeat captures have
+`repeat-native` and `control-repeat-native` names. The candidate passed Android
+unit tests, debug APK build, six direct-display contract checks, five packaged
+arm64 ELF checks and the native runtime pin. Mode changes to native and 1920
+were acknowledged with actual guest pixels, without restarting the active VM.
+
+The final APK (SHA-256
+`f6729fea67c46d3980389111bb645b93247b6ec97a78e071402cd757bc624ba3`)
+was rebuilt, passed the same checks and was installed. On VM PID 4067, the
+native@60 → 1920×1200@120 → 1920×1280@120 sequence passed actual-pixel and
+five-point guest-coordinate checks in every mode. The fit mode occupied the
+full 3408×2272 viewport; the fixed 1920×1200 mode retained its expected
+letterbox bounds. Android focus remained in the App after injected Escape.
+
+A separate desired-presentation-time idea was deferred before implementation:
+extending SurfaceFlinger retention requires checking the complete producer reuse
+ordering, not just keeping an AHB allocation alive. No delayed submission,
+fabricated completion timestamp or new buffering scheme is included here.

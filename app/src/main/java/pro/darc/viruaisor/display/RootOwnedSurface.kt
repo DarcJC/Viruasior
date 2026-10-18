@@ -51,37 +51,39 @@ internal class RootOwnedSurface private constructor(
         val displayUsage = HardwareBuffer.USAGE_COMPOSER_OVERLAY or
             HardwareBuffer.USAGE_GPU_SAMPLED_IMAGE
         require(buffer.usage and displayUsage == displayUsage) { "HardwareBuffer is not displayable" }
-        val source = Rect(0, 0, buffer.width, buffer.height)
-        val destination = Rect(0, 0, width, height)
         val size = (buffer.width.toLong() shl 32) or buffer.height.toLong()
         val frame = frames+1
         val frameWidth = buffer.width
         val frameHeight = buffer.height
         SurfaceControl.Transaction().use { transaction ->
+            // Layer properties persist across buffer submissions. Resend geometry only
+            // when the guest size changes, and keep every buffer's release callback.
             if (size != lastSize) {
                 transaction.addTransactionCommittedListener(Executor { it.run() }) {
                     if (!closed) onPresented(frame,frameWidth,frameHeight)
                 }
-                lastSize = size
+                val source = Rect(0, 0, buffer.width, buffer.height)
+                transaction.setGeometry(child, source, Rect(0, 0, width, height), 0)
+                    .setCrop(child, source)
             }
-            setTrustedOverlay.invoke(transaction, child, true)
-            // The qualified DRM ARGB/XRGB scanout has BGRA bytes in the Vulkan-
-            // compatible RGBA AHB. Let the compositor swap R/B without touching
-            // or copying pixels on the CPU, or allocating an extra blit target.
-            setColorTransform.invoke(transaction, child,
-                floatArrayOf(0f,0f,1f, 0f,1f,0f, 1f,0f,0f), floatArrayOf(0f,0f,0f))
-            // This device's HWC reports support for the R/B transform but displays
-            // green while screenshots are correct. A subpixel rounded edge keeps
-            // only this layer in RenderEngine, sampling this same AHB directly.
-            setCornerRadius.invoke(transaction, child, CLIENT_COMPOSITION_RADIUS_PX)
-            transaction.setBuffer(child, buffer, null, onRelease)
-                .setGeometry(child, source, destination, 0)
-                .setCrop(child, source)
-                .setLayer(child, 2)
-                .setVisibility(producerControl, false)
-                .setVisibility(child, true)
-                .apply()
+            if (frames == 0L) {
+                setTrustedOverlay.invoke(transaction, child, true)
+                // The qualified DRM ARGB/XRGB scanout has BGRA bytes in the Vulkan-
+                // compatible RGBA AHB. Let the compositor swap R/B without touching
+                // or copying pixels on the CPU, or allocating an extra blit target.
+                setColorTransform.invoke(transaction, child,
+                    floatArrayOf(0f,0f,1f, 0f,1f,0f, 1f,0f,0f), floatArrayOf(0f,0f,0f))
+                // This device's HWC reports support for the R/B transform but displays
+                // green while screenshots are correct. A subpixel rounded edge keeps
+                // only this layer in RenderEngine, sampling this same AHB directly.
+                setCornerRadius.invoke(transaction, child, CLIENT_COMPOSITION_RADIUS_PX)
+                transaction.setLayer(child, 2)
+                    .setVisibility(producerControl, false)
+                    .setVisibility(child, true)
+            }
+            transaction.setBuffer(child, buffer, null, onRelease).apply()
         }
+        lastSize = size
         frames++
         if (frames == 1L || frames % 60L == 0L) {
             Log.i(TAG, "FRAME_POSTED_ROOT count=$frames path=surface-control")
