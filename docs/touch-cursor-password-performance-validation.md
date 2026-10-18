@@ -397,3 +397,45 @@ checked, and input acceptance uses actual guest event coordinates from journald.
 The guest Python suite passes 32 tests, covering both backends, rollback, rate
 precision, invalid mode IDs, stale sessions, symlinks and private file/socket
 checks. Production Wayland startup and packaging remain a separate next step.
+
+## Native Wayland animation clock and rejected pacing prototype
+
+A separate native Wayland QtQuick window animates RGB bars using the threaded
+OpenGL renderer (Zink/Venus/Mali confirmed). It is a different workload from the
+moving X11 window, so its results are not an A/B client-backend speedup claim.
+At 1920×1200 it measures 90.92 own-Surface presentations/s over 59.32 seconds,
+p95/p99 16.68/16.70 ms, with 16 intervals over 20 ms. At native resolution it
+measures 86.44 over 59.92 seconds, but p95/p99 regress to 24.99/25.01 ms, with
+319 intervals over 20 ms. Both pass visible RGB/motion/corner checks.
+
+Counting the application's `frameSwapped` signal and comparing a QML 5000 ms
+timer with `Date.now()` exposes an acceptance problem: native mode is advertised
+as 59.998 Hz, but steady samples contain 300 swaps in about 2.77–3.11 real seconds.
+The [paired Qt animation driver](https://raw.githubusercontent.com/qt/qtdeclarative/v5.15.12-lts-lgpl/src/quick/scenegraph/qsgcontext.cpp)
+advances animation time by the advertised vsync interval while in vsync mode.
+Thus the excess frame callbacks also speed up animation time; a high presentation
+count must not be called a successful native-60 optimization. The observations
+are consistent with virtual display completion feedback running ahead of the
+declared refresh rate, rather than repeated identical client frames alone.
+
+Two **temporary, unshipped** preload probes intercept the paired KWin 5.27.10
+`RenderLoopPrivate::notifyFrameCompleted` and pace only rates at or below 60.25 Hz
+against the monotonic clock. They are loaded only into the private cap-free KWin
+copy; child applications do not inherit the preload. The first waits from each
+actual wakeup; the second preserves timer phase instead of accumulating wakeup
+error. The second restores 300 swaps and the QML 5-second timer to approximately
+5.00–5.05 seconds. However, neither solves actual presentation cadence:
+
+| Native GPU workload | Seconds | Presentations/s | p95 / p99 ms | Intervals >20 ms |
+| --- | ---: | ---: | --- | ---: |
+| Completion delay, wakeup-relative | 59.25 | 59.36 | 25.02 / 25.08 | 1257 |
+| Completion delay, fixed phase | 59.33 | 59.93 | 25.02 / 25.04 | 1321 |
+| Fixed phase + full repaint effect | 59.35 | 59.76 | 25.01 / 25.03 | 889 |
+
+The fixed-phase sample's frame-ready intervals have p95/p99 21.41/24.69 ms,
+so work arriving at the Android display layer is already irregular. These probes
+are rejected as production performance changes: they block the compositor thread,
+depend on a private ABI, and still fail the frame-interval criterion. Default X11
+startup is retained. The next investigation is the timing of application-owned
+Surface submissions and how producer completion relates to actual presentation,
+without dropping producer/consumer synchronization or modifying Android globally.
