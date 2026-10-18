@@ -164,14 +164,15 @@ class AvfVmEngine(
     fun clearCallback() {
         synchronized(lock) {
             val target = vm ?: return@synchronized
-            runCatching { invoke(target, "clearCallback") }
             callbackProxy = null
+            runCatching { invoke(target, "clearCallback") }
         }
     }
 
     fun closeStopped() = synchronized(lock) {
         val target=vm ?: return@synchronized
         check(invoke(target,"getStatus") != STATUS_RUNNING) { "Cannot close an active VM" }
+        clearCallback()
         invoke(target,"close")
         vm=null; consoleInput?.close(); consoleInput=null; guestAgent=null; callbackProxy=null
     }
@@ -278,7 +279,12 @@ class AvfVmEngine(
         val proxy = Proxy.newProxyInstance(
             appContext.classLoader,
             arrayOf(callbackClass),
-        ) { proxyInstance, method, args ->
+        ) { proxyInstance, method, args -> synchronized(lock) {
+            // A cached AVF VM can outlive a run. Ignore queued events from a
+            // registration that has stopped or been replaced by the next run.
+            if (method.declaringClass != Any::class.java &&
+                (callbackProxy !== proxyInstance || vm !== target)
+            ) return@synchronized null
             Log.d(TAG, "AVF callback ${method.name}; args=${args?.map { it?.javaClass?.name }}")
             when (method.name) {
                 "onPayloadStarted", "onPayloadReady" -> {
@@ -298,8 +304,12 @@ class AvfVmEngine(
                 }
                 "onStopped" -> {
                     val reason = args?.getOrNull(1) as? Int ?: STOP_REASON_UNKNOWN
+                    val expected = stopRequested || reason == STOP_REASON_SHUTDOWN
                     synchronized(lock) {
-                        vm?.let { stopped -> runCatching { invoke(stopped,"close") } }
+                        // Unregister before closing: ending the lease's cached
+                        // virtmgr must not enqueue another stop for this run.
+                        clearCallback()
+                        runCatching { invoke(target,"close") }
                         consoleInput?.close()
                         vm = null
                         consoleInput = null
@@ -309,7 +319,7 @@ class AvfVmEngine(
                     onEvent(
                         VmEngineEvent.Stopped(
                             reason = reason,
-                            expected = stopRequested || reason == STOP_REASON_SHUTDOWN,
+                            expected = expected,
                         ),
                     )
                     null
@@ -319,7 +329,7 @@ class AvfVmEngine(
                 "equals" -> proxyInstance === args?.getOrNull(0)
                 else -> null
             }
-        }
+        } }
         callbackProxy = proxy
         invoke(target, "setCallback", callbackExecutor, proxy)
     }

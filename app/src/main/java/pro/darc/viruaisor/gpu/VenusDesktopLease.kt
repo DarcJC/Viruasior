@@ -80,7 +80,9 @@ internal class VenusDesktopLease(context: Context, private val lost: (Throwable)
             val outcome=result?.get(12,TimeUnit.SECONDS)
             if (outcome != null) {
                 Log.i(TAG,"DESKTOP_LEASE_END token=$token $outcome")
-                check(outcome.contains("ROLLBACK=PASS") || !ready.isDone) { "Desktop runtime rollback is unverified" }
+                check(!ready.isDone || (outcome.startsWith("native_exit=0\n") && outcome.contains("ROLLBACK=PASS"))) {
+                    "Desktop runtime cleanup is unverified"
+                }
             }
             listOf("target","control","snapshot").forEach { suffix ->
                 val file=File(lab,"$token.$suffix")

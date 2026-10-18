@@ -178,6 +178,10 @@ The Bash helpers accept an `ADB` environment override. Their current default is
 `/c/Tools/Android/platform-tools/adb.exe` for Git Bash on Windows.
 
 - `scripts/device-smoke.sh`: check AVF availability and the expected VM UI status.
+- `scripts/test-vm-restart.ps1`: repeat three Venus VM start/stop cycles in the same app process,
+  reject crashes or process restarts, and verify final child-process exit and lease rollback.
+  Requires an installed debug APK, an imported Venus bundle, existing root/AVF access, and an
+  unlocked device; captures are saved under `.pi/device-debug/`.
 - `scripts/wait-device-ui.sh <text> [timeout-seconds]`: wait for a guest/UI status.
 - `scripts/check-direct-surface-selinux.sh`: diagnose Direct Surface attachment; exits with a
   failure when the known SELinux denial is detected.

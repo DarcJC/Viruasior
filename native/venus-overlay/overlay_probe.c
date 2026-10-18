@@ -217,6 +217,18 @@ static void terminate_stock_lease(int owner_fd, const struct stock_children *chi
     bool drained = overlay_wait_terminated(fds, 3, 1000);
     printf("STOCK_LEASE_TERMINATED_BY_PIDFD all_exited=%d\n", drained);
 }
+static bool release_stock_lease(const struct stock_children *children) {
+    // Normal release preserves the owner. AVF caches virtmgr in that process,
+    // so closing the stopped VM alone does not restore an exclusive namespace.
+    // Use only the authenticated pidfds recorded for this lease, and never
+    // terminate the manager while its VM is still running.
+    if (children->crosvm_fd < 0 || children->virtmgr_fd < 0) return false;
+    struct pollfd vm = { .fd = children->crosvm_fd, .events = POLLIN };
+    if (!overlay_wait_terminated(&vm, 1, 1000)) return false;
+    if (syscall(SYS_pidfd_send_signal, children->virtmgr_fd, SIGKILL, NULL, 0) && errno != ESRCH) return false;
+    struct pollfd manager = { .fd = children->virtmgr_fd, .events = POLLIN };
+    return overlay_wait_terminated(&manager, 1, 1000);
+}
 int main(int argc, char **argv) {
     setvbuf(stdout, NULL, _IOLBF, 0);
     if (getuid() || argc < 5 || !overlay_token_valid(argv[3])) return 64;
@@ -348,7 +360,14 @@ int main(int argc, char **argv) {
             control_stat.st_size == 1 && control_stat.st_nlink == 1, "owned-one-byte-control");
         char c = 0; ssize_t n = pread(control, &c, 1, 0); close(control);
         REQUIRE(n == 1, "read-control");
-        if (c == '1' && (stock || !strcmp(mode, "normal"))) { result = 0; break; }
+        if (c == '1' && (stock || !strcmp(mode, "normal"))) {
+            if (desktop) {
+                bool released = release_stock_lease(&children);
+                printf("STOCK_LEASE_RELEASED_BY_PIDFD children_exited=%d owner_preserved=1\n", released);
+                REQUIRE(released, "stopped-stock-children-released");
+            }
+            result = 0; break;
+        }
         REQUIRE(c == '0' || (desktop && (c == '2' || c == '3')), "control-value");
         if (desktop && overlay_desktop_heartbeat(previous_control,c)) deadline=monotonic_ms()+15000;
         previous_control=c;
