@@ -73,6 +73,7 @@ cp "$repo/native/venus-crosvm/venus_import_type_policy.h" "$renderer_work/virglr
 cp "$repo/native/venus-crosvm/venus_ahb_registry.h" "$renderer_work/virglrenderer/src/venus/"
 cp "$repo/native/venus-crosvm/venus_log_policy.h" "$renderer_work/virglrenderer/src/venus/"
 cp "$repo/native/venus-crosvm/venus_display_fence.h" "$renderer_work/virglrenderer/src/venus/"
+cp "$repo/native/venus-crosvm/venus_ahb_bind_policy.h" "$renderer_work/virglrenderer/src/venus/"
 if [[ ${VENUS_CROSVM_DISPLAY:-0} == 1 ]]; then
     patch="$repo/native/venus-crosvm/crosvm-fixed-blob-mapping.patch"
     git -C "$work/crosvm" apply --reverse --check "$patch" 2>/dev/null || \
@@ -213,6 +214,7 @@ if [[ ${VENUS_CROSVM_IMPORT_FILTER:-0} == 1 ]]; then
     apply_renderer_patch android-venus-teardown VIRUAISOR_ANDROID_DEVICE_TEARDOWN_ORDER src/venus/vkr_device.c
     apply_renderer_patch android-renderer-fd-trace VIRUAISOR_PROXY_FD src/proxy/proxy_context.c
     apply_renderer_patch android-allocation-quiet-trace VIRUAISOR_ALLOCATION_QUIET_TRACE src/venus/vkr_device_memory.c
+    apply_renderer_patch android-ahb-bind-contract VIRUAISOR_AHB_BIND_CONTRACT src/venus/vkr_image.c
     apply_renderer_patch android-display-batch-sync virgl_renderer_context_wait_idle_begin src/virglrenderer.c
     gcc -Wall -Wextra -Werror "$repo/native/venus-crosvm/venus_import_memory_policy_test.c" -o /tmp/viruaisor-venus-import-policy-test
     /tmp/viruaisor-venus-import-policy-test
@@ -223,6 +225,8 @@ elif git -C "$renderer_work/virglrenderer" apply --reverse --check \
 fi
 gcc -Wall -Wextra -Werror "$repo/native/venus-crosvm/venus_cache_sync_test.c" -o /tmp/viruaisor-venus-cache-test
 /tmp/viruaisor-venus-cache-test
+gcc -Wall -Wextra -Werror "$repo/native/venus-crosvm/venus_ahb_bind_policy_test.c" -o /tmp/viruaisor-ahb-bind-test
+/tmp/viruaisor-ahb-bind-test
 gcc -Wall -Wextra -Werror "$repo/native/venus-crosvm/venus_gralloc_policy_test.c" -o /tmp/viruaisor-venus-gralloc-policy-test
 /tmp/viruaisor-venus-gralloc-policy-test
 gcc -Wall -Wextra -Werror "$repo/native/venus-crosvm/venus_dmaheap_test.c" -o /tmp/viruaisor-venus-dmaheap-test

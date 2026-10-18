@@ -1,0 +1,92 @@
+--- a/src/venus/vkr_image.c
++++ b/src/venus/vkr_image.c
+@@ -9,6 +9,7 @@
+ #include "vkr_physical_device.h"
+ #ifdef __ANDROID__
+ #include "vkr_device_memory.h"
++#include "venus_ahb_bind_policy.h"
+ #endif
+ 
+ static void
+@@ -248,6 +249,17 @@
+ #ifdef __ANDROID__
+    vkr_android_fix_ahb_image_requirements(
+       image, &args->pMemoryRequirements->memoryRequirements);
++   /* VIRUAISOR_AHB_BIND_CONTRACT: Android external images require a dedicated
++    * AHB import even when the guest requested ordinary device-local memory. */
++   if (image && image->android_hardware_buffer_external) {
++      VkMemoryDedicatedRequirements *dedicated = vkr_find_struct(
++         args->pMemoryRequirements->pNext,
++         VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS);
++      if (dedicated) {
++         dedicated->prefersDedicatedAllocation = VK_TRUE;
++         dedicated->requiresDedicatedAllocation = VK_TRUE;
++      }
++   }
+    if (image && image->android_hardware_buffer_external)
+       vkr_log("VIRUAISOR_AHB_IMAGE_REQUIREMENTS api=v2 size=%" PRIu64
+               " alignment=%" PRIu64 " types=%x",
+@@ -299,6 +311,17 @@
+    struct vkr_image *image = vkr_image_from_handle(args->image);
+    struct vkr_device_memory *memory =
+       vkr_device_memory_from_handle(args->memory);
++   if (image && !venus_ahb_bind_allowed(
++          image->android_hardware_buffer_external,
++          memory && memory->android_ahb_imported, args->memoryOffset)) {
++      vkr_log("VIRUAISOR_AHB_BIND_REJECTED api=legacy offset=%" PRIu64,
++              args->memoryOffset);
++      /* Venus may enqueue binding asynchronously. Stop this context before
++       * any later command can use the unbound image. */
++      vkr_context_set_fatal(dispatch->data);
++      args->ret = VK_ERROR_INVALID_EXTERNAL_HANDLE;
++      return;
++   }
+    if (image && image->android_hardware_buffer_external && memory)
+       image->memory_id = memory->viruaisor_memory_id;
+ #endif
+@@ -327,6 +350,15 @@
+       if (image && image->android_hardware_buffer_external) {
+          struct vkr_device_memory *memory =
+             vkr_device_memory_from_handle(args->pBindInfos[i].memory);
++         if (!venus_ahb_bind_allowed(true,
++                memory && memory->android_ahb_imported,
++                args->pBindInfos[i].memoryOffset)) {
++            vkr_log("VIRUAISOR_AHB_BIND_REJECTED api=v2 index=%u offset=%" PRIu64,
++                    i, args->pBindInfos[i].memoryOffset);
++            vkr_context_set_fatal(dispatch->data);
++            args->ret = VK_ERROR_INVALID_EXTERNAL_HANDLE;
++            return;
++         }
+          if (memory)
+             image->memory_id = memory->viruaisor_memory_id;
+          ahb_image_count++;
+--- a/src/venus/vkr_device_memory.c
++++ b/src/venus/vkr_device_memory.c
+@@ -871,7 +871,9 @@
+    const bool force_gbm_import = !!physical_dev->gbm_device;
+    const bool force_udmabuf_import = physical_dev->udmabuf_dev_fd >= 0;
+ #ifdef __ANDROID__
++   struct vkr_image *dedicated_ahb_image = NULL;
+    const bool force_gralloc_export =
++      vkr_android_dedicated_ahb_image(alloc_info, &dedicated_ahb_image) ||
+       venus_gralloc_export_backing_required_on_android(force_udmabuf_import,
+                                                         might_export);
+ #else
+@@ -1032,6 +1034,7 @@
+ #ifdef __ANDROID__
+    mem->viruaisor_memory_id = viruaisor_memory_id;
+    mem->android_buffer_registered = android_buffer_registered;
++   mem->android_ahb_imported = uses_ahb_import;
+    if (android_buffer_registered &&
+        !viruaisor_ahb_register(udmabuf_fd, android_buffer)) {
+       mem->android_buffer_registered = false;
+--- a/src/venus/vkr_device_memory.h
++++ b/src/venus/vkr_device_memory.h
+@@ -29,6 +29,7 @@
+    /* Android graphics allocator ownership for a retained DMA-BUF. */
+    void *android_buffer;
+    bool android_buffer_registered;
++   bool android_ahb_imported;
+ #ifdef __ANDROID__
+    vkr_object_id viruaisor_memory_id;
+ #endif

@@ -139,3 +139,51 @@ Matching the App window to the native guest's 60 Hz was also rejected. The
 physical display confirmed 60 Hz, but a 29.47-second sample fell to 25.11 fps
 (p95 66.67 ms, p99 66.68 ms). The window-only 120 Hz request was restored; no
 global display setting was changed. Guest native mode remains 60 Hz.
+
+## Wayland diagnostic and external-image allocation repair
+
+A temporary KWin Wayland session used guest `/tmp` configuration and a `/run`
+service override, with a timed X11 recovery. The installed KWin binary's
+`cap_sys_nice` file capability strips the library-path environment. A temporary
+copy without that capability retained the paired Mesa runtime and reached DRM
+initialization; neither the installed binary nor its permissions were changed.
+
+Starting the moving Xwayland window then crashed crosvm PID 13581 inside Mali's
+`BindImageMemory2`, with a null `android::RefBase::incStrong` receiver. The Android
+image translation allowed an AHB external image to bind ordinary device-local
+memory. The repaired renderer reports dedicated-allocation requirements for
+translated images, allocates their AHB backing even without a host-visible or
+export allocation request, and rejects non-AHB or nonzero-offset bindings before
+calling the vendor driver. Both legacy and batched image binding are checked.
+Because Venus enqueues binds asynchronously, rejection also marks that renderer
+context fatal before later commands can access an unbound image.
+
+The binding policy regression failed before the fix and passed afterward.
+Native compilation, Android unit tests, debug APK build and packaged native-pin
+verification passed. The new desktop runtime SHA-256 is
+`7600b50a10e17c50452433a2c3783da2ca78e2fc4e934c3ed2f3ff894fa0714f`
+(14,115,952 bytes). The same Wayland workload remained alive after the allocation
+repair (before the final fatal-context refinement),
+and translated bindings returned Vulkan success. Its actual displayed pixels
+were black, so there is no valid Wayland frame-rate result and it is not enabled
+in the production desktop. X11 was restored and its visible frame, hardware
+renderer, large-core affinity and touch coordinates at all three resolutions
+were verified. The native cursor matched all 58 sampled opaque interior pixels.
+
+The guest-only `native/venus-crosvm/ahb_bind_guest_probe.c` exercises both paths
+on the final APK. `dedicated` confirms that requirements demand a dedicated
+allocation and that allocation/binding succeeds without export flags.
+`reject-ordinary` deliberately ignores that requirement: the renderer logs
+`VIRUAISOR_AHB_BIND_REJECTED`, the test process exits with status 134 after a
+Venus fatal-context notification, and VM PID 22690 remains alive and displays
+the desktop afterward. This test must not be run against the preceding renderer.
+
+A post-Wayland X11 sample measured 64.97 fps at 1920×1200; after a full VM restart,
+the same workload measured 72.26 fps over 59.48 seconds (p95 16.69 ms, p99
+25.00 ms). A native run after resolution cycling measured 58.74 fps over 59.58
+seconds. These are not improvements over the earlier large-core baseline.
+A subsequent paired native comparison, restarting the VM for each APK and
+setting the same 3408×2272@60 mode directly, measured 62.54 fps for the preceding
+runtime (59.80 s) and 62.51 fps for the final repair (59.32 s). Both had p95/p99
+intervals near 25 ms. No material regression appeared in this comparison; neither
+meets stable 60 fps. This repair is a crash fix, not a claimed frame-rate gain.
