@@ -34,6 +34,9 @@ def main():
     except (OSError, ValueError) as error:
         # Affinity is an optimization; missing topology must not prevent boot.
         print(f'VIRUAISOR_DESKTOP_CPU unchanged reason={type(error).__name__}', flush=True)
+    # exec preserves this PID. Venus checks it together with the Zink engine
+    # name, so clients spawned by the compositor retain the compatibility wait.
+    os.environ['VIRUAISOR_DESKTOP_ASYNC_SYNC_FD_PID'] = str(os.getpid())
     os.execv(program, [program, *sys.argv[1:]])
 
 

@@ -497,3 +497,93 @@ A separate desired-presentation-time idea was deferred before implementation:
 extending SurfaceFlinger retention requires checking the complete producer reuse
 ordering, not just keeping an AHB allocation alive. No delayed submission,
 fabricated completion timestamp or new buffering scheme is included here.
+
+## Retained scoped Venus sync-fd export (2026-10-19)
+
+The paired guest Venus creates a real completion sync-fd in
+`vn_GetSemaphoreFdKHR`, then waits on the CPU when the renderer lacks implicit
+fencing. In the desktop trace, creating the fd took about 25–45 microseconds,
+whereas the following wait took roughly 1.6–2.2 milliseconds in KWin and
+3.2–3.6 milliseconds in native-resolution Xorg. Zink already transfers this
+dependency into the shared DMA-BUF reservation and imports it for the next
+consumer. Returning the pending fd allows more producer/consumer overlap.
+The consumer wait, renderer GPU completion checks, real fences and Surface
+release callbacks remain intact; `has_implicit_fencing` is not changed.
+
+The retained patch is restricted to a Zink instance whose current PID exactly
+matches `VIRUAISOR_DESKTOP_ASYNC_SYNC_FD_PID`. The existing Xorg/KWin launcher
+sets that value immediately before exec, preserving the PID. An ordinary
+application or child inheriting the variable retains the compatibility CPU
+wait. No global environment toggle is enabled. The Manjaro Venus build script
+applies the patch against the pinned Mesa source. CPU selection is unchanged.
+
+Four complete desktop sessions were run in order: instrumented control B1,
+instrumented asynchronous candidate A1, control B2, and the final scoped
+candidate A2 without timing/logging. Each restarted the guest desktop, selected
+1920×1200@120, captured the visible moving colour window, then selected
+3408×2272@60 and repeated. These are desktop-session restarts within the same
+VM, not the fresh-VM/native-first samples in the preceding section. Every
+capture used unique actual presentation timestamps on the App's own layer and
+passed RGB, motion and corner checks. Xorg/KWin stayed on cores 4–7.
+
+| Mode / run | Seconds | Presentations/s | p95 / p99 ms | Intervals >20 ms |
+| --- | ---: | ---: | --- | ---: |
+| 1920×1200, B1 | 59.46 | 70.60 | 16.69 / 25.00 | 105 |
+| 1920×1200, A1 | 59.57 | 93.38 | 16.67 / 16.69 | 3 |
+| 1920×1200, B2 | 59.78 | 70.59 | 16.69 / 25.00 | 76 |
+| 1920×1200, A2 | 59.57 | 92.84 | 16.67 / 16.70 | 5 |
+| Native, B1 | 59.24 | 61.66 | 25.01 / 33.33 | 858 |
+| Native, A1 | 59.82 | 83.04 | 16.70 / 25.01 | 208 |
+| Native, B2 | 59.24 | 61.19 | 25.02 / 33.33 | 894 |
+| Native, A2 | 60.09 | 81.56 | 24.99 / 25.01 | 275 |
+
+1920 throughput improves about 32%, with substantially fewer long intervals.
+Native also improves in this paired sequence, but is not stable or capped at
+60: its p99 remains 25 ms and A2 p95 is also about 25 ms. This change does not
+meet either the stable-120 or stable-native-60 goal. A preliminary KWin-only
+replacement improved average throughput but worsened long intervals; it is
+not the shipped configuration. A repeat KWin-only control overlapping a
+desktop restart is explicitly excluded from the comparison.
+
+`native/venus-crosvm/venus_sync_fd_guest_probe.c` provides an actual guest-GPU
+regression. A timeline gate delays a 1024-word GPU fill by 200 ms. Its semaphore
+sync-fd is imported into a DMA-BUF reservation, exported again, then waited on
+by another Vulkan instance. Async export takes tens of microseconds and both
+original and DMA-BUF-exported fds are initially pending. The consumer completes
+only after the delayed producer, and all 1024 words are checked. Baseline,
+wrong-PID and non-Zink cases still wait about 200 ms before export. The async
+expectation failed before the scoped patch and all four modes passed afterward.
+`bash scripts/build-venus-sync-fd-probe.sh` builds the probe with
+`-O2 -Wall -Wextra -Werror`, linked with Vulkan/pthreads against the paired
+AArch64 guest sysroot. Invoke each mode with the paired ICD
+and the existing four disabled-feedback `VN_PERF` flags.
+
+The 33 guest Python tests pass, including the display launcher's PID opt-in and
+existing no-prime affinity cases. The full pinned Mesa cross-build passes and
+produces a 1,677,064-byte ICD with SHA-256
+`dcb191f5a2437ecd63b3538d3fd08b03fd6cdee08fae6fc5d12f510218fcbd9a`.
+It and the launcher were atomically installed only inside the existing guest,
+after stopping its desktop. Original files are backed up under
+`/var/lib/viruaisor/desktop-backups/syncfd-20261019`; restoring both files while
+the desktop is stopped reverses the update. The temporary guest service
+namespace overrides and rollback timer were removed/stopped. The droid account,
+Android APK and host renderer were not changed by this optimization.
+
+Private evidence uses the `syncfd-` prefix in `.pi/device-debug/` and is excluded
+from version control. Production source contains no diagnostic timing/logging.
+
+After a full VM stop/start, VM PID 16488 loaded the installed ICD and each display
+process's matching PID opt-in without a service drop-in. Native-first final
+validation measured 88.67 presentations/s over 59.46 seconds, p95/p99
+16.68/16.70 ms and 9 intervals over 20 ms. The following 1920 run measured
+90.77 presentations/s over 59.29 seconds, p95/p99 16.67/16.70 ms and 4 long
+intervals. These confirm normal-startup operation; they are not added to the
+paired comparison above. Native output still exceeds its nominal 60-Hz mode,
+so remaining work includes cadence/rate control, not merely more throughput.
+
+Native → 1920×1200 → 1920×1280 mode changes and all five guest-coordinate
+points passed in each mode on that same VM. The fit mode filled the full
+3408×2272 viewport. Injected Escape produced one guest key-down/key-up pair and
+kept Android focus in the App. Xorg/KWin remained on cores 4–7, SELinux remained
+Enforcing, host hidden-API values matched the prior state, and droid remained
+locked. No guest account or user data was replaced.

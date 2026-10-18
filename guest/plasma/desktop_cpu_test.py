@@ -1,5 +1,7 @@
+import os
 import unittest
-from desktop_cpu import desktop_cpus
+from unittest.mock import patch
+from desktop_cpu import desktop_cpus, main
 
 
 class DesktopCpuTest(unittest.TestCase):
@@ -20,6 +22,20 @@ class DesktopCpuTest(unittest.TestCase):
         allowed = {0, 2, 4}
         for capacities in ({0: 1024, 2: 1024, 4: 1024}, {}, {0: 1024, 2: 0, 4: 800}):
             self.assertEqual(allowed, desktop_cpus(allowed, capacities))
+
+    def test_display_exec_owns_sync_fd_opt_in_despite_inherited_environment(self):
+        key = 'VIRUAISOR_DESKTOP_ASYNC_SYNC_FD_PID'
+        for wrapper, program in (('desktop-xorg', '/usr/bin/Xorg'),
+                                 ('desktop-kwin', '/usr/bin/kwin_x11')):
+            with self.subTest(wrapper=wrapper), \
+                    patch.dict(os.environ, {key: 'inherited-parent'}), \
+                    patch('desktop_cpu.sys.argv', [wrapper, '--version']), \
+                    patch('desktop_cpu.os.sched_getaffinity', return_value={4, 5}), \
+                    patch('desktop_cpu.Path.glob', return_value=[]), \
+                    patch('desktop_cpu.os.execv') as execute:
+                main()
+                self.assertEqual(str(os.getpid()), os.environ[key])
+                execute.assert_called_once_with(program, [program, '--version'])
 
 
 if __name__ == '__main__':

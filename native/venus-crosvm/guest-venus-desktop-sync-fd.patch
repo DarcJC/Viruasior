@@ -1,0 +1,50 @@
+--- a/src/virtio/vulkan/vn_queue.c
++++ b/src/virtio/vulkan/vn_queue.c
+@@ -11,6 +11,7 @@
+ #include "vn_queue.h"
+ 
+ #include "util/libsync.h"
++#include <unistd.h>
+ #include "venus-protocol/vn_protocol_driver_event.h"
+ #include "venus-protocol/vn_protocol_driver_fence.h"
+ #include "venus-protocol/vn_protocol_driver_queue.h"
+@@ -2293,6 +2294,29 @@
+    return VK_SUCCESS;
+ }
+ 
++#ifdef VN_USE_WSI_PLATFORM
++static bool
++vn_desktop_async_sync_fd(const struct vn_device *dev)
++{
++   /* VIRUAISOR_DESKTOP_ASYNC_SYNC_FD: only the explicitly opted-in Zink
++    * display process may return its real completion fd before it signals.
++    * Zink transfers this dependency through DMA_BUF_IOCTL_IMPORT_SYNC_FILE;
++    * its next consumer imports/waits for it. Keep the compatibility CPU wait
++    * for other applications and inherited child-process environments.
++    */
++   if (!dev->instance->engine_is_zink)
++      return false;
++
++   const char *owner = getenv("VIRUAISOR_DESKTOP_ASYNC_SYNC_FD_PID");
++   if (!owner)
++      return false;
++
++   char current[32];
++   snprintf(current, sizeof(current), "%ld", (long)getpid());
++   return strcmp(owner, current) == 0;
++}
++#endif
++
+ VkResult
+ vn_GetSemaphoreFdKHR(VkDevice device,
+                      const VkSemaphoreGetFdInfoKHR *pGetFdInfo,
+@@ -2316,7 +2340,8 @@
+          return vn_error(dev->instance, result);
+ 
+ #ifdef VN_USE_WSI_PLATFORM
+-      if (!dev->renderer->info.has_implicit_fencing)
++      if (!dev->renderer->info.has_implicit_fencing &&
++          !vn_desktop_async_sync_fd(dev))
+          sync_wait(fd, -1);
+ #endif
+    } else {
