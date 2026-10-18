@@ -1,0 +1,30 @@
+--- a/src/gallium/drivers/zink/zink_bo.c
++++ b/src/gallium/drivers/zink/zink_bo.c
+@@ -255,6 +255,18 @@
+ {
+    struct zink_bo *bo = NULL;
+    bool init_pb_cache;
++   /* Internal BDA/priority structures describe every ordinary upload BO.
++    * Capture caller restrictions before adding those structures, so the
++    * paired small-upload path can use the existing completion-checked cache.
++    * External/dedicated allocations still have a caller-supplied pNext.
++    */
++   const VkMemoryPropertyFlags properties = screen->info.mem_props.memoryTypes[mem_type_idx].propertyFlags;
++   const bool cache_private_upload = !(flags & ZINK_ALLOC_NO_SUBALLOC) &&
++      zink_venus_private_upload(screen->info.driver_props.driverID == VK_DRIVER_ID_MESA_VENUS,
++                                screen->info.props.vendorID,
++                                properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
++                                properties & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, pNext != NULL,
++                                getenv("VIRUAISOR_ZINK_SMALL_UPLOAD_ALLOCATIONS"));
+ 
+    alignment = get_optimal_alignment(screen, size, alignment);
+ 
+@@ -290,7 +302,7 @@
+    }
+ 
+    /* all non-suballocated bo can cache */
+-   init_pb_cache = !pNext;
++   init_pb_cache = !pNext || cache_private_upload;
+ 
+    if (!bo)
+       bo = CALLOC(1, sizeof(struct zink_bo) + init_pb_cache * sizeof(struct pb_cache_entry));

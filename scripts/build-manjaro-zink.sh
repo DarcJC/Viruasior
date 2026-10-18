@@ -16,6 +16,10 @@ cp "$repo/native/venus-crosvm/zink_venus_upload_policy.h" "$source/src/gallium/d
 if ! grep -Fq zink_venus_private_upload "$source/src/gallium/drivers/zink/zink_bo.c"; then
     git -C "$source" apply "$repo/native/venus-crosvm/zink-venus-small-upload.patch"
 fi
+if ! grep -Fq cache_private_upload "$source/src/gallium/drivers/zink/zink_bo.c"; then
+    git -C "$source" apply "$repo/native/venus-crosvm/zink-venus-upload-cache.patch"
+fi
+python3 "$repo/scripts/test-zink-upload-cache.py" "$source"
 if ! grep -Fq zink_venus_linear_dmabuf "$source/src/gallium/drivers/zink/zink_resource.c"; then
     git -C "$source" apply "$repo/native/venus-crosvm/zink-venus-pixmap-linear.patch"
 fi

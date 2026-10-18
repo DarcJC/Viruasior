@@ -1002,3 +1002,109 @@ actual displayed guest motion are verified using the existing permissions;
 no host-system change or prime-core binding was added. Keep the App open in
 fit mode for the remaining performance investigation. The retained gain
 does not close the 120-fps target or the rare native-stall work.
+
+## Reusing private Zink upload allocations (2026-10-19)
+
+A 10-second, 400-Hz user-CPU sample of the two active renderer rings recorded
+568 samples without loss. Inclusive allocation samples resolve through
+`vn_dispatch_vkAllocateMemory`, `vkr_android_import`,
+`venus_gralloc_allocate_desc`, `AHardwareBuffer_allocate`, and the gralloc
+allocator Binder call. The exact renderer call address `0x66984c` identifies
+the BLOB branch, rather than the dedicated image branch. A second capture kept
+raw stacks (394 samples, zero lost); all 28 matching descriptors had BLOB format,
+height/layers 1, and usage `0x1000033`: 26 were 110,592 bytes and two 32,768 bytes.
+These are sampled allocations, not total allocation counts.
+
+The profiler ran inside the existing VM mount namespace so it read the exact
+`0302b363...` renderer ELF. Early samples collected from the host namespace were
+discarded: the same `/apex/com.android.virt/bin/crosvm` pathname there names the
+different system ELF and produced invalid symbols/unwinding. No kernel perf
+limit was relaxed. A profiler-only preload guard blocks writes to `/proc` and
+`/sys` and prevents its property setter from reaching Android. Before/after
+values remained `perf_event_paranoid=-1`, `perf_event_max_sample_rate=32250`,
+`perf_cpu_time_max_percent=25`, `perf_event_mlock_kb=41000`, and
+`security.perf_harden=1`. The guard is never loaded into the application or VM.
+
+A temporary Zink probe, limited to 16 matching allocations per process,
+confirmed KWin upload allocation with `original_pnext=0`, `flags=0`,
+`bda=1`, `priority=0`, and `cache=0`. Its stack resolves through
+`map_buffer_range`, `tc_buffer_map`, `tc_invalidate_buffer`, resource creation,
+and `bo_create_internal`. Zink had appended its own buffer-device-address
+allocation structure before checking `!pNext`, making an ordinary upload
+appear ineligible for the existing BO cache. The probe was removed before
+building either performance comparison library.
+
+The fix captures eligibility before adding Zink's internal structures. It only
+restores caching for the already opted-in Venus/Mali private non-coherent,
+host-visible upload path, with no caller extension chain and no
+`ZINK_ALLOC_NO_SUBALLOC` flag. Imported/exported/dedicated allocations, other
+drivers, coherent memory and disabled opt-in retain their prior behavior.
+Existing cache bounds, eviction, buffer references, completion checks and
+DMA-BUF cache maintenance are unchanged. The ordinary queue-completion-cache
+experiment remains absent.
+
+`test-zink-upload-cache.py` compiles the actual allocation-function prefix with
+small screen/Vulkan fixtures, including the order of internal extension
+insertion. It failed on the original ordinary-upload/BDA case, then passed
+after the fix. It also checks internal memory priority, external caller chains,
+no-suballocation, non-host-visible/coherent memory, driver/vendor boundaries,
+disabled/missing opt-in and unchanged no-extension behavior. Both existing
+upload/DMA-BUF policy tests and the patch-integration test pass. The complete
+`build-manjaro-zink.sh` build and install staging pass and reproduce the measured
+candidate byte for byte.
+
+The paired comparison replaces only KWin's library, restarts KWin and the
+bounded motion fixture for every trial, and leaves Xorg on its installed
+`a7aae0f8...` library. Control `d214dcab...` and candidate `8e2ce18c...` are built
+from identical source except for this cache fix. RGB, motion and corner checks
+pass before every accepted capture. One preliminary capture after compositor
+replacement failed the motion check and was discarded without collecting fps.
+
+| Capture | Duration | Actual fps | p95 / p99 ms | Intervals >20 ms |
+| --- | ---: | ---: | ---: | ---: |
+| `zink-upload-matched-B1` | 59.425 s | 96.81 | 16.673 / 16.707 | 13 |
+| `zink-upload-cache-A1` | 59.358 s | 112.40 | 16.662 / 16.676 | 9 |
+| `zink-upload-cache-A2` | 60.017 s | 113.44 | 16.659 / 16.675 | 2 |
+| `zink-upload-matched-B2` | 59.400 s | 95.57 | 16.674 / 16.706 | 2 |
+
+Pooling complete intervals gives 96.192 versus 112.921 fps, a **17.39%** gain.
+Median ready-to-present latency stays approximately 17.36–17.39 ms. Both
+candidate maxima are approximately 25 ms; stable 120 fps is still unmet.
+A separate 12-second trace has no trace-error statistics and no
+`allocateHelper` calls on the active KWin renderer ring; its ten remaining
+calls are on Xorg's ring. Trace counts are diagnostic, not the acceptance fps.
+
+Private evidence, exact binaries, bounded probe source, disassembly, raw
+samples and logs are under
+`.pi/device-debug/touch-perf-20261018/allocation-profile/`; presentation samples
+use the table names under `.pi/device-debug/perf-60-20261018/`.
+
+The measured library (19,276,056 bytes, SHA-256
+`8e2ce18c5bc91f9c08c0641b530974663c99f2544f07f98c1659cf12700fdbb0`)
+is installed atomically in the guest, with the original `a7aae0f8...` library
+verified and saved at
+`/var/lib/viruaisor/desktop-backups/upload-cache-20261019/`.
+After a complete VM restart, both Xorg and KWin map the installed library.
+The full-desktop checks are deployment regressions, separate from the
+KWin-only paired comparison above:
+
+| Capture / mode | Duration | Actual fps | p95 / p99 ms | Intervals >20 ms |
+| --- | ---: | ---: | ---: | ---: |
+| `zink-upload-final-wide`, 1920×1200 | 59.500 s | 111.95 | 16.663 / 16.678 | 5 |
+| `zink-upload-final-native`, 3408×2272 | 59.683 s | 59.97 | 16.686 / 16.706 | 4 |
+| `zink-upload-final-fit`, 1920×1280 | 59.908 s | 111.35 | 16.663 / 16.681 | 2 |
+
+All three mode changes and five-point touch mappings pass, as do motion/RGB/
+corner checks. Native and fit modes occupy the entire 3408×2272 viewport.
+Escape produces one guest down/up pair while the App remains resumed and
+focused. Native's maximum interval remains 33.333 ms, so the rare stalls are
+not declared fixed. The new cache is retained for the paired throughput gain;
+the stable-120 target remains open.
+
+No temporary service drop-in or preload is active after the VM restart. Xorg
+and KWin remain on CPUs 4–7 with their own-PID sync-fd opt-in. The Venus library,
+CPU wrapper, installed APK (`c1ae1341...`) and native renderer (`0302b363...`)
+are unchanged. The droid account is still locked; it was not modified. SELinux,
+hidden-API settings and the profiler-related host values above are unchanged.
+Validation output and individual input reports are in
+`allocation-profile/validation.log` and `allocation-profile/validation/`.
