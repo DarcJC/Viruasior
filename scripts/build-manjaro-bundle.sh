@@ -34,8 +34,9 @@ install -Dm0644 "$repo/guest/plasma/avf-plasma.service" "$root/usr/lib/systemd/s
 install -m0644 "$repo/guest/plasma/venus.env" "$root/etc/viruaisor/venus.env"
 bash "$repo/scripts/build-kwin-full-repaint.sh"
 install -Dm0755 "$workspace_out/viruaisor_full_repaint.so" "$root/usr/lib/qt/plugins/kwin/effects/plugins/viruaisor_full_repaint.so"
-python3 -m unittest discover -s "$repo/guest/plasma" -p desktop_cpu_test.py
+python3 -m unittest discover -s "$repo/guest/plasma" -p '*test.py'
 for file in venus-preflight plasma-session display-control.py desktop_cpu.py; do install -m0755 "$repo/guest/plasma/$file" "$root/opt/viruaisor/$file"; done
+for file in display_limits.py display_session.py display_wayland.py; do install -m0644 "$repo/guest/plasma/$file" "$root/opt/viruaisor/$file"; done
 for wrapper in desktop-xorg desktop-kwin; do ln -sfn desktop_cpu.py "$root/opt/viruaisor/$wrapper"; done
 install -m0644 "$repo/scripts/guest-gpu-draw-probe.py" "$root/opt/viruaisor/guest-gpu-draw-probe.py"
 install -m0644 "$repo/guest/plasma/input-check.py" "$root/opt/viruaisor/input-check.py"

@@ -342,3 +342,58 @@ bytes, SHA-256
 The production X11 desktop still uses hardware OpenGL, with Xorg/KWin on large
 cores 4–7 and Plasma unrestricted. Partial repainting remains experimental and
 is not retained as a production optimization on the strength of its average fps.
+
+## Complete Wayland session and App mode-control trial (2026-10-19)
+
+With the AHB lifetime repair, the temporary session now runs the normal
+`startplasma-wayland`/`kwin_wayland_wrapper` startup, including ksmserver, kded5
+and plasmashell. KWin and Xwayland remain on large cores 4–7; Plasma remains
+unrestricted. The same visible X11 motion workload gives these own-Surface
+presentation results, each preceded by RGB/motion/corner checks:
+
+| Mode | Repaint | Seconds | Presentations/s | p95 / p99 ms | Intervals >20 ms |
+| --- | --- | ---: | ---: | --- | ---: |
+| 3408×2272@59.998 | Full | 59.35 | 77.19 | 16.68 / 16.71 | 18 |
+| 1920×1200@120 | Full | 59.72 | 89.31 | 16.68 / 16.70 | 7 |
+| 3408×2272@59.998 | Partial | 59.61 | 91.20 | 16.68 / 16.70 | 24 |
+| 1920×1200@120 | Partial | 59.54 | 90.34 | 16.68 / 16.70 | 7 |
+
+The 1920 partial-repaint difference is small; native partial repainting improves
+average presentation rate without establishing a sustained-animation acceptance
+result. Surface presentation counts can exceed the guest mode rate and do not
+prove that every frame contains a distinct application update. Default production
+startup remains X11 while session lifecycle, repaint correctness and workload
+coverage are being validated.
+
+The fixed-user display helper now has a Wayland backend using KScreen's actual
+mode IDs and JSON rates. It preserves the existing protocol and eight-megapixel/
+refresh budgets, verifies the selected mode and restores the previous mode on
+failure. A private 0600 session file carries only the required graphics/session
+environment; its owner, KWin PID/start time and Wayland socket are checked.
+Missing metadata uses the unchanged X11 backend; corrupt/stale metadata fails.
+The normal X11 launcher does not publish this metadata or enable Wayland.
+
+A device trial exposed a separate KScreen 5.27 JSON-query exit failure:
+`malloc_consolidate(): unaligned fastbin chunk detected`. A bounded, process-local
+abort trace placed the failure in the static QTextStream destructor. Thirty help
+and thirty human-readable output queries passed; JSON queries failed three times
+in nine attempts. The [paired KScreen source](https://raw.githubusercontent.com/KDE/libkscreen/v5.27.10/src/doctor/doctor.cpp)
+leaves `showJson()` buffered, whereas `showOutputs()` flushes with `Qt::endl`.
+Requesting `-j -o` flushes before Qt teardown; 150 consecutive queries then passed
+in 11.59 seconds. The controller parses only the first JSON object, preserving
+precise rates instead of the rounded human-readable listing. Software QtQuick
+did not fix the failure; the separate KScreen backend experiment timed out and
+was removed. No crash is ignored or retried as success.
+
+With the helper temporarily mounted over the guest's control entry point, App
+mode requests passed this sequence with actual pixels and the same VM PID 12729:
+1920×1200@120 → 3408×2272@59.998 → 1920×1280@119.998 →
+1920×1200@59.885 → 1920×1200@120. A fullscreen native Wayland input probe then
+verified five points at each of native, aspect-fit and 1920×1200 modes; all were
+within two guest pixels. Each mode also received Qt Escape (`16777216`) while
+Android remained in the app. The probe's six flat colour bands intentionally do
+not meet the generic desktop screenshot diversity threshold; they were visually
+checked, and input acceptance uses actual guest event coordinates from journald.
+The guest Python suite passes 32 tests, covering both backends, rollback, rate
+precision, invalid mode IDs, stale sessions, symlinks and private file/socket
+checks. Production Wayland startup and packaging remain a separate next step.

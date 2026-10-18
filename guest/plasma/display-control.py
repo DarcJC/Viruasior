@@ -1,16 +1,13 @@
 #!/usr/bin/python3
-"""Bounded XRandR control, run as the fixed desktop user by avf-agent."""
+"""Bounded display control, run as the fixed desktop user by avf-agent."""
 import os
 import re
 import subprocess
 import sys
 from decimal import Decimal
-
-MAX_PIXELS = 8_388_608
-
-
-def valid_size(width, height):
-    return 1 <= width <= 4096 and 1 <= height <= 4096 and width * height <= MAX_PIXELS
+from display_limits import MAX_PIXELS, valid_size, valid_rate
+from display_session import load_wayland_environment
+from display_wayland import WaylandDisplay
 
 
 def parse_modes(text):
@@ -68,7 +65,7 @@ def parse_configs(text):
             if not rate:
                 continue
             millihz = int(Decimal(rate[1]) * 1000)
-            if not 10_000 <= millihz <= 120_250 or (width * height > 4_194_304 and millihz > 60_250):
+            if not valid_rate(width, height, millihz):
                 continue
             key = (width, height, millihz)
             modes[key] = (f"{width}x{height}", rate[1])
@@ -126,20 +123,27 @@ def resize(width, height):
 
 
 def main(arguments):
+    environment = load_wayland_environment()
+    query_sizes, query_rates = query, query_configs
+    resize_size, resize_config = resize, resize_rate
+    if environment is not None:
+        backend = WaylandDisplay(environment)
+        query_sizes, query_rates = backend.query, backend.query_configs
+        resize_size, resize_config = backend.resize, backend.resize_rate
     if arguments == ["QUERY_RATES"]:
-        _, current, modes = query_configs()
+        _, current, modes = query_rates()
         return "OK CONFIGS " + " ".join(str(n) for mode in [current, *modes] for n in mode)
     if (len(arguments) == 4 and arguments[0] == "RESIZE_RATE" and
             all(re.fullmatch(r"[0-9]{1,4}", v) for v in arguments[1:3]) and
             re.fullmatch(r"[0-9]{1,6}", arguments[3])):
-        return "OK CONFIG " + " ".join(map(str, resize_rate(*map(int, arguments[1:]))))
+        return "OK CONFIG " + " ".join(map(str, resize_config(*map(int, arguments[1:]))))
     if arguments == ["QUERY"]:
-        _, current, modes = query()
+        _, current, modes = query_sizes()
         if len(modes) > 64:
             raise ValueError("too-many-modes")
         return "OK MODES " + " ".join(str(n) for size in [current, *modes] for n in size)
     if len(arguments) == 3 and arguments[0] == "RESIZE" and all(re.fullmatch(r"[0-9]{1,4}", v) for v in arguments[1:]):
-        actual = resize(int(arguments[1]), int(arguments[2]))
+        actual = resize_size(int(arguments[1]), int(arguments[2]))
         return f"OK SIZE {actual[0]} {actual[1]}"
     raise ValueError("invalid-display-command")
 
