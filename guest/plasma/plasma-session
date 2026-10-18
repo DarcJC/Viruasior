@@ -16,7 +16,7 @@ export KWIN_COMPOSE=O2
 # Repaint the full GL back buffer; partial repaint otherwise flashes black tiles.
 export KWIN_USE_BUFFER_AGE=0
 # Restrict only the compositor, leaving Plasma and user applications free to
-# use all vCPUs. The wrapper derives the fastest tier from guest CPU capacity.
+# use all vCPUs. Prefer large cores, excluding the prime tier when present.
 export KDEWM=/opt/viruaisor/desktop-kwin
 startplasma-x11 &
 plasma_pid=$!

@@ -85,3 +85,34 @@ SELinux remains Enforcing. Host mounts, global power settings and system images
 are not modified. Temporary guest diagnostics are bounded and are removed at
 the end of the optimization session; the existing VM disk and user data are
 preserved. Raw test artifacts are local under `.pi/device-debug/`.
+
+## Large-core follow-up, 19 October
+
+The guest wrapper now selects the large-core tier on a three-tier CPU topology,
+excluding the prime tier. It uses the complete capacity topology even when an
+inherited affinity mask excludes little cores; it never widens that mask and
+preserves it if fewer than two suitable CPUs or valid capacity data are
+available. Two-tier big.LITTLE systems select their big tier. On this tablet the
+selected CPUs are 4–7. Four policy tests pass, including a failing test against
+the preceding prime-core implementation. A real desktop restart confirmed Xorg
+and KWin main-thread affinity 4–7 and Plasma affinity 0–9. Driver workers may
+independently reset their affinity; no host CPU governor/frequency limit changes
+are involved.
+
+A 60-second trial after moving the existing Xorg/KWin threads to 4–7 measured
+74.03 fps at 1920×1200 (p95 16.69 ms, p99 25.00 ms) and 62.28 fps at native
+resolution (p95 25.01 ms, p99 33.34 ms). This is close to the preceding prime-core
+trial but does not establish a measured energy saving or meet the stability
+targets. The prepared bundle was rebuilt and copied to the App's import cache
+after SHA-256 verification; it was **not imported over the existing VM disk**.
+
+Further isolated diagnostics rejected native BGRA scanout on this driver:
+AHardwareBuffer format 5 allocates, but reports `VK_FORMAT_UNDEFINED`, and an
+external `VK_FORMAT_B8G8R8A8_UNORM` image query returns
+`VK_ERROR_FORMAT_NOT_SUPPORTED`. The existing colour-correct RGBA path remains.
+Temporary guest library timing separates a roughly 5.5–6.5 ms `glFlush` from a
+roughly 0.2–0.3 ms subsequent Kopper flush/present. The wait is concentrated in
+the submit worker's DMA-BUF synchronization, rather than Vulkan queue submission
+itself. Disabling Gallium threading reduced the short-run rate to about 61 fps
+and was reverted. These timing libraries are diagnostic-only, loaded from guest
+`/tmp`; the shipped guest libraries remain unchanged.
