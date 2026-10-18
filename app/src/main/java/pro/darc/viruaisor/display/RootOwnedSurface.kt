@@ -62,18 +62,12 @@ internal class RootOwnedSurface private constructor(
         // registered GraphicBuffer reference dies. Keep one bounded reference
         // per scanout buffer instead of rebuilding RenderEngine imports each frame.
         val highResolution = frameWidth.toLong() * frameHeight > 4_194_304L
-        val retained = if (highResolution) {
-            // Match the high-resolution / <=60-Hz display budget. Paired trials
-            // improved this profile; the <=4-Mpixel / 120-Hz path did not benefit.
-            buffers.get(buffer.id, frameWidth, frameHeight) { retainHardwareBuffer(buffer) }
-        } else {
-            buffers.clear()
-            buffer
-        }
-        vsync.setEnabled(highResolution)
-        val slot = cadence.plan(System.nanoTime(), if (highResolution) size else null, vsync.phase)
+        val retained = buffers.get(buffer.id, frameWidth, frameHeight) { retainHardwareBuffer(buffer) }
+        vsync.setEnabled(true)
+        val slot = cadence.plan(System.nanoTime(), size, vsync.phase,
+            1_000_000_000L / if (highResolution) 60 else 120)
         if (slot != null) {
-            // Back-pressure only this frame sink, at most one 60-Hz period. Keep
+            // Back-pressure only this frame sink, at most one target period. Keep
             // the desired presentation one period ahead, never an unbounded queue.
             while (true) {
                 val wait = slot.submitAtNanos - System.nanoTime()

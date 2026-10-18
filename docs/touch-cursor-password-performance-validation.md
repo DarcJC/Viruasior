@@ -914,3 +914,91 @@ The droid account is still locked; SELinux is Enforcing and both host
 hidden-API settings are unchanged. No host-system change or prime-core
 binding was made. The native cadence patch is retained; stable wide-mode
 120 fps and rare native stalls remain under investigation.
+
+## Paced 120-Hz submission and renewed buffer-cache comparison (2026-10-19)
+
+The final wide trace from the native-only scheduler showed 1,325 buffer
+arrivals in 12 seconds (110.64/s), 245 intervals below 4 ms and 245 pending
+buffers replaced before display. Only 1,081 layer draws remained. The bursty
+submission path was therefore a distinct loss from the rare GC clusters.
+Extend the same scheduler to the <=4-Mpixel / 120-Hz budget, retaining the
+native 60-Hz budget. The initial one-period wide prototype keeps the old
+wide buffer-reference behavior; a second prototype adds bounded reference
+retention. All use the same renderer, guest ICD, workload and cores 4-7.
+
+Each table row follows a complete VM restart and a passing fullscreen
+motion/RGB/corner check. These are untraced actual own-layer presentations.
+
+| Configuration / capture | Duration | Actual fps | p95 / p99 ms | Intervals >20 ms |
+| --- | ---: | ---: | ---: | ---: |
+| Native-only pacing, `wide-cadence-B1` | 59.583 s | 94.29 | 16.673 / 16.699 | 12 |
+| Wide pacing only, `wide-cadence-A1` | 59.708 s | 99.97 | 16.671 / 16.693 | 6 |
+| Wide pacing + retained references, `wide-cadence-cache-A1` | 60.008 s | 103.80 | 16.669 / 16.692 | 6 |
+| Two-period lead + retained references, `wide-lead-cache-A1` | 59.883 s | 102.38 | 16.670 / 16.688 | 7 |
+| Native-only pacing, `wide-cadence-B2` | 59.375 s | 92.45 | 16.673 / 16.699 | 8 |
+| Wide pacing + retained references, `wide-cadence-cache-A2` | 59.967 s | 102.92 | 16.671 / 16.705 | 7 |
+
+Pooling elapsed time for B1/B2 versus cache-A1/A2 gives 93.369 versus
+103.363 presentations/s, a 10.70% increase. The candidate's two runs agree,
+and the return to baseline reproduces the lower rate. Its 13 long intervals
+versus 20 baseline intervals are not a proof of eliminating stalls: the second
+candidate run still reached 41.664 ms. Stable 120 fps remains unmet.
+
+The tradeoff is explicit: median ready-to-present latency rises from
+12.135/12.231 ms in the baseline runs to 17.319/17.358 ms, while p99 falls
+from 18.471/18.456 to 17.458/17.473 ms. This is buffer latency, not an
+end-to-end input-latency measurement. The two-period lead provides no further
+throughput benefit and is removed. Keep one-period submission and bounded
+reference retention for both profiles on the strength of the paired result.
+
+Separate 12-second traces confirm the mechanisms. Pacing alone has 1,155
+arrivals and 1,154 draws, no sub-4-ms arrival intervals and no pending-buffer
+replacement marker. Adding retained references removes all SurfaceFlinger
+texture import/map/unmap calls (1,154 Graphite texture imports before, zero
+after); RenderEngine CPU in these separate traces is 2,341.72 versus 922.67 ms.
+The root still imports each incoming Java
+HardwareBuffer, so that allocation is not eliminated. The two-period lead
+returns to burstier arrivals (134 below 4 ms), consistent with its lack of
+additional benefit. These traces report no error stats and are not mixed
+into the untraced performance samples.
+
+The final candidate APK is
+`c1ae1341196155769a93c2251a5524b65a9d4778dcec7ae3e3021ab19e6e63fe`.
+The rebuilt final source produces exactly those same APK bytes. The
+pacing-only prototype was `3d3eae80dec7bc78bd91fd6dc6d707f5b73ea517bc49588d3aaa06ab7fc6f30b`;
+the rejected two-period APK was `b41b69a6dc44bf1adbd425df11cbd90e7665d7bb6e6ac9c628c53ab6c4b92a3c`.
+Private evidence, temporary patches, red/green unit logs and traces are under
+`wide-cadence/`. Eight cadence tests, all Android unit tests, the debug APK
+build and the five-ELF/pinned-runtime packaging check pass.
+
+The pacing-only root log again correlates a long-frame cluster with GC:
+5,000 live BinderProxies at monotonic time 223819.277, GC at 223819.539,
+then long intervals at 223819.587-223819.712. This reinforces the separate
+lifecycle investigation, without claiming an allocation-cause A/B result.
+The two-period diagnostic trace also reveals 1,339 `allocateHelper` calls
+on crosvm's `vkr-ring-8` thread, averaging 0.397 ms. The label matches the
+traced allocation helper in
+[AOSP GraphicBufferAllocator](https://android.googlesource.com/platform/frameworks/native/+/refs/heads/main/libs/ui/GraphicBufferAllocator.cpp).
+This per-frame allocation is separate from the eliminated SurfaceFlinger imports; its
+calling path has not yet been identified. No additional synchronization or
+allocation-policy patch is included on the basis of these clues alone.
+
+Final regression uses the exact candidate on VM PID 3317. Native
+3408x2272@60000 delivers 59.950 presentations/s over 59.73 s, p95/p99
+16.684/16.699 ms, three intervals over 20 ms and a 33.339-ms maximum.
+The default fit mode 1920x1280@120000 delivers 98.065 presentations/s over
+60.13 s, p95/p99 16.672/16.704 ms, zero intervals over 20 ms and a
+16.806-ms maximum. Its verified viewport fills all 3408x2272 pixels. The
+fit result is a smoke sample, not a paired speedup claim for that resolution.
+
+Native -> wide -> fit transitions and five-point guest touch checks all pass
+without restarting that VM. Escape yields exactly one guest down/up pair;
+MainActivity remains focused and resumed. Runtime hash `0302b363...`, guest
+ICD `dcb191f5...` and launcher `4e577f33...` match the baseline. Xorg 384 and
+KWin 477 use cores 4-7 with matching PID opt-in; no service overrides exist.
+The account remains locked, SELinux Enforcing, hidden-API policy null, and
+the existing AVF exemption unchanged. Root display attachment, VM boot and
+actual displayed guest motion are verified using the existing permissions;
+no host-system change or prime-core binding was added. Keep the App open in
+fit mode for the remaining performance investigation. The retained gain
+does not close the 120-fps target or the rare native-stall work.

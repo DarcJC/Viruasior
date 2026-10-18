@@ -6,19 +6,22 @@ internal class RootDisplayCadence {
     data class Phase(val expectedPresentationNanos: Long, val intervalNanos: Long)
     private var mode: Long? = null
     private var lastTarget: Long? = null
+    private var targetPeriod = PERIOD_NANOS
 
-    fun plan(nowNanos: Long, mode: Long?, phase: Phase? = null): Slot? {
-        if (this.mode != mode) {
+    fun plan(nowNanos: Long, mode: Long?, phase: Phase? = null, targetPeriodNanos: Long = PERIOD_NANOS): Slot? {
+        require(targetPeriodNanos > 0)
+        if (this.mode != mode || targetPeriod != targetPeriodNanos) {
             this.mode = mode
+            targetPeriod = targetPeriodNanos
             lastTarget = null
         }
         if (mode == null) return null
         val interval = phase?.intervalNanos ?: 0L
         val ticksPerFrame = if (interval in 1_000_000L..17_000_000L)
-            (PERIOD_NANOS + interval / 2) / interval else 0L
+            (targetPeriod + interval / 2) / interval else 0L
         val aligned = ticksPerFrame > 0 &&
-            kotlin.math.abs(ticksPerFrame * interval - PERIOD_NANOS) <= PERIOD_NANOS / 100
-        val period = if (aligned) ticksPerFrame * interval else PERIOD_NANOS
+            kotlin.math.abs(ticksPerFrame * interval - targetPeriod) <= targetPeriod / 100
+        val period = if (aligned) ticksPerFrame * interval else targetPeriod
         var target = lastTarget?.plus(period) ?: (nowNanos + period)
         if (aligned && phase != null) {
             val anchor = phase.expectedPresentationNanos - 1_000_000L

@@ -5,7 +5,7 @@ import android.os.Looper
 import android.util.Log
 import android.view.Choreographer
 
-/** Reads the display clock only while the high-resolution frame sink is active. */
+/** Reads the display clock for this frame sink, stopping when it is closed. */
 internal class RootDisplayVsync : AutoCloseable {
     private val main = Handler(Looper.getMainLooper())
     @Volatile private var enabled = false

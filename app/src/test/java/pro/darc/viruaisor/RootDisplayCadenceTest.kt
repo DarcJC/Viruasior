@@ -7,6 +7,25 @@ import pro.darc.viruaisor.display.RootDisplayCadence
 class RootDisplayCadenceTest {
     private val period = RootDisplayCadence.PERIOD_NANOS
 
+    @Test fun highRefreshProfileUsesEveryPhysicalTick() {
+        val cadence = RootDisplayCadence()
+        val interval = 8_333_333L
+        var now = 1_000_000_000L
+        var expected = now + 6_000_000L
+        var previous: Long? = null
+        repeat(240) {
+            val slot = requireNotNull(cadence.plan(now, 1L,
+                RootDisplayCadence.Phase(expected, interval), interval))
+            previous?.let { assertEquals(interval, slot.presentAtNanos - it) }
+            assertTrue(slot.submitAtNanos - now <= interval)
+            assertEquals(0L, Math.floorMod(slot.presentAtNanos + 1_000_000L - expected, interval))
+            now = maxOf(now, slot.submitAtNanos) + 3_000_000L
+            cadence.submitted(slot)
+            previous = slot.presentAtNanos
+            expected += interval
+        }
+    }
+
     @Test fun fastProducerGetsAnEvenTimelineWithAtMostOnePeriodOfWait() {
         val cadence = RootDisplayCadence()
         var now = 1_000_000_000L
