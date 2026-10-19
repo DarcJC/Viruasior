@@ -1384,3 +1384,98 @@ produces the same candidate APK bytes. Evidence is in
 `.pi/device-debug/touch-perf-20261018/deadline-profile/`, with presentation
 captures under `.pi/device-debug/perf-60-20261018/`. The candidate stays
 installed for continued work toward stable 120/60 fps.
+
+## Application clocks and renewed Wayland comparison, 2026-10-19
+
+The next comparison keeps the retained `9d9e0c6` APK, D8 renderer, current
+Gallium/Venus libraries and desktop CPU mask 4–7. A temporary guest-only
+Wayland session uses the current display-control modules and per-process
+async sync-file opt-in for KWin/Xwayland. Its service override, helper bind
+mount and session metadata are removed afterward. No host settings change.
+
+Moving-window Surface counts alone overstate application progress. The
+existing Xlib fixture redraws/moves a window and calls XSync, but does not
+produce a distinct animation frame on every loop. Under Wayland its loop
+runs at roughly 85–94 Hz while the compositor presents about 119.45 fps.
+Those are useful pipeline measurements, not proof of 120 unique application
+frames or correct animation timing.
+
+A second fixture uses the same 900×300 QtQuick OpenGL window in both
+sessions, with moving RGB bars, `frameSwapped` counts and a 5-second QML
+timer compared against `Date.now()`. The GPU is Zink/Venus/Mali; the client
+does not receive the desktop-only async sync-file opt-in. All valid captures
+below have visible RGB motion, the requested duration and overlapping
+SurfaceFlinger timestamp windows. Probe interposition and profilers are
+absent from these captures.
+
+| Capture | Workload / mode | Actual fps | p95 / p99 / max ms | >20 ms |
+| --- | --- | ---: | ---: | ---: |
+| `wayland-current-wide1` | Xlib, 1920×1200 / 120 Hz | 119.447 | 8.375 / 8.415 / 33.394 | 1 |
+| `wayland-current-native2` | Xlib, native / 59.998 Hz | 60.000 | 16.684 / 16.708 / 24.994 | 9 |
+| `wayland-current-gpu-native1` | QtQuick, fresh native | 60.000 | 16.690 / 16.713 / 25.008 | 6 |
+| `wayland-current-gpu-wide1` | QtQuick, same window after native → 120 | 114.350 | 8.436 / 16.677 / 33.328 | 4 |
+| `wayland-current-gpu-wide2` | QtQuick, restarted at 120 | 113.522 | 16.658 / 16.683 / 33.334 | 3 |
+| `x11-current-gpu-wide2` | Same QtQuick, fresh 120 | 115.045 | 8.385 / 16.671 / 25.004 | 2 |
+| `x11-current-gpu-native2` | Same QtQuick, fresh native | 60.000 | 16.682 / 16.698 / 25.002 | 3 |
+
+Fresh native Wayland is now correctly timed: 300 swaps take 4,999–5,001 ms.
+However, switching that open window to 120 Hz retains Qt's initial 16.67 ms
+animation step: 300 swaps then take about 2.5–2.67 seconds. Restarting at
+120 Hz selects 8.33 ms and gives 600 swaps per approximately 5.08–5.28
+seconds. This is consistent with the startup refresh-rate cache in the
+[Qt 5.15.12 animation driver](https://raw.githubusercontent.com/qt/qtdeclarative/v5.15.12-lts-lgpl/src/quick/scenegraph/qsgcontext.cpp).
+Wayland is therefore not promoted to the default session.
+
+X11 exposes a different, reproducible pacing failure. At 120 Hz the client
+advances 600 swaps / five animation seconds in about 3.6–4.0 real seconds,
+while actual presentation is only 115 fps. At native 60 Hz, the visible
+client advances 300 swaps in approximately 2.7–3.0 seconds during the valid
+capture, while the Surface still presents 60 fps. `frameSwapped` is a
+submission-side observation; it is not a displayed-frame counter.
+
+A separate, process-local GLX/XCB probe confirms:
+
+- The queried swap interval is already 1. Neither `vblank_mode=3` nor
+  reapplying interval 1 after the first swap restores pacing.
+- Synchronous XCB Present requests have `options=8` (suboptimal reporting,
+  without the asynchronous bit), but their target MSC stays at 1.
+- Completed pixmap events repeatedly return `UST=0, MSC=0` in copy mode.
+  The GLX OML synchronization query also fails.
+- Ordinary-user, read-only DRM queries return `EOPNOTSUPP` (errno 95) for
+  every virtual CRTC. The guest is using Xorg 21.1.11 and its existing
+  6.12.92 Android guest kernel.
+
+This local evidence identifies an absent guest presentation clock. The
+[Xorg Present implementation](https://raw.githubusercontent.com/mirror/xserver/master/present/present_scmd.c)
+also shows the relevant failure path: a failed CRTC clock query leaves
+zero counters, and failed vblank scheduling falls through to immediate
+execution. A guest display-server clock fallback is the next investigation;
+changing the host kernel or globally disabling synchronization is not needed
+to test it. The probe is removed, and no new pacing workaround is retained.
+
+Excluded attempts are `wayland-current-native1` (requested 60,000 mHz when
+the session advertised 59,998), `x11-current-gpu-wide1` (stale Wayland
+Xauthority on a diagnostic connection), and `x11-current-gpu-native1`
+(guest lock screen). None has a valid FPS result. The normal X11 diagnostic
+connection is recreated, and the native retry uses a bounded guest DBus
+screensaver inhibitor after unlocking the current droid session. Account
+credentials are not changed.
+
+Evidence is under `.pi/device-debug/touch-perf-20261018/wayland-current/`,
+including `all-client-clocks.log`, `drm-clock.log`,
+`native-complete-probe2.log`, and the exact QML/probe sources. Presentation
+captures are under `.pi/device-debug/perf-60-20261018/`. These results do
+not establish stable 120 fps or stall-free native 60 fps; the goal remains
+open with the previously validated queue and presentation changes retained.
+
+Restoration keeps VM PID 13181 alive, recreates the ordinary X11 probe and
+diagnostic connection, and passes wide → native → aspect-matched fit mode
+switches plus five-point touch mapping in all three modes. The App remains
+focused with actual guest pixels visible. Xorg/KWin remain on 4–7 with
+their own-PID async scope, the three guest hashes are unchanged, and droid
+remains locked (`L`). The restoration root log has 29–30 Binder proxies
+through 219,660 posted frames and no submission/release error. No Wayland
+drop-in, display-helper mount or session metadata remains. The client GLX
+probe, old inhibitor and temporary port-4054 diagnostic are stopped. Host
+SELinux remains Enforcing and the global hidden-API policy remains null;
+the existing specific VirtualMachine exemption is unchanged.
