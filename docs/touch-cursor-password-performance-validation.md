@@ -2150,3 +2150,96 @@ Temporary Qt GPU probes and the input-check terminal are closed, while the
 bounded Xlib probe remains available for continued work. No performance
 change from this window experiment is shipped. The performance goal remains
 active; the App will be closed after the actual goal is achieved.
+
+## Retained redirected-window Present clock (2026-10-19)
+
+The earlier global fallback disabled a real optimization: an observation-only
+Present probe records KWin flip completions (`mode=1`) on the original server,
+despite its zero MSC. Returning a null CRTC for that window would reject the
+flip before the driver is consulted. The revised fallback excludes the screen,
+current flip and pending flip pixmaps. Only a redirected application with one
+valid active output and a failed driver clock query uses the software clock.
+
+The revised server preserves KWin flip completions. The QtQuick GPU client now
+receives advancing positive UST/MSC and five animation seconds occupy about
+five wall seconds at either refresh rate. The probe is removed before every
+presentation measurement. Native and wide captures below use fresh-mode clients,
+KWin OpenGL/full repaint, buffer age zero, desktop cores 4–7 and the unchanged
+e1 APK / D8 renderer. RGB motion checks and timestamp coverage pass for every row.
+
+| Capture | Clock | Mode | Seconds | Actual fps | p95 / p99 / max ms | >20 ms |
+| --- | --- | --- | ---: | ---: | ---: | ---: |
+| `redirected-clock-b1-native` | On | 3408×2272 | 59.567 | 59.966 | 16.680 / 16.698 / 33.335 | 3 |
+| `redirected-clock-b1-wide` | On | 1920×1200 | 60.083 | 116.405 | 8.376 / 16.670 / 24.980 | 1 |
+| `redirected-clock-a2-wide` | Off, same binary | 1920×1200 | 59.817 | 112.544 | 16.663 / 16.677 / 25.008 | 1 |
+| `redirected-clock-b2-wide` | On | 1920×1200 | 180.017 | 116.195 | 8.379 / 16.669 / 25.010 | 4 |
+| `redirected-clock-b2-native` | On | 3408×2272 | 179.983 | 59.950 | 16.677 / 16.696 / 41.666 | 17 |
+
+The three-minute native log consistently reports 300 swaps in 4.999–5.001
+seconds. Median ready-to-present latency remains about 17.36 ms. The off row
+is one restart comparison and does not establish a repeatable FPS gain. The
+retained benefit is correct animation pacing while preserving the compositor's
+flip path; wide presentation remains around the original 116 fps baseline.
+This does not meet stable 120 fps. Qt 5's startup-cached animation interval
+across a refresh-rate switch remains a separate limitation; old-client rows
+after a mode change are not counted as fresh-mode clock validation.
+
+The build pins official Xorg 21.1.11 source and the paired guest libraries.
+The clock arithmetic tests, a harness extracting the actual CRTC-selection
+function, all 34 guest Python tests and five rootfs tests pass. The selection
+harness first fails when the compositor exclusions are absent; the launcher
+tests first fail without private-server selection and environment isolation.
+The production cross-build produces Xorg `92a09f2d…`, installed only at
+`/opt/viruaisor/xorg/Xorg`; the distro server remains `381e81b8…`. The launcher
+is `a2ed2c60…` and supplies the clock flag only to the private Xorg executable.
+
+The temporary bind mount and service environment override are removed after
+the private install. A complete App-controlled VM stop/start changes VM PID
+16326 to 28895 and confirms the private server, isolated environment, original
+KWin/Mesa, cores 4–7, 50 µs timer slack and active hardware composition. No
+recovery timer or diagnostic preload remains active. Before the restart,
+all five touch points at native, wide and fit resolutions are within one
+guest pixel, and Escape gives exactly one guest down/up pair without leaving
+MainActivity. Fit mode fills the 3:2 fullscreen Surface.
+
+After that VM restart the App selects its default 1920×1280 fit mode. The
+capture named `redirected-clock-private-wide` is therefore a **fit-mode**
+sample, despite its filename: 116.399 fps over 59.975 seconds, p99 16.669 ms,
+four intervals above 20 ms and complete coverage. Live RandR geometry and
+fullscreen bounds confirm the mode; it is not included in the 1920×1200 table.
+
+The existing root bridge is available (PID 28855), both existing AVF grants
+remain true, AVF boots the VM, the fullscreen Surface is attached, and real
+RGB guest motion is captured. APK e1 and renderer D8 hashes are unchanged;
+SELinux is Enforcing. No host-system configuration or prime-core binding is
+changed. Raw evidence is in `touch-perf-20261018/redirect-clock/`, with own-layer
+presentation captures in `perf-60-20261018/`, both under `.pi/device-debug/`.
+
+The prepared image is assembled from the existing distro/package root with
+current guest services, helpers, agent and verified paired Mesa libraries.
+This incremental assembly avoids registering a global binfmt handler. The
+normal guest-Xorg cross-build passes separately; the full chroot-based bundle
+builder is not claimed to have run. Guest-agent C tests, ext4 checking, binary
+readback from the image and ZIP CRC verification pass. The new prepared ZIP
+hash is `7d10f4693d50dc2526d28c74ffd0396242d5e87a290fb3a834bf569fe6d8a01c`;
+the previous `9fd34a16…` bundle is retained locally. Existing VM data is not
+replaced by this image preparation.
+
+### Buffer-age comparison with the corrected client clock
+
+The previous buffer-age trial is repeated with the retained redirected-only
+clock. Candidate KWin uses buffer age one, explicitly disables Intel swap
+events and selects software vblank; full repaint and all fences remain active.
+No preload is used. The 60-second sequence is:
+
+| Capture | KWin configuration | Actual fps | p95 / p99 ms | >20 ms |
+| --- | --- | ---: | ---: | ---: |
+| `scoped-age-a1-wide` | Original | 116.718 | 8.372 / 16.668 | 3 |
+| `scoped-age-b1-wide` | Buffer age one | 113.455 | 16.658 / 16.679 | 15 |
+| `scoped-age-a2-wide` | Original restored | 113.135 | 16.661 / 16.675 | 7 |
+
+All three 1920×1200 captures pass motion and coverage checks. The last control
+does not recover the first control's rate, so the full difference cannot be
+attributed to buffer age. This run establishes no benefit; buffer age zero
+and the exact saved KWin environment are restored. There is no new retained
+performance setting from this comparison.

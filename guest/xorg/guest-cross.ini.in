@@ -1,0 +1,19 @@
+[binaries]
+c = ['aarch64-linux-gnu-gcc', '--sysroot=@SYSROOT@', '-B@SYSROOT@/usr/lib/', '-nostdinc', '-isystem', '@GCC_INCLUDE@', '-DLIBBSD_OVERLAY', '-isystem', '@SYSROOT@/usr/include/bsd', '-isystem', '@SYSROOT@/usr/include']
+ar = 'aarch64-linux-gnu-ar'
+strip = 'aarch64-linux-gnu-strip'
+pkg-config = 'pkg-config'
+
+[host_machine]
+system = 'linux'
+cpu_family = 'aarch64'
+cpu = 'armv8-a'
+endian = 'little'
+
+[properties]
+needs_exe_wrapper = true
+sys_root = '@SYSROOT@'
+pkg_config_libdir = ['@SYSROOT@/usr/lib/pkgconfig', '@SYSROOT@/usr/share/pkgconfig']
+
+[built-in options]
+c_link_args = ['-L@SYSROOT@/usr/lib', '-Wl,-rpath-link,@SYSROOT@/usr/lib']

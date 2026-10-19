@@ -32,10 +32,33 @@ class DesktopCpuTest(unittest.TestCase):
                     patch('desktop_cpu.sys.argv', [wrapper, '--version']), \
                     patch('desktop_cpu.os.sched_getaffinity', return_value={4, 5}), \
                     patch('desktop_cpu.Path.glob', return_value=[]), \
+                    patch('desktop_cpu.Path.is_file', return_value=False), \
                     patch('desktop_cpu.os.execv') as execute:
                 main()
                 self.assertEqual(str(os.getpid()), os.environ[key])
                 execute.assert_called_once_with(program, [program, '--version'])
+
+    def test_private_xorg_enables_clock_only_for_its_own_exec(self):
+        clock_key = 'VIRUAISOR_X11_SOFTWARE_CLOCK'
+        for wrapper, installed, executable, expected in (
+                ('desktop-xorg', True, True, '/opt/viruaisor/xorg/Xorg'),
+                ('desktop-xorg', False, True, '/usr/bin/Xorg'),
+                ('desktop-xorg', True, False, '/usr/bin/Xorg'),
+                ('desktop-kwin', True, True, '/usr/bin/kwin_x11')):
+            with self.subTest(wrapper=wrapper, installed=installed, executable=executable), \
+                    patch.dict(os.environ, {clock_key: 'inherited-parent'}), \
+                    patch('desktop_cpu.sys.argv', [wrapper, ':0', '-nolisten', 'tcp']), \
+                    patch('desktop_cpu.Path.is_file', return_value=installed), \
+                    patch('desktop_cpu.os.access', return_value=executable), \
+                    patch('desktop_cpu.os.sched_getaffinity', return_value={4, 5}), \
+                    patch('desktop_cpu.Path.glob', return_value=[]), \
+                    patch('desktop_cpu.os.execv') as execute:
+                main()
+                execute.assert_called_once_with(expected, [expected, ':0', '-nolisten', 'tcp'])
+                if expected == '/opt/viruaisor/xorg/Xorg':
+                    self.assertEqual('1', os.environ.get(clock_key))
+                else:
+                    self.assertIsNone(os.environ.get(clock_key))
 
 
 if __name__ == '__main__':

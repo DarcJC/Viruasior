@@ -34,6 +34,9 @@ install -Dm0644 "$repo/guest/plasma/avf-plasma.service" "$root/usr/lib/systemd/s
 install -m0644 "$repo/guest/plasma/venus.env" "$root/etc/viruaisor/venus.env"
 bash "$repo/scripts/build-kwin-full-repaint.sh"
 install -Dm0755 "$workspace_out/viruaisor_full_repaint.so" "$root/usr/lib/qt/plugins/kwin/effects/plugins/viruaisor_full_repaint.so"
+bash "$repo/scripts/build-guest-xorg.sh"
+install -Dm0755 "$workspace_out/xorg/Xorg" "$root/opt/viruaisor/xorg/Xorg"
+install -m0644 "$workspace_out/xorg/COPYING" "$workspace_out/xorg/SHA256SUMS" "$root/opt/viruaisor/xorg/"
 python3 -m unittest discover -s "$repo/guest/plasma" -p '*test.py'
 for file in venus-preflight plasma-session display-control.py desktop_cpu.py; do install -m0755 "$repo/guest/plasma/$file" "$root/opt/viruaisor/$file"; done
 for file in display_limits.py display_session.py display_wayland.py; do install -m0644 "$repo/guest/plasma/$file" "$root/opt/viruaisor/$file"; done

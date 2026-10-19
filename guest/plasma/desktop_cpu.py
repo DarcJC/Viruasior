@@ -22,6 +22,15 @@ def main():
     program = programs.get(Path(sys.argv[0]).name)
     if program is None:
         raise SystemExit('Invoke as desktop-xorg or desktop-kwin')
+    # Keep the distro server available for older bundles. Only our paired
+    # server gets the missing-vblank clock; do not pass the opt-in to clients.
+    clock_key = 'VIRUAISOR_X11_SOFTWARE_CLOCK'
+    os.environ.pop(clock_key, None)
+    private_xorg = Path('/opt/viruaisor/xorg/Xorg')
+    if (Path(sys.argv[0]).name == 'desktop-xorg' and private_xorg.is_file()
+            and os.access(private_xorg, os.X_OK)):
+        program = str(private_xorg)
+        os.environ[clock_key] = '1'
     try:
         allowed = os.sched_getaffinity(0)
         capacities = {int(path.parent.name[3:]): int(path.read_text())

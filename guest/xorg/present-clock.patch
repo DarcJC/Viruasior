@@ -1,0 +1,151 @@
+--- a/present/present_priv.h
++++ b/present/present_priv.h
+@@ -36,6 +36,7 @@
+ #include <xfixes.h>
+ #include <randrstr.h>
+ #include <inttypes.h>
++#include "present_clock.h"
+ 
+ #if 0
+ #define DebugPresent(x) ErrorF x
+@@ -156,6 +157,7 @@
+     uint64_t                    unflip_event_id;
+ 
+     uint32_t                    fake_interval;
++    struct present_clock        fallback_clock;
+ 
+     /* Currently active flipped pixmap and fence */
+     RRCrtcPtr                   flip_crtc;
+@@ -355,6 +357,9 @@
+ 
+ void
+ present_fake_screen_init(ScreenPtr screen);
++
++void
++present_fake_set_clock(ScreenPtr screen, uint64_t period_ns);
+ 
+ void
+ present_fake_queue_init(void);
+--- a/present/present_fake.c
++++ b/present/present_fake.c
+@@ -30,13 +30,29 @@
+     uint64_t                    event_id;
+     OsTimerPtr                  timer;
+     ScreenPtr                   screen;
++    uint64_t                    target_msc;
+ } present_fake_vblank_rec, *present_fake_vblank_ptr;
++
++void
++present_fake_set_clock(ScreenPtr screen, uint64_t period_ns)
++{
++    present_screen_priv_ptr priv = present_screen_priv(screen);
++    if (priv->fallback_clock.period_ns != period_ns)
++        ErrorF("VIRUAISOR_PRESENT_CLOCK period_ns=%llu\n", (unsigned long long) period_ns);
++    present_clock_set(&priv->fallback_clock, GetTimeInMicros() * 1000, period_ns);
++}
+ 
+ int
+ present_fake_get_ust_msc(ScreenPtr screen, uint64_t *ust, uint64_t *msc)
+ {
+     present_screen_priv_ptr screen_priv = present_screen_priv(screen);
+ 
++    if (screen_priv->fallback_clock.period_ns) {
++        uint64_t now = GetTimeInMicros() * 1000;
++        *msc = present_clock_msc(&screen_priv->fallback_clock, now);
++        *ust = present_clock_deadline(&screen_priv->fallback_clock, *msc) / 1000;
++        return Success;
++    }
+     *ust = GetTimeInMicros();
+     *msc = (*ust + screen_priv->fake_interval / 2) / screen_priv->fake_interval;
+     return Success;
+@@ -58,6 +74,14 @@
+ {
+     present_fake_vblank_ptr     fake_vblank = arg;
+ 
++    present_screen_priv_ptr priv = present_screen_priv(fake_vblank->screen);
++    if (priv->fallback_clock.period_ns) {
++        CARD32 delay = present_clock_delay_ms(&priv->fallback_clock,
++                                             GetTimeInMicros() * 1000,
++                                             fake_vblank->target_msc);
++        if (delay)
++            return delay;
++    }
+     present_fake_notify(fake_vblank->screen, fake_vblank->event_id);
+     xorg_list_del(&fake_vblank->list);
+     TimerFree(fake_vblank->timer);
+@@ -88,7 +112,10 @@
+     present_screen_priv_ptr     screen_priv = present_screen_priv(screen);
+     uint64_t                    ust = msc * screen_priv->fake_interval;
+     uint64_t                    now = GetTimeInMicros();
+-    INT32                       delay = ((int64_t) (ust - now)) / 1000;
++    INT32                       legacy_delay = ((int64_t) (ust - now)) / 1000;
++    CARD32                      delay = screen_priv->fallback_clock.period_ns ?
++        present_clock_delay_ms(&screen_priv->fallback_clock, now * 1000, msc) :
++        (legacy_delay > 0 ? legacy_delay : 0);
+     present_fake_vblank_ptr     fake_vblank;
+ 
+     if (delay <= 0) {
+@@ -101,6 +128,7 @@
+         return BadAlloc;
+ 
+     fake_vblank->screen = screen;
++    fake_vblank->target_msc = msc;
+     fake_vblank->event_id = event_id;
+     fake_vblank->timer = TimerSet(NULL, 0, delay, present_fake_do_timer, fake_vblank);
+     if (!fake_vblank->timer) {
+--- a/present/present_scmd.c
++++ b/present/present_scmd.c
+@@ -161,7 +161,43 @@
+     if (!screen_priv->info->get_crtc)
+         return NULL;
+ 
+-    return (*screen_priv->info->get_crtc)(window);
++    RRCrtcPtr crtc = (*screen_priv->info->get_crtc)(window);
++    const char *enabled = getenv("VIRUAISOR_X11_SOFTWARE_CLOCK");
++    if (enabled && strcmp(enabled, "1") == 0 && crtc && crtc->mode &&
++        screen_priv->info->get_ust_msc) {
++        ScreenPtr screen = window->drawable.pScreen;
++        PixmapPtr window_pixmap = screen->GetWindowPixmap(window);
++        /* A software CRTC fallback disables Present flips. Apply it only
++         * to redirected application pixmaps; preserve the compositor's
++         * screen, current flip and pending flip paths. */
++        if (!window_pixmap || window_pixmap == screen->GetScreenPixmap(screen) ||
++            window_pixmap == screen_priv->flip_pixmap ||
++            window_pixmap == present_flip_pending_pixmap(screen))
++            return crtc;
++        rrScrPrivPtr rr = rrGetScrPriv(screen);
++        int active = 0;
++        if (rr) {
++            for (int i = 0; i < rr->numCrtcs; i++)
++                active += rr->crtcs[i]->mode != NULL;
++        }
++        uint64_t ust, msc;
++        xRRModeInfo *mode = &crtc->mode->mode;
++        if (active == 1 && mode->dotClock && mode->hTotal && mode->vTotal &&
++            (*screen_priv->info->get_ust_msc)(crtc, &ust, &msc) != Success) {
++            uint64_t numerator = (uint64_t) mode->hTotal * mode->vTotal * 1000000000;
++            uint64_t denominator = mode->dotClock;
++            if (mode->modeFlags & RR_DoubleScan)
++                numerator *= 2;
++            if (mode->modeFlags & RR_Interlace)
++                denominator *= 2;
++            uint64_t period = (numerator + denominator / 2) / denominator;
++            if (period >= 4000000 && period <= 100000000) {
++                present_fake_set_clock(window->drawable.pScreen, period);
++                return NULL;
++            }
++        }
++    }
++    return crtc;
+ }
+ 
+ static uint32_t
+@@ -233,7 +269,7 @@
+ {
+     uint64_t            ust = 0, crtc_msc = 0;
+ 
+-    if (vblank->crtc)
++    if (vblank->crtc || present_screen_priv(vblank->screen)->fallback_clock.period_ns)
+         (void) present_get_ust_msc(vblank->screen, vblank->crtc, &ust, &crtc_msc);
+ 
+     present_execute(vblank, ust, crtc_msc);
