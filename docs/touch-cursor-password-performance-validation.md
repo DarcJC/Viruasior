@@ -2285,3 +2285,114 @@ The verified `7d10f469…` prepared bundle is also uploaded to the App's import
 cache using a temporary filename, checked on the tablet, then renamed into
 place. It is not imported over the existing VM disk. The committed clock fix
 remains active; neither buffer-age nor full-swap-wait changes are retained.
+
+## Qt software animation cadence (2026-10-19)
+
+The normal session's `QT_QUICK_BACKEND=software` has no `QSG_RENDER_LOOP`
+override. Qt therefore selects its basic software loop, driven by the default
+16 ms animation timer. A fresh 900×300 QML motion window at verified
+1920×1200 / 120 Hz produces only 312–313 swaps per five seconds. Its actual
+displayed rate is 62.417 FPS, despite the display's 120 Hz mode. Earlier GPU
+or explicitly threaded-software probes do not represent this default path.
+
+The retained approach is a small QPA generic plugin under
+`/opt/viruaisor/qt/plugins/generic/`. It observes the primary screen and sets
+Qt's existing GUI animation timer to 8 ms at 120 Hz or 16 ms at native 60 Hz.
+Elapsed wall time still determines animation speed. It is restricted to the
+X11 basic software backend and leaves explicit threaded/GPU/fixed-step modes
+alone. No Qt renderer, library, GPU wait, affinity or Android setting is
+replaced. The session environment enables it for newly started Qt clients.
+
+The black-box cadence check fails on the control's ~62.5 updates/s and passes
+with the plugin at ~124 updates/s, with five animation seconds still taking
+five wall seconds. The same client (PID 24599) survives native → wide → native;
+logs show 16 → 8 → 16 ms and correct cadence in all three phases. This timer
+tolerance is not a claim of stable displayed 120 FPS.
+
+| Capture | Configuration | Actual FPS | p95 / p99 ms | >20 ms |
+| --- | --- | ---: | ---: | ---: |
+| `qt-basic-a1` | Actual default, basic software | 62.417 | 16.707 / 25.000 | 71 |
+| `qt-tuned-b1` | Basic software, refresh timer | 115.528 | 8.403 / 16.678 | 3 |
+| `qt-tuned-native-b1` | Same client restored to native | 60.000 | 16.690 / 16.714 | 15 |
+
+These 60-second rows have complete timestamp coverage, RGB motion, and mode
+checks before and after sampling. The `qt-basic-a2` sample also returns to
+~62.8 FPS, but overlaps Plasma replacement diagnostics and is excluded from
+the clean comparison. A ten-second process-CPU observation of the tuned
+software probe uses about 7.2% of one CPU; it is not a power measurement.
+
+The initial plugin prototype incorrectly gave its returned object both a
+QObject parent and Qt generic-plugin ownership. It rendered correctly but
+crashed on clean application exit. `lifecycle.qml` reproduces control exit 0
+versus candidate SIGSEGV; removing the duplicate ownership makes both exit 0.
+The initial binary `bc889cd2…` is rejected. The corrected installed binary is
+`08c9a4b63e83cebcce5ca1bc8276788bb1a97cdbcfabd5f10638a74d1900047d`.
+Its environment file is `352bfb5c…`. Plasma's desktop and menu are visually
+checked; the normal restarted session loads the corrected private library,
+has one panel and desktop, and retains OpenGL Zink/Venus/Mali compositing.
+
+The diagnostic server also needed a fresh session environment after restarting
+the desktop. Reusing the old D-Bus address invalidates subsequent `--replace`
+tests; the old diagnostic is replaced with a bounded instance inheriting the
+new Plasma environment. No host service or system setting is modified.
+
+### GPU backend comparison not retained
+
+A separate scenegraph prototype fixes Qt's GPU animation driver's cached
+refresh rate: an existing 60 Hz client otherwise plays five animation seconds
+in about 2.5 seconds after switching to 120 Hz. The prototype correctly tracks
+60 → 120 → 60 while reusing the paired GPU renderer. However, it does not
+justify changing the session to the GPU Qt Quick backend:
+
+| Capture | Qt client backend | Actual FPS | >20 ms |
+| --- | --- | ---: | ---: |
+| `qt-backend-software-a1` | Explicitly threaded software | 112.515 | 6 |
+| `qt-backend-gpu-b1` | GPU scenegraph prototype | 108.896 | 4 |
+| `qt-backend-software-a2` | Threaded software restored | 111.606 | 10 |
+| `qt-backend-gpu-b2` | GPU repeat | 108.773 | 6 |
+
+All four rows have complete coverage and visible motion. The GPU client uses
+about 19.7% of one CPU in a ten-second observation, versus 7.8% for threaded
+software in this small scene. The GPU scenegraph prototype remains only under
+the ignored diagnostic directory. It is neither installed into the prepared
+image nor enabled by the session. Evidence is under
+`.pi/device-debug/touch-perf-20261018/qt-refresh/`; actual frame captures are
+under `.pi/device-debug/perf-60-20261018/`.
+
+### Installed plugin and long captures
+
+After installing the corrected plugin and session environment, the desktop is
+restarted normally. Fresh probes inherit the installed environment, assert
+`QT_PLUGIN_PATH=/opt/viruaisor/qt/plugins`, and receive no temporary backend
+override. Both three-minute captures have complete coverage and visible motion:
+
+| Capture | Mode | Seconds | Actual FPS | p95 / p99 / max ms | >20 ms |
+| --- | --- | ---: | ---: | ---: | ---: |
+| `qt-installed-wide` | 1920×1200 / 120 Hz | 179.800 | 115.945 | 8.383 / 16.671 / 16.798 | 0 |
+| `qt-installed-native` | 3408×2272 / 60 Hz | 179.783 | 60.000 | 16.690 / 16.722 / 33.336 | 60 |
+
+Wide now gives about 86% more displayed frames than the default basic-software
+control, but still misses some 120 Hz refreshes. Native averages 60 FPS with
+occasional longer intervals; average FPS alone does not establish perfect
+frame pacing. The compositor/presentation path remains the next bottleneck.
+
+The prepared image is rebuilt from the previously verified distro root without
+host binfmt registration. Ext4 checking, plugin/config readback and ZIP CRC
+validation pass. Its ZIP hash is
+`caafb840204ca0a3386dbc992b8980b6e1a296a6be2fa70a47015d00309aa10d`
+(1,692,823,603 bytes). The previous `7d10f469…` bundle remains available locally.
+
+Final input regression checks at native, wide and 1920×1280 fit mode pass:
+all five touch points are within one guest pixel, fit occupies the full 3:2
+Surface, and Escape produces one guest down/up pair while MainActivity stays
+foreground. The installed-plugin lifecycle test exits zero for basic software,
+threaded software, GPU and fixed-step cases; only basic software activates
+the plugin. The fitted desktop menu is also visually checked after installation.
+
+Root helper 28855 and VM 28895 remain available; both existing AVF grants are
+true, the VM is booted, the fullscreen Surface is attached, and actual guest
+frames are displayed. APK e1 / native D8 remain unchanged. Xorg and KWin use
+cores 4–7 with 50 µs timer slack. The final root-frame log advances from
+244,140 to 314,520, with 29–31 Binder proxies and no submission/release errors.
+The installation recovery timer is stopped after verification. SELinux stays
+Enforcing; no host-system setting or prime-core binding is changed.

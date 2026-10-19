@@ -32,6 +32,8 @@ install -Dm0755 "$repo/guest/avf-agent/avf-agent" "$root/usr/local/sbin/avf-agen
 install -Dm0644 "$repo/docs/guest/avf-agent.service" "$root/usr/lib/systemd/system/avf-agent.service"
 install -Dm0644 "$repo/guest/plasma/avf-plasma.service" "$root/usr/lib/systemd/system/avf-plasma.service"
 install -m0644 "$repo/guest/plasma/venus.env" "$root/etc/viruaisor/venus.env"
+bash "$repo/scripts/build-qt-software-refresh.sh"
+install -Dm0755 "$workspace_out/libviruaisor_software_refresh.so" "$root/opt/viruaisor/qt/plugins/generic/libviruaisor_software_refresh.so"
 bash "$repo/scripts/build-kwin-full-repaint.sh"
 install -Dm0755 "$workspace_out/viruaisor_full_repaint.so" "$root/usr/lib/qt/plugins/kwin/effects/plugins/viruaisor_full_repaint.so"
 bash "$repo/scripts/build-guest-xorg.sh"
