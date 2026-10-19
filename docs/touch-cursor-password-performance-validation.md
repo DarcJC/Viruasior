@@ -1479,3 +1479,203 @@ drop-in, display-helper mount or session metadata remains. The client GLX
 probe, old inhibitor and temporary port-4054 diagnostic are stopped. Host
 SELinux remains Enforcing and the global hidden-API policy remains null;
 the existing specific VirtualMachine exemption is unchanged.
+
+## Unretained guest Xorg software presentation clock, 2026-10-19
+
+A private, explicitly enabled fallback addresses the zero-UST/MSC failure in the paired
+Xorg 21.1.11. It activates only for one active output with a valid mode when
+the driver clock query fails. It derives a period from the actual mode clock
+and scan totals, preserves MSC across rate changes, and uses Xorg's existing
+software-vblank queue. Millisecond waits round upward and callbacks recheck
+the target. Wait-fence re-execution reads the same clock; real GPU fences,
+pixmap ownership, Android scheduling and CPU affinity are unchanged. This
+software pacing clock does not measure physical scanout.
+
+The initial trial binds a private build over the guest server and compares
+the same binary with the environment opt-in on/off/on. The APK (`e1f20f86…`),
+D8 renderer, guest Gallium/Venus and VM PID 13181 stay fixed. Xorg and KWin
+remain on cores 4–7. The workload is the same QtQuick GPU animation as above,
+with fresh clients after mode changes. Clock interposition and CPU sampling
+are separate from FPS capture; every valid capture has visible RGB motion,
+the requested duration and overlapping timestamp windows.
+
+| Capture | Clock / mode | Seconds | Actual fps | p95 / p99 / max ms | >20 ms |
+| --- | --- | ---: | ---: | ---: | ---: |
+| `x11-clock-a2-wide` | on / 1920×1200 | 59.692 | 118.308 | 8.377 / 16.664 / 16.736 | 0 |
+| `x11-clock-b1-wide` | off / 1920×1200 | 59.883 | 114.139 | 16.647 / 16.673 / 16.757 | 0 |
+| `x11-clock-a3-wide` | on / 1920×1200 | 179.717 | 116.967 | 8.365 / 16.670 / 25.040 | 4 |
+| `x11-clock-a2-native` | on / 3408×2272 | 59.367 | 60.000 | 16.683 / 16.700 / 16.783 | 0 |
+| `x11-clock-b1-native` | off / 3408×2272 | 59.350 | 60.000 | 16.680 / 16.699 / 25.005 | 4 |
+| `x11-clock-a3-native` | on / 3408×2272 | 179.700 | 59.989 | 16.685 / 16.708 / 33.330 | 3 |
+| `x11-clock-final-wide` | final private build on / 1920×1200 | 60.133 | 112.334 | 16.664 / 16.675 / 16.804 | 0 |
+| `x11-clock-final-native` | final private build on / 3408×2272 | 59.983 | 58.966 | 16.692 / 25.006 / 33.352 | 105 |
+| `x11-clock-b2-wide` | same private build off / 1920×1200 | 59.692 | 116.331 | 8.371 / 16.669 / 25.010 | 2 |
+| `x11-clock-b2-native` | same private build off / 3408×2272 | 59.333 | 59.983 | 16.681 / 16.698 / 33.342 | 4 |
+
+The first two candidate wide captures pool to 117.302 fps, 2.77% above the
+same-binary control. Both candidate p95 intervals are near one refresh;
+the first control p95 is near two. However, the private-path repeat regresses
+in both modes, particularly native long frames, and disabling the clock in
+that same final binary restores cadence. The initial gain is therefore not
+a reliable retention result. The clock correctness fix remains experimental
+until its interaction with compositor scheduling is resolved. The proposed
+production integration was withdrawn after the additional trials below.
+
+The correctness change is larger: without the fallback, 600 swaps / five
+animation seconds take roughly 3.6–4.2 real seconds at 120 Hz, and 300 swaps
+often take 2.45–3.6 seconds at native 60 Hz. With the fallback, Present
+completions contain positive, advancing UST/MSC; the same animation takes
+approximately five real seconds. The native long run stays around
+4,999–5,001 ms per timer; late wide samples are about 5,016–5,128 ms. The GLX
+OML synchronization query still fails and is not claimed fixed. Qt 5's cached
+startup animation step across refresh changes is a separate remaining issue.
+
+Separate 10-second guest CPU observations are not a power measurement. At
+wide resolution, summed QML/Xorg/KWin CPU is about 64.0% and 58.2% of one
+core in the candidate samples, versus 58.7% in the control. No CPU or power
+saving is established. No prime-core binding, frequency or host policy changes
+are made.
+
+The clock tests first fail on a counter reset during rate changes and then
+on an oversized timer delay. The final helper preserves the counter and caps
+long waits at INT32_MAX because Xorg compares deadlines as signed 32-bit
+differences. The initial A/B binary is `a557f445…`; the final build includes
+that distant-target correction and is
+`d22867954773d5071727e65d69ad908a882271bbf027689d663381f2a4b60e69`.
+The official source archive SHA-256 is
+`1d3dadbd57fb86b16a018e9f5f957aeeadf744f56c0553f55737628d06d326ef`.
+Repeated builds produce the same final binary. The normal tested deadlines
+are one refresh away, so the long-delay cap does not alter the A/B workload.
+
+The experimental `build-guest-xorg.sh` verifies that archive, applies the patch, tests
+the clock arithmetic and builds against the paired guest libraries. The
+proposed bundle installed `/opt/viruaisor/xorg/Xorg`, its license and source/binary
+hashes. Its `desktop-xorg` selected that fixed executable and enabled its clock;
+KWin/clients do not inherit the opt-in. Older bundles without the executable
+retain the distro path. All 34 guest Python tests pass, including private
+server selection, missing/non-executable fallback and opt-in isolation. The
+small QML fixture, typed XCB completion probe, log checker and the withdrawn
+integration are preserved under the private `x11-clock/unretained-proposal/`
+evidence directory for reproduction. They are not installed as desktop preload
+hooks or shipped as a default server.
+
+The first private-path installation removed the experimental Xorg bind mount
+and service override. Xorg ran directly from its private path as uid 1000; the distro
+server remains `381e81b8…`. Both display processes still use 4–7, each with
+its own-PID async sync-file scope. droid remains locked (`L`). The first
+unmount attempt returned busy immediately after the desktop stop timed out;
+after verifying that no desktop processes remained, a normal retry succeeded.
+No forced/lazy unmount or wider permission was used.
+
+The cancelled `x11-clock-A1-native` attempt is excluded: a rejected restart
+name had left a probe attached. Its case-insensitive name collision retry was
+also rejected before capture. All reported runs use fresh names and confirm
+the client has no preload/profiler. Raw evidence is under
+`.pi/device-debug/touch-perf-20261018/x11-clock/`, with presentation timestamps
+under `.pi/device-debug/perf-60-20261018/`.
+
+### Compositor clock and wait experiments
+
+The paired KWin 5.27.10 GLX backend uses a software vblank monitor when buffer
+age is disabled, in addition to its default GLX swap interval of one. Its
+software monitor aligns to the monotonic epoch and an integer milliHz rate;
+the native mode is 59,997 milliHz. The first Xorg fallback instead chose the
+first request as its epoch and used the exact mode period. A private variant
+aligns Xorg to KWin's phase and period, preserving the MSC across changes.
+These are software scheduling clocks, not physical presentation feedback.
+The relevant upstream implementations are the paired
+[GLX backend](https://github.com/KDE/kwin/blob/v5.27.10/src/backends/x11/standalone/x11_standalone_glx_backend.cpp)
+and its
+[software vblank monitor](https://github.com/KDE/kwin/blob/v5.27.10/src/platformsupport/vsyncconvenience/softwarevsyncmonitor.cpp).
+
+| Capture | Configuration | Actual fps | p95 / p99 / max ms | >20 ms |
+| --- | --- | ---: | ---: | ---: |
+| `x11-clock-events1-native` | Initial clock, buffer age and Intel swap events enabled | 52.801 | 16.668 / 33.333 / 50.002 | 583 |
+| `x11-clock-phase1-native` | Aligned phase, normal KWin swap interval 1 | 60.000 | 16.683 / 16.699 / 25.024 | 1 |
+| `x11-clock-phase1-wide` | Same, 1920×1200 | 112.920 | 16.661 / 16.676 / 25.000 | 2 |
+| `x11-clock-nosync1-native` | Aligned phase, KWin-only swap interval 0 | 59.832 | 16.679 / 16.702 / 33.350 | 17 |
+| `x11-clock-nosync1-wide` | Same, 1920×1200 | 117.056 | 8.357 / 16.669 / 16.733 | 0 |
+
+These are complete 60-second captures with visible GPU motion, fresh clients,
+and overlapping timestamp windows. The swap-event variant is rejected for
+the native regression; its interrupted wide capture is excluded. The full
+repaint effect remains loaded in every trial. Buffer age is restored to zero
+after that rejected trial.
+
+Removing the compositor's second wait helps the wide trial, but worsens
+native long frames. It is not enabled globally or committed. Application
+GPU fences and their swap interval are untouched. A mode-dependent private
+effect experiment is being evaluated separately. Both processes remain on
+cores 4–7; no Android policy, CPU frequency or prime-core binding changes.
+
+The aligned clock's mode-change test also detects a backward current-MSC UST
+when the new phase precedes the previous tick. A second experimental helper
+preserves that tick's UST while keeping future ticks phase-aligned. Its test
+fails before the correction and passes afterward. This private variant is
+not yet the proposed production source or a retained performance result.
+
+The adaptive experiment keeps the existing full repaint and buffer age zero.
+It changes only KWin's GLX swap interval: one below 90 Hz and zero at 90–250 Hz.
+The opt-in is confined to a temporary compositor wrapper, and the effect is
+bound inside the guest. KWin's process journal confirms native `59997 / 1 / 1`
+and wide `120000 / 0 / 0` for rate / requested interval / queried interval.
+Filtering solely by the desktop systemd unit missed these messages; filtering
+by the actual KWin PID finds them. The effect mapping and SHA-256 were also
+verified from that process. No interval changes are inferred from fps alone.
+
+| Capture | Seconds | Actual fps | p95 / p99 / max ms | >20 ms |
+| --- | ---: | ---: | ---: | ---: |
+| `x11-clock-adaptive1-native` | 59.917 | 59.967 | 16.685 / 16.721 / 33.335 | 3 |
+| `x11-clock-adaptive1-wide` | 59.992 | 117.716 | 8.357 / 16.666 / 25.012 | 2 |
+| `x11-clock-adaptive2-native` | 180.050 | 59.989 | 16.683 / 16.710 / 33.331 | 5 |
+| `x11-clock-adaptive2-wide` | 180.017 | 116.206 | 8.377 / 16.671 / 25.010 | 7 |
+
+The second adaptive trial uses the UST-continuity correction, Xorg SHA-256
+`1a71ee579ccf4272b94fd4a4b01caa7f4e218e20b2a054051b7fbe98385a9b60`.
+The expanded arithmetic test covers 5,000 varied rate changes, checking
+nondecreasing MSC/UST, phase-aligned future ticks and no early timer deadline.
+The wide repeat loses the initial apparent throughput gain. Stable 120 fps is
+not established and no performance retention claim is made.
+
+The next same-session comparison changes only KWin's `LatencyPolicy` from its
+default to `Low`, then restores the exact prior configuration. The paired
+[render loop](https://github.com/KDE/kwin/blob/v5.27.10/src/core/renderloop.cpp)
+uses that policy together with the measured rendering budget and a safety
+margin. The experiment tests whether starting composition later helps it see
+the newly completed client frame. Hardware composition and full repaint stay
+active; each configuration reload also confirms swap interval zero at 120 Hz.
+
+| Capture | Setting | Seconds | Actual fps | p95 / p99 / max ms | >20 ms |
+| --- | --- | ---: | ---: | ---: | ---: |
+| `x11-clock-low1-wide` | Low | 59.825 | 116.072 | 8.381 / 16.671 / 25.005 | 2 |
+| `x11-clock-default3-wide` | Restored default | 59.800 | 116.839 | 8.370 / 16.669 / 16.746 | 0 |
+
+This does not establish a benefit. The default is restored. KWin's support
+dump prints empty values for these enum properties, so the report does not
+claim an independent numeric runtime readback of the latency policy; the
+configuration edit, reload and restoration are recorded in the raw evidence.
+
+The software clock improves animation timing, but its initial fps gain does
+not reproduce consistently. Neither the clock, adaptive swap effect nor latency
+setting is retained in the default runtime or production build. Their private
+sources, tests, binary hashes and complete captures remain available for a later
+investigation. The production integration files are restored to HEAD. The
+private-server and launcher staging changes in the Manjaro build root are
+undone too; no root bundle is regenerated.
+
+Final rollback verifies distro Xorg `381e81b8…`, desktop launcher `4e577f33…`,
+and original full-repaint effect `27968dcd…`. The private server executable,
+service override, effect bind and software-clock/adaptive environment flags
+are absent. A normal unmount retry succeeds after the first attempt reports
+busy; no forced/lazy unmount is used. The recovery timer is stopped. Xorg and
+KWin run as droid on cores 4–7 with their existing own-PID sync-fd scope, hardware
+Zink/Venus/Mali composition is active, and droid remains locked. The VM PID
+is unchanged at 13181. The stable-120/native-60 goal remains open.
+
+After restoration, the five native-resolution touch targets pass within one
+guest pixel. Escape reaches the guest as both key-down and key-up while Android
+focus remains in the fullscreen App. A real Android screenshot shows the
+complete native desktop, one cursor and no black tiles. All 33 baseline guest
+Python tests pass; `git diff --check` is clean. The independent diagnostic
+service is stopped, SELinux remains Enforcing, and the APK/renderer and Android
+permissions are unchanged. The VM stays available for the ongoing goal.
