@@ -2396,3 +2396,118 @@ cores 4–7 with 50 µs timer slack. The final root-frame log advances from
 244,140 to 314,520, with 29–31 Binder proxies and no submission/release errors.
 The installation recovery timer is stopped after verification. SELinux stays
 Enforcing; no host-system setting or prime-core binding is changed.
+
+## Adaptive composition for 120 Hz software windows (2026-10-19)
+
+With the retained Qt software timing plugin, the application can now supply
+roughly 125 updates/s, while composition still presents about 115–116 frames/s.
+A fresh comparison first revisits adaptive GLX swap interval using that workload.
+The candidate effect is loaded through a private Qt plugin directory, independently
+verified in KWin's mappings, and logs `requested=0 actual=0` at 120000 mHz. Original
+Xorg, KWin and installed effect files remain unchanged. The 60-second A/B/A results
+are 116.135, 114.804 and 115.299 FPS (`qs-swap-a1/b1/a2`), with 1, 5 and 2 intervals
+above 20 ms. The candidate is rejected and its exact original environment restored.
+
+Temporarily suspending composition now produces a repeatable improvement for the
+default software workload. The preceding private redirected-Present clock and Qt
+animation timing fixes remain enabled. Original GPU synchronization, desktop core
+masks and Android presentation code stay in place:
+
+| Capture | Mode / composition | Seconds | Actual FPS | p99 / max ms | >20 ms |
+| --- | --- | ---: | ---: | ---: | ---: |
+| `qs-nocomposite-b1` | 1920×1200 / suspended | 60.092 | 120.000 | 8.398 / 8.517 | 0 |
+| `qs-nocomposite-a2` | 1920×1200 / restored | 59.642 | 115.305 | 16.673 / 25.031 | 2 |
+| `qs-nocomposite-b2` | 1920×1200 / suspended | 179.808 | 119.994 | 8.398 / 16.651 | 0 |
+| `qs-nocomposite-fit` | 1920×1280 / suspended | 180.108 | 119.989 | 8.402 / 16.667 | 0 |
+| `qs-policy-native` | Native / automatically restored | 179.500 | 59.994 | 16.732 / 33.330 | 56 |
+
+The retained implementation uses a small Qt screen observer and KWin's session
+DBus interface. It selects the direct Xorg presentation path only for one screen
+matching the measured 1920×1200 or 1920×1280 presets near 120 Hz. Native and other
+modes restore its own suspension. Desktop shadows and other compositing effects
+are disabled in these high-refresh modes; the window manager, hardware-accelerated
+Xorg, input and synchronization remain active. The observer does not continuously
+schedule frames or poll screen state. See `guest/plasma/compositor-policy.md`.
+
+Before implementation, the new `scripts/assert-desktop-cadence.cjs` gate fails on
+the 115.305 FPS restored control and passes on the direct-presentation capture.
+For a requested 180-second capture it requires at least 179 seconds of timestamps,
+mean FPS within 0.5% of the target and p99 no greater than 1.2 frame periods. The
+gate reports maximum intervals and counts over 20 ms rather than concealing them.
+Complete timestamp coverage, visible RGB motion, intact corners and correct
+animation wall time are checked independently.
+
+Live lifecycle tests verify normal SIGTERM restoration, restoration by the
+supervisor after SIGKILL of its observer, preservation of a pre-existing manual
+suspension, rejection of a duplicate observer without changing the owner, and
+reapplication after KWin is replaced. The same observer follows fit → native →
+wide and restores OpenGL/full repaint at native resolution. It runs as droid and
+does not change CPU affinity or a persistent KWin compositing preference.
+
+The cross-build succeeds, all 34 existing guest tests pass, and shell/Python/Node
+syntax and Git whitespace checks pass. This is a guest-only change; the already
+verified Android APK/native executable are unchanged. The full chroot bundle
+builder is not run, so no host binfmt registration is performed.
+
+### Installed policy and final presentation measurements
+
+The policy is installed as `/opt/viruaisor/compositor-policy`, SHA-256
+`ab04c7db7103d321e50f99ff60551cfcbaa894168aa2f598903e075f8527ca21`.
+Its supervisor hash is
+`c64661c542a4bed12b294d38fbaed79d575066af5d5edf66d489cea5c9287a70`.
+The normal desktop session starts it after its existing hardware readiness checks.
+
+An initial installer assertion detects that the live session script contains two
+private diagnostic startup lines absent from Git. It fails before writing files.
+The verified difference is then handled explicitly and backed up. Those two lines
+are retained only during validation and removed afterwards; the final installed
+session exactly matches production source, hash
+`2d4d2901ad8884af3759a961f7fa3ea233f9e848f8c681c9ee3ca407bd66945e`.
+Its recovery timer is inactive and the desktop service has no drop-in overrides.
+
+Fresh default-software clients inherit the installed configuration after a normal
+desktop restart. Each mode has a separate requested 180-second capture:
+
+| Capture | Mode | Seconds | Actual FPS | p95 / p99 / max ms | >20 ms |
+| --- | --- | ---: | ---: | ---: | ---: |
+| `qs-installed-wide` | 1920×1200 / 120 Hz | 179.992 | 119.983 | 8.372 / 8.400 / 16.692 | 0 |
+| `qs-installed-fit` | 1920×1280 / 120 Hz | 179.717 | 119.989 | 8.375 / 8.405 / 16.670 | 0 |
+| `qs-installed-native` | 3408×2272 / 60 Hz | 179.383 | 60.000 | 16.698 / 16.735 / 25.028 | 52 |
+
+All three pass the cadence gate and have complete coverage. High-refresh clients
+produce about 600 swaps per five real seconds; native produces 312–313. The fit
+client's final five-second interval straddles the subsequent switch to native and
+is excluded from its 120 Hz animation check using the explicit refresh-change log
+marker. The preceding settled intervals pass; the native client is checked separately.
+
+These results meet the stated desktop animation rate targets in this workload.
+They do not establish zero jitter or the same performance for every application:
+native still has 52 intervals above 20 ms among 10,763 measured frame intervals,
+and its preceding mode-transition capture includes roughly 33 ms intervals.
+
+Five touch points in each of native, wide and fit modes are within one guest pixel.
+Fit uses the full 3408×2272 Surface; wide maps its letterboxed content correctly.
+Escape produces exactly one guest down/up pair while MainActivity remains
+foreground. The fitted launcher menu and single cursor are visually inspected.
+The older private-clock checker assumes the compositing-only `/Effects` DBus
+object exists; it fails at that query in the intentionally suspended mode. A
+policy-aware verification confirms the unchanged Xorg/KWin/effect hashes, clock
+scope, absence of preload/swap overrides, expected inactive composition and
+production session hash. Earlier native checks confirm OpenGL and full repaint.
+
+Root helper 28855 is available, both existing AVF grants remain true, VM 28895 is
+booted, the fullscreen Surface is attached, and actual guest frames are displayed.
+APK e1 and native D8 remain unchanged; SELinux is Enforcing. Xorg 50837 and KWin
+50934 remain uid 1000 on cores 4–7 with 50 µs timer slack. Root frame counts advance
+from 432,480 to 514,320 with 29–31 Binder proxies and no submission/release errors.
+droid remains locked; this change does not set or reset its password.
+
+The prepared image is rebuilt from the preceding verified root, with ext4 checks,
+readback of the observer/supervisor/session and Qt plugin/environment, and ZIP CRC
+validation. ZIP SHA-256 is
+`8fcecaf4150b8a50b40b8a9131f46e39d64ee0593a5120219fcbedd7b5081cda`
+(1,692,789,507 bytes). The previous `caafb840…` image remains available locally.
+The new ZIP is also uploaded to the App's existing import-cache path, verified
+by SHA-256 before and after atomic replacement. It is not imported over the
+existing VM disk.
+No host-system setting, driver, grant, CPU governor or prime-core binding changes.

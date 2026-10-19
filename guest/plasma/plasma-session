@@ -20,7 +20,16 @@ export KWIN_USE_BUFFER_AGE=0
 export KDEWM=/opt/viruaisor/desktop-kwin
 startplasma-x11 &
 plasma_pid=$!
-trap 'kill "$plasma_pid" 2>/dev/null || true' EXIT HUP INT TERM
+compositor_pid=
+cleanup() {
+    if [ -n "$compositor_pid" ]; then
+        kill "$compositor_pid" 2>/dev/null || true
+        wait "$compositor_pid" 2>/dev/null || true
+        compositor_pid=
+    fi
+    kill "$plasma_pid" 2>/dev/null || true
+}
+trap cleanup EXIT HUP INT TERM
 report="$XDG_RUNTIME_DIR/viruaisor-kwin.txt"
 count=0
 while [ "$count" -lt 90 ]; do
@@ -37,6 +46,11 @@ while [ "$count" -lt 90 ]; do
         echo 'VIRUAISOR_KWIN_COMPOSITING=opengl'
         echo 'VIRUAISOR_FULL_REPAINT=true'
         echo 'VIRUAISOR_PLASMA_HARDWARE_READY=true'
+        # Keep OpenGL composition at native 60 Hz; the measured 1920-wide
+        # 120 Hz modes avoid a redundant composition pass. The supervisor
+        # restores its own suspension on exit or observer failure.
+        /opt/viruaisor/desktop-compositor &
+        compositor_pid=$!
         wait "$plasma_pid"
         exit $?
     fi

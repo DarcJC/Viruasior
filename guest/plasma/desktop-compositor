@@ -1,0 +1,46 @@
+#!/usr/bin/python3
+"""Run the desktop's mode observer and restore only a suspension it claimed."""
+import signal
+import subprocess
+import sys
+import threading
+
+
+def main():
+    child = subprocess.Popen(['/opt/viruaisor/compositor-policy'], stdout=subprocess.PIPE,
+                             text=True, bufsize=1)
+    owned = False
+    kill_timer = None
+
+    def stop(signum, frame):
+        nonlocal kill_timer
+        if child.poll() is None:
+            child.terminate()
+            if kill_timer is None:
+                kill_timer = threading.Timer(3, child.kill)
+                kill_timer.daemon = True
+                kill_timer.start()
+
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGINT, stop)
+    try:
+        for line in child.stdout:
+            if line == 'VIRUAISOR_COMPOSITION_OWNED=1\n':
+                owned = True
+            elif line == 'VIRUAISOR_COMPOSITION_OWNED=0\n':
+                owned = False
+            print(line, end='', flush=True)
+        return child.wait()
+    finally:
+        if kill_timer is not None:
+            kill_timer.cancel()
+        if child.poll() is None:
+            child.kill()
+            child.wait()
+        if owned:
+            subprocess.run(['/usr/bin/qdbus', 'org.kde.KWin', '/Compositor', 'resume'],
+                           timeout=3, check=True)
+
+
+if __name__ == '__main__':
+    sys.exit(main())
