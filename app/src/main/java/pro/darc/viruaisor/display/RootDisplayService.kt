@@ -109,7 +109,7 @@ class RootDisplayService : RootService() {
                                             if (code == IBinder.INTERFACE_TRANSACTION) {
                                                 return super.onTransact(code, data, reply, flags)
                                             }
-                                            require(code == PRESENT_FRAME &&
+                                            require((code == PRESENT_FRAME || code == PRESENT_TRACKED_FRAME) &&
                                                 flags and IBinder.FLAG_ONEWAY == 0 && reply != null) {
                                                 "Unsupported frame transaction"
                                             }
@@ -117,6 +117,9 @@ class RootDisplayService : RootService() {
                                             calls++
                                             if (calls == 1L) Log.i(TAG, "FRAME_SINK_RECEIVED uid=${getCallingUid()}")
                                             val released = requireNotNull(data.readStrongBinder()) { "Missing buffer release callback" }
+                                            val releaseTicket = if (code == PRESENT_TRACKED_FRAME) {
+                                                data.readLong().also { require(it > 0) { "Invalid buffer release ticket" } }
+                                            } else 0L
                                             val buffer = HardwareBuffer.CREATOR.createFromParcel(data)
                                             try {
                                                 data.enforceNoDataAvail()
@@ -126,7 +129,7 @@ class RootDisplayService : RootService() {
                                                     owned.present(buffer, { frame,w,h ->
                                                         sendPresented(requireNotNull(observer), frame,w,h)
                                                     }) { fence ->
-                                                        sendBufferRelease(released, fence)
+                                                        sendBufferRelease(released, releaseTicket, fence)
                                                     }
                                                 } finally {
                                                     restoreCallingIdentity(frameIdentity)
@@ -196,7 +199,7 @@ class RootDisplayService : RootService() {
         Log.i(TAG, "Helper destroyed; normal libsu root process exits when its last service is gone")
     }
 
-    private fun sendBufferRelease(callback: IBinder, fence: SyncFence) {
+    private fun sendBufferRelease(callback: IBinder, ticket: Long, fence: SyncFence) {
         // SurfaceFlinger invokes this on a callback thread. Never wait for the GPU
         // or hold the session lock; transfer the actual release fence to crosvm.
         val data = Parcel.obtain()
@@ -209,10 +212,12 @@ class RootDisplayService : RootService() {
             val valid = flattened.readBoolean()
             if (valid) {
                 requireNotNull(flattened.readFileDescriptor()).use {
-                    BufferReleaseProtocol.write(data,it)
+                    if (ticket > 0) BufferReleaseProtocol.writeTracked(data,ticket,it)
+                    else BufferReleaseProtocol.write(data,it)
                 }
-            } else BufferReleaseProtocol.write(data,null)
-            if (callback.transact(1, data, reply, 0)) reply.readException()
+            } else if (ticket > 0) BufferReleaseProtocol.writeTracked(data,ticket,null)
+            else BufferReleaseProtocol.write(data,null)
+            if (callback.transact(if (ticket > 0) 2 else 1, data, reply, 0)) reply.readException()
         } catch (error: Exception) {
             Log.w(TAG, "Buffer release delivery failed", error)
         } finally {
@@ -321,6 +326,7 @@ class RootDisplayService : RootService() {
         const val TAG = "ViruaisorRootDisplay"
         const val OPERATION_TIMEOUT_SECONDS = 15L
         const val PRESENT_FRAME = 1
+        const val PRESENT_TRACKED_FRAME = 2
         const val FRAME_SINK_DESCRIPTOR = "pro.darc.viruaisor.display.IRootFrameSink"
     }
 }

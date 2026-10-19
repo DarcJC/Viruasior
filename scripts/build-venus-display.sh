@@ -13,8 +13,14 @@ gcc -std=c11 -Wall -Wextra -Werror \
 gcc -std=c11 -Wall -Wextra -Werror \
     "$repo/native/venus-display/dmabuf_sync_test.c" -o /tmp/viruaisor-dmabuf-sync-test
 /tmp/viruaisor-dmabuf-sync-test
+g++ -std=c++17 -Wall -Wextra -Werror -pthread -fsanitize=address,undefined \
+    "$repo/native/venus-display/release_ticket_test.cpp" -o /tmp/viruaisor-release-ticket-test
+/tmp/viruaisor-release-ticket-test
 compiler="$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android37-clang++"
 "$compiler" -std=c++17 -O2 -Wall -Wextra -Werror -fPIC -fno-exceptions -fno-rtti \
     -c "$repo/native/venus-display/android_display.cpp" -o "$prefix/venus_android_display.o"
 "$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar" rcs "$prefix/lib/libvenus_android_display.a" "$prefix/venus_android_display.o"
+"$compiler" -std=c++17 -O2 -Wall -Wextra -Werror -static-libstdc++ \
+    "$repo/native/venus-display/ahb_release_device_test.cpp" \
+    -lbinder_ndk -lnativewindow -landroid -llog -o "$prefix/ahb-release-device-test"
 echo "Android display client compiled; device presentation is not yet verified."

@@ -1062,12 +1062,17 @@ replacement failed the motion check and was discarded without collecting fps.
 
 | Capture | Duration | Actual fps | p95 / p99 ms | Intervals >20 ms |
 | --- | ---: | ---: | ---: | ---: |
-| `zink-upload-matched-B1` | 59.425 s | 96.81 | 16.673 / 16.707 | 13 |
+| `zink-upload-matched-B1` | 59.425 s | excluded: sampling gap | — | — |
 | `zink-upload-cache-A1` | 59.358 s | 112.40 | 16.662 / 16.676 | 9 |
 | `zink-upload-cache-A2` | 60.017 s | 113.44 | 16.659 / 16.675 | 2 |
 | `zink-upload-matched-B2` | 59.400 s | 95.57 | 16.674 / 16.706 | 2 |
 
-Pooling complete intervals gives 96.192 versus 112.921 fps, a **17.39%** gain.
+The later timestamp-coverage audit found a 183 ms hole between two snapshots
+in the first control capture, so the initially reported pooled **17.39%**
+estimate is withdrawn. Both candidate captures and the second control have
+complete overlapping coverage. The remaining valid control is 95.57 fps,
+versus 112.40 and 113.44 fps for the candidates, still supporting retention of
+the upload-cache change. These are three valid trials, not two complete pairs.
 Median ready-to-present latency stays approximately 17.36–17.39 ms. Both
 candidate maxima are approximately 25 ms; stable 120 fps is still unmet.
 A separate 12-second trace has no trace-error statistics and no
@@ -1108,3 +1113,162 @@ are unchanged. The droid account is still locked; it was not modified. SELinux,
 hidden-API settings and the profiler-related host values above are unchanged.
 Validation output and individual input reports are in
 `allocation-profile/validation.log` and `allocation-profile/validation/`.
+
+## 2026-10-19: bounded release callback trial
+
+The baseline renderer creates a new release Binder for every frame. The root
+helper's BinderProxy map grew past 11,211 entries during the preceding session.
+The trial keeps at most eight release endpoints per display connection, using
+a positive 64-bit generation to reject duplicate and delayed callbacks. A
+callback transfers the payload only once. Actual sync-file import into the
+DMA-BUF, the release-fence worker, and the eight-buffer outstanding budget are
+unchanged; budget is returned only when the real fence permits cleanup.
+Disconnect drops the pool's references without invalidating references held by
+consumer callbacks. Only failures before sending a frame can cancel its
+payload locally. An ambiguous transaction failure retains ownership.
+
+The new frame/release transactions use code 2; the root helper still accepts
+the legacy code 1 frame format. Existing producer and release-caller UID
+checks remain in place. Tests cover generation reuse, concurrent ownership,
+stale/duplicate callbacks, failed allocation and unsent cancellation. Host
+ASan/UBSan tests, the native display build and renderer link pass. A device NDK
+test rejects the ordinary shell caller and, under the narrowly scoped root
+invocation, checks bounded reuse, FD cleanup, ownership after disconnect, and
+deferred cleanup using pipe readiness. That pipe test does not claim to test
+DMA-BUF sync-file import. The existing four-mode real GPU ordering regression
+also passed before the first capture. Five Android Parcel instrumentation
+tests pass, including ticket-before-FD encoding and invalid-ticket rejection.
+Gradle unit tests, debug APK/test APK assembly and arm64 packaging/pin checks
+pass.
+
+Candidate APK SHA-256 is
+`43a000e94efd7f3dd7589f156daff5c34a9d37d82d3b3921bcca51cbe7e93c9c`;
+its renderer is 14,118,808 bytes with SHA-256
+`d8f16c579ead776979eacfed8eab138aef776780bcc95bef155f0d61547bb9c7`.
+The baseline remains APK `c1ae1341...` / renderer `0302b363...`. Both use the
+retained guest upload-cache library `8e2ce18c...` and Venus `dcb191f5...`.
+Each APK change includes an ordinary App-driven full VM stop/start. The
+candidate stopped normally before the baseline installation. RGB, moving
+content and corner checks passed before each accepted capture.
+
+The following captures preceded a device disconnection. They are preliminary
+evidence, not the final comparison with verified matching CPU masks:
+
+| Capture | Duration | Actual fps | p95 / p99 / max ms | Intervals >20 ms |
+| --- | ---: | ---: | ---: | ---: |
+| `release-pool-A1-native` | 179.367 s | 60.000 | 16.681 / 16.696 / 18.299 | 0 |
+| `release-pool-A1-wide` | 59.800 s | 115.702 | 8.376 / 16.670 / 16.736 | 0 |
+| `release-pool-B1-native` | 179.400 s | 59.955 | 16.685 / 16.706 / 33.339 | 13 |
+
+Candidate root PID 16993 recorded 23–31 Binder proxies from frame 1 through
+frame 24,900, with 30 at the end and no release/submission errors. Baseline
+root PID 20343 logged map growth to 3,555, 6,107 and 8,399 entries. Eleven of
+its thirteen native-resolution long intervals clustered at monotonic
+227326.179–227326.504 seconds, immediately after its GC message at 227326.148.
+This correlation motivated the allocation-pressure hypothesis; it does not
+replace the alternating trials with verified CPU masks. Candidate
+wide mode still missed 257 physical refresh opportunities, so this is not
+stable 120 fps. Its median buffer-ready-to-present latency is 17.416 ms.
+
+Live affinity inspection found a separate limitation: this guest reports
+`cpu_capacity=1024` for every vCPU, so the current wrapper preserves the
+default 0–9 allowed set for Xorg and KWin. The baseline restart explicitly
+confirmed this. Earlier reports of 4–7 must not be assumed to persist across
+VM restarts. No prime-core pinning or host policy change was introduced in
+this experiment. Subsequent comparison runs must record actual masks and
+keep the same policy on both sides; any CPU-selection correction needs its
+own comparison.
+
+Wireless ADB disconnected after the complete baseline native capture and log
+collection, before its wide-mode resize. The discovered endpoint
+`192.168.1.107:40507` became unreachable and a reconnect timed out. No baseline
+wide result was accepted. At that interruption the tablet had the baseline
+APK installed and the candidate was uncommitted. Evidence is under
+`.pi/device-debug/touch-perf-20261018/post-upload/`; raw frame timestamps are
+under `.pi/device-debug/perf-60-20261018/` using the capture names above.
+
+After the user restored connectivity, the installed baseline APK and renderer
+were rechecked. The device had restarted. New B2 and A2 VM starts both expose
+capacity tiers 663 / 975 / 1024 in their guest CPU sysfs and device tree, and
+both Xorg and KWin select 4–7 without an additional taskset operation. The
+same guest graphics libraries remain installed. These new trials are kept
+separate from the preliminary captures above.
+
+The first resumed wide baseline capture (`release-pool-B2-wide`) is rejected:
+several adjacent SurfaceFlinger snapshots have no shared timestamps, showing
+that wireless polling failed to cover the finite timestamp history. The
+apparent 333 ms gap and 112.46 fps must not be reported as performance results.
+Native B2 has complete coverage and remains valid. Subsequent 120 Hz captures
+reduce the polling sleep from 750 to 350 ms; all accepted captures must retain
+overlap between every adjacent snapshot. Native captures keep the same 750 ms
+sleep. A2 wide has complete coverage with 118 snapshots, versus the invalid
+B2 wide capture's 64. This is measurement instrumentation only, not a display
+or scheduler change.
+
+The accepted resumed captures run in B2 → A2 → B3 → A3 order, with a full VM
+restart for every APK change and an explicit Xorg/KWin 4–7 mask check at each
+start. No host scheduler, frequency, power, permission or system-image setting
+was changed. All four starts use the same guest library hashes and no service
+drop-ins. The individual accepted windows are:
+
+| Capture | Duration | Actual fps | p95 / p99 / max ms | Intervals >20 ms |
+| --- | ---: | ---: | ---: | ---: |
+| `release-pool-B2-native` | 179.883 s | 59.989 | 16.686 / 16.708 / 33.354 | 14 |
+| `release-pool-A2-native` | 179.467 s | 59.989 | 16.682 / 16.699 / 33.336 | 6 |
+| `release-pool-B3-native` | 179.467 s | 59.972 | 16.682 / 16.702 / 33.338 | 11 |
+| `release-pool-A3-native` | 179.850 s | 59.994 | 16.696 / 16.724 / 25.012 | 6 |
+| `release-pool-A2-wide` | 59.717 s | 113.737 | 16.656 / 16.674 / 25.000 | 2 |
+| `release-pool-B3-wide` | 59.958 s | 112.245 | 16.662 / 16.678 / 25.004 | 2 |
+| `release-pool-A3-wide` | 60.083 s | 113.675 | 16.654 / 16.676 / 25.008 | 2 |
+
+The two native baselines contain 25 long intervals over 359.350 seconds; the
+two candidates contain 12 over 359.317 seconds. Normalizing by time gives
+4.174 versus 2.004 long intervals per minute, approximately **52% fewer**.
+Mean native throughput is essentially unchanged: 59.981 versus 59.992 fps.
+Native p95/p99 are not uniformly better and an A2 interval still reaches
+33.336 ms, so this is a reduction in stall frequency, not a claim that all
+stalls are fixed.
+
+The two valid wide candidate captures pool to 113.706 fps against the single
+valid wide baseline's 112.245 fps, approximately 1.3% higher. With only one
+valid control window, this is a modest result and is not the principal reason
+to retain the change. Their long-interval frequency remains about two per
+minute and their median ready-to-present latency is 17.394–17.398 ms versus
+17.378 ms for the baseline. Stable 120 fps remains unmet.
+
+Both candidates keep the helper's proxy count at 23–31 (A2) or 24–31 (A3)
+through more than 20,000 posted frames per session. Both baselines log growth
+past 8,000 proxies during the native window and a subsequent sticky GC;
+neither candidate logs another GC during its measured native window. No
+submission or release-delivery errors are recorded. The bounded object
+population and repeated reduction in native long intervals justify retaining
+the release pool. This does not remove the remaining frame-pacing work.
+
+Final validation keeps candidate VM PID 28571 alive while leaving the App for
+Home, returning, and changing through wide, native and aspect-matched fit
+modes. All mode acknowledgements, visible-pixel checks and five-point guest
+touch mappings pass without a VM restart. Native and fit use the complete
+3408×2272 viewport. The fit-mode motion capture has complete timestamp
+coverage: 112.260 fps over 59.950 seconds, p95/p99 16.661/16.681 ms, maximum
+25.005 ms and three intervals over 20 ms. The helper reaches at most 36
+proxies across the additional connections and ends at 30, with no recorded
+submission/release error.
+
+All four GPU ordering probe modes pass after these mode changes, validating
+DMA-BUF dependencies and all 1,024 GPU-written words on a separate device.
+The scoped async export returns a real initially unsignaled fence; baseline,
+foreign-PID and non-Zink modes retain the wait. Escape produces exactly one
+guest down/up pair and leaves MainActivity resumed and focused. Existing
+root and AVF access were sufficient; no new grant was needed. A successful
+boot and Surface attachment are accompanied by changed guest pixels, not just
+successful API returns. The droid account remains locked and was not changed.
+
+Post-reboot host observations are SELinux Enforcing, global hidden-API policy
+null, the same specific VirtualMachine exemption, `perf_event_paranoid=-1`,
+`perf_event_max_sample_rate=32250`, `perf_cpu_time_max_percent=25`,
+`perf_event_mlock_kb=516`, and `security.perf_harden=1`. The 516 KiB value is
+from this new device boot, distinct from the earlier boot's 41000 KiB record;
+this comparison did not run a profiler or write these settings. Final logs,
+mode/touch reports and raw samples are in `post-upload/validation.log`,
+`post-upload/validation/` and `release-pool-final-fit`. The measured candidate
+APK remains installed for continued optimization.

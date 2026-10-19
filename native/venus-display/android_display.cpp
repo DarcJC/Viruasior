@@ -54,6 +54,7 @@ struct AndroidDisplaySurface {
     ANativeWindow *window = nullptr;
     ASurfaceControl *control = nullptr;
     AIBinder *frameSink = nullptr;
+    FrameReleasePool frameReleases;
     uint32_t width = 0, height = 0;
     ScanoutBuffer frame;
     bool writing=false;
@@ -98,6 +99,7 @@ struct AndroidDisplaySurface {
     void detach() {
         std::lock_guard guard(mutex);
         releaseControlLocked();
+        frameReleases.reset();
         if (frameSink) AIBinder_decStrong(frameSink);
         frameSink = nullptr;
         if (window) ANativeWindow_release(window);
@@ -125,6 +127,7 @@ struct AndroidDisplaySurface {
     binder_status_t attach(ANativeWindow *value, AIBinder *sink) {
         std::lock_guard guard(mutex);
         releaseControlLocked();
+        frameReleases.reset();
         if (frameSink) AIBinder_decStrong(frameSink);
         frameSink = sink;
         if (window) ANativeWindow_release(window);
@@ -169,18 +172,25 @@ struct AndroidDisplaySurface {
         if (frameSink) {
             AParcel *input = nullptr, *output = nullptr;
             auto status = AIBinder_prepareTransaction(frameSink, &input);
-            AIBinder *release = makeReleaseBinder(hardware_buffer, dma_fd);
+            const auto release = status == STATUS_OK
+                ? frameReleases.acquire(hardware_buffer, dma_fd) : FrameRelease{};
             if (status == STATUS_OK && !release) {
                 AParcel_delete(input);
                 backlog();
                 return -EAGAIN; // Bounded consumer backlog: retain the last visible frame.
             }
-            if (status == STATUS_OK) status = AParcel_writeStrongBinder(input, release);
+            if (status == STATUS_OK) status = AParcel_writeStrongBinder(input, release.binder);
+            if (status == STATUS_OK) status = AParcel_writeInt64(input, release.ticket);
             if (status == STATUS_OK)
                 status = AHardwareBuffer_writeToParcel(hardware_buffer, input);
-            if (status == STATUS_OK)
-                status = AIBinder_transact(frameSink, 1, &input, &output, 0);
-            if (release) AIBinder_decStrong(release);
+            bool dispatched=false;
+            if (status == STATUS_OK) {
+                dispatched=true;
+                status = AIBinder_transact(frameSink, 2, &input, &output, 0);
+            }
+            // A failed transaction can already have reached the consumer.
+            // Only locally unsent frames can be cancelled without its fence.
+            if (!dispatched) frameReleases.cancelUnsent(release);
             AStatus *header = nullptr;
             const auto header_status = status == STATUS_OK && output
                 ? AParcel_readStatusHeader(output, &header) : STATUS_BAD_VALUE;

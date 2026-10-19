@@ -8,10 +8,12 @@
 #include <poll.h>
 #include <unistd.h>
 #include <condition_variable>
+#include <array>
 #include <mutex>
 #include <thread>
 #include <vector>
 #include "ahb_release_budget.h"
+#include "release_ticket.h"
 static AhbReleaseBudget displayReleaseBudget;
 
 /* Keep allocation and consumer lifetime distinct. The release sync_file is
@@ -75,33 +77,74 @@ public:
 static void releaseNativeBuffer(void *opaque,int fence) {
     BufferReleases::instance().add(static_cast<ReleaseBuffer *>(opaque),fence);
 }
-struct ReleaseBinder { ReleaseBuffer *buffer; std::mutex mutex; };
+struct ReleaseBinder { ReleaseTicket<ReleaseBuffer> slot; };
 static void *releaseOnCreate(void *p) { return p; }
 static void releaseOnDestroy(void *p) {
-    auto *value=static_cast<ReleaseBinder *>(p);
-    delete value->buffer; delete value;
+    delete static_cast<ReleaseBinder *>(p);
 }
 static binder_status_t releaseOnTransact(AIBinder *binder,transaction_code_t code,
                                          const AParcel *input,AParcel *output) {
     if (AIBinder_getCallingUid()!=0) return STATUS_PERMISSION_DENIED;
-    if (code!=1) return STATUS_UNKNOWN_TRANSACTION;
+    if (code!=2) return STATUS_UNKNOWN_TRANSACTION;
     auto *value=static_cast<ReleaseBinder *>(AIBinder_getUserData(binder));
-    std::lock_guard guard(value->mutex);
+    int64_t ticket=0;
     bool hasFence=false;
     int fence=-1;
-    if (AParcel_readBool(input,&hasFence)!=STATUS_OK ||
-        (hasFence && AParcel_readParcelFileDescriptor(input,&fence)!=STATUS_OK))
+    if (AParcel_readInt64(input,&ticket)!=STATUS_OK ||
+        AParcel_readBool(input,&hasFence)!=STATUS_OK ||
+        (hasFence && AParcel_readParcelFileDescriptor(input,&fence)!=STATUS_OK)) {
+        if (fence>=0) close(fence);
         return STATUS_BAD_VALUE;
+    }
     if (hasFence && fence<0) return STATUS_BAD_VALUE;
-    if (!value->buffer) { if (fence>=0) close(fence); return STATUS_BAD_VALUE; }
-    releaseNativeBuffer(value->buffer,fence); value->buffer=nullptr;
+    auto buffer=value->slot.take(ticket);
+    if (!buffer) { if (fence>=0) close(fence); return STATUS_BAD_VALUE; }
+    releaseNativeBuffer(buffer.release(),fence);
     auto *status=AStatus_newOk();
     auto result=AParcel_writeStatusHeader(output,status);
     AStatus_delete(status); return result;
 }
-static AIBinder *makeReleaseBinder(AHardwareBuffer *buffer,int fd) {
-    static auto *klass=AIBinder_Class_define("pro.darc.viruaisor.display.IBufferRelease",
-        releaseOnCreate,releaseOnDestroy,releaseOnTransact);
-    auto *owned=ReleaseBuffer::create(buffer,fd);
-    return owned ? AIBinder_new(klass,new ReleaseBinder{owned,{}}) : nullptr;
-}
+struct FrameRelease {
+    AIBinder *binder=nullptr; // borrowed while the owning display lock is held
+    int64_t ticket=0;
+    explicit operator bool() const { return binder && ticket>0; }
+};
+class FrameReleasePool {
+    std::array<AIBinder *,AhbReleaseBudget::limit> binders{};
+public:
+    FrameReleasePool()=default;
+    FrameReleasePool(const FrameReleasePool &)=delete;
+    FrameReleasePool &operator=(const FrameReleasePool &)=delete;
+    ~FrameReleasePool() { reset(); }
+    void reset() {
+        // Callback closures keep their own Binder reference until release. Do
+        // not discard their pending payload when the display detaches.
+        for (auto &binder:binders) {
+            if (binder) AIBinder_decStrong(binder);
+            binder=nullptr;
+        }
+    }
+    FrameRelease acquire(AHardwareBuffer *buffer,int fd) {
+        static auto *klass=AIBinder_Class_define("pro.darc.viruaisor.display.IBufferRelease",
+            releaseOnCreate,releaseOnDestroy,releaseOnTransact);
+        if (!klass) return {};
+        for (auto &binder:binders) {
+            if (!binder) {
+                auto *value=new ReleaseBinder;
+                binder=AIBinder_new(klass,value);
+                if (!binder) { delete value; return {}; }
+            }
+            auto *value=static_cast<ReleaseBinder *>(AIBinder_getUserData(binder));
+            const auto ticket=value->slot.assign([&] {
+                return std::unique_ptr<ReleaseBuffer>(ReleaseBuffer::create(buffer,fd));
+            });
+            if (ticket) return {binder,ticket};
+        }
+        return {};
+    }
+    void cancelUnsent(const FrameRelease &frame) {
+        if (!frame) return;
+        auto *value=static_cast<ReleaseBinder *>(AIBinder_getUserData(frame.binder));
+        value->slot.take(frame.ticket); // never use after a transaction was issued
+    }
+};

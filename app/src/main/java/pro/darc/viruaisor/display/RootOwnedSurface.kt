@@ -5,6 +5,7 @@ import android.hardware.SyncFence
 import android.graphics.PixelFormat
 import android.graphics.Rect
 import android.os.Process
+import android.os.Debug
 import android.util.Log
 import android.view.Surface
 import android.view.SurfaceControl
@@ -108,7 +109,7 @@ internal class RootOwnedSurface private constructor(
         lastSize = size
         frames++
         if (frames == 1L || frames % 60L == 0L) {
-            Log.i(TAG, "FRAME_POSTED_ROOT count=$frames path=surface-control")
+            Log.i(TAG, "FRAME_POSTED_ROOT count=$frames path=surface-control binderProxies=${Debug.getBinderProxyObjectCount()}")
         }
     }
 

@@ -10,6 +10,44 @@ import pro.darc.viruaisor.display.BufferReleaseProtocol
 
 @RunWith(AndroidJUnit4::class)
 class BufferReleaseProtocolTest {
+    @Test fun trackedFenceKeepsTicketBeforeTheExistingFenceEncoding() {
+        val pipe=ParcelFileDescriptor.createPipe()
+        val parcel=Parcel.obtain()
+        try {
+            BufferReleaseProtocol.writeTracked(parcel,0x100000001L,pipe[0])
+            parcel.setDataPosition(0)
+            assertEquals(0x100000001L,parcel.readLong())
+            assertTrue(parcel.readBoolean())
+            parcel.readTypedObject(ParcelFileDescriptor.CREATOR)!!.use {
+                assertTrue(it.fileDescriptor.valid())
+            }
+            assertEquals(0,parcel.dataAvail())
+        } finally { parcel.recycle();pipe.forEach { it.close() } }
+    }
+
+    @Test fun trackedAbsentFenceStillCarriesTheTicket() {
+        val parcel=Parcel.obtain()
+        try {
+            BufferReleaseProtocol.writeTracked(parcel,2L,null)
+            parcel.setDataPosition(0)
+            assertEquals(2L,parcel.readLong())
+            assertFalse(parcel.readBoolean())
+            assertEquals(0,parcel.dataAvail())
+        } finally { parcel.recycle() }
+    }
+
+    @Test fun invalidTicketCannotEmitAPartialRelease() {
+        val parcel=Parcel.obtain()
+        try {
+            for (ticket in listOf(0L,-1L)) {
+                assertThrows(IllegalArgumentException::class.java) {
+                    BufferReleaseProtocol.writeTracked(parcel,ticket,null)
+                }
+                assertEquals(0,parcel.dataSize())
+            }
+        } finally { parcel.recycle() }
+    }
+
     @Test fun validFenceRetainsTheNullableParcelablePresenceWord() {
         val pipe=ParcelFileDescriptor.createPipe()
         val parcel=Parcel.obtain()
