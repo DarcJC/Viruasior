@@ -2043,3 +2043,110 @@ guest pixel. Escape down/up again reaches the guest while Android's resumed
 activity remains Viruaisor. The VM PID does not change. All temporary GPU
 windows are stopped; no performance change from
 this investigation is shipped. The stable-120/native-60 goal remains open.
+
+## Rejected native window refresh and submission lead (2026-10-19)
+
+This comparison revisits the window-local 60 Hz preference on the current
+D8 renderer and retained 1 ms high-refresh lead. The earlier window trial
+predated the current synchronization, buffer lifetime and cadence fixes.
+The candidate requests 60 Hz only for the existing >4-Mpixel native budget;
+wide, fit and absent-mode cases retain 120 Hz. SurfaceFlinger confirms the
+native physical mode actually changes from 120 to 60 Hz. No Android display
+setting, governor, CPU frequency or affinity policy is changed.
+
+The first candidate regresses composited native motion. The SurfaceFlinger
+dump reports a 15.667 ms composition work budget at 60 Hz, versus 10.333 ms
+at 120 Hz. Existing native submissions arrive only about 16.3 ms before
+their desired timestamp. A second candidate therefore submits 1.5 periods
+early only when the native cadence aligns to one physical 60 Hz tick,
+requiring at least one period of lead. The existing 120 Hz and unaligned
+fallback paths are unchanged. This adds latency and is evaluated as a
+separate condition, not assumed to be an improvement.
+
+All accepted rows use fresh-mode QtQuick GPU motion, visible RGB/corner
+checks and overlapping own-layer presentation timestamps. Compositor
+suspension is an isolated guest diagnostic. It does not change the
+production requirement to retain the KWin OpenGL desktop.
+
+| Capture | Native window / guest composition / lead | Seconds | Actual fps | p95 / p99 / max ms | >20 ms |
+| --- | --- | ---: | ---: | ---: | ---: |
+| `native-window-a1-native` | 120 Hz / on / retained | 59.417 | 60.000 | 16.684 / 16.704 / 25.031 | 4 |
+| `native-window-b1-native` | 60 Hz / on / retained | 59.333 | 44.983 | 33.340 / 33.355 / 49.996 | 890 |
+| `native-window-b2-nocomposite-native` | 60 Hz / off / retained | 59.883 | 55.675 | 33.331 / 33.344 / 50.016 | 256 |
+| `native-window-c1-retry-native` | 60 Hz / on / 1.5 periods | 59.383 | 57.356 | 16.751 / 33.338 / 33.364 | 157 |
+| `native-window-c2-nocomposite-native` | 60 Hz / off / 1.5 periods | 59.383 | 59.882 | 16.682 / 16.770 / 33.455 | 7 |
+| `native-window-c3-nocomposite-native` | Same, longer repeat | 180.217 | 59.878 | 16.683 / 16.781 / 33.352 | 22 |
+| `native-window-c4-nocomposite-wide` | 1920×1200, physical 120 Hz / off / unchanged wide lead | 59.700 | 119.296 | 8.373 / 8.426 / 16.801 | 0 |
+| `native-window-a2-native` | Restored 120 Hz / on / retained | 59.550 | 59.983 | 16.685 / 16.704 / 33.337 | 2 |
+| `native-window-a2-wide` | Restored 1920×1200, physical 120 Hz / on / retained | 59.675 | 116.045 | 8.376 / 16.670 / 25.003 | 2 |
+
+In the 60 Hz window-only row, 693 of 890 long intervals also skip desired
+presentation slots; the remaining 197 have a regular desired interval.
+With the earlier submission and composition enabled, all 157 long intervals
+also skip desired slots. Thus the new lead removes that sample's late-display
+component, but the end-to-end producer still does not sustain native 60 fps.
+
+Suspension corrects the Qt animation clock: 300 native swaps again occupy
+approximately five wall seconds. With composition active the five-second
+QML timer still advances in approximately 2.4–4.2 wall seconds. Swap counts
+remain client-side observations, not proof of displayed unique frames.
+The apparently smoother suspended 60 Hz case also has a material cost:
+median ready-to-present latency is 42.25 ms in the long repeat, versus
+17.37 ms in the retained composited baseline. The 1.5-period composited
+case is 25.56 ms. Neither earlier submissions nor suspended composition
+are retained as default performance changes.
+
+A separate 12-second trace of the window-only suspended case records 578
+on-time frames without jank, 13 Display HAL late frames, six GPU deadline
+misses and three stuffing classifications. GPU completion waits have a
+11.947 ms p99 and 13.198 ms maximum. There is no nonzero error or overrun
+statistic; `traced_chunks_discarded=88` is informational. The instrumented
+trace is diagnostic and is not substituted for the untraced FPS results.
+
+Window selection and boundary tests first fail on the old fixed-120 policy.
+A native cadence simulation with a 2 ms transaction delay likewise fails
+before the lead change. Both candidates pass the full Android unit suite
+and debug build. Candidate APKs are `37b405dc…` (window only) and
+`23dd402e…` (earlier submission). Five changed source/test files, diffs and
+hashes are archived privately before restoring their exact HEAD bytes;
+the restored unit suite and debug build pass too. Native D8 and the Binder
+shim are unchanged throughout.
+
+Excluded: `native-window-before-gpu-native` is a valid Xlib-only capture;
+its Qt fixture failed to start because the 30-minute guest diagnostic had
+expired. It is not a GPU-motion result. `native-window-c1-native` fails
+the startup RGB/motion check and has no accepted FPS sample. The subsequent
+retry verifies a settled 60 Hz physical mode and moving RGB content.
+
+Source inspection also identifies a concrete follow-up for the earlier Xorg
+clock experiment. Its fallback returns a null CRTC, while the paired Xorg
+`present_check_flip` rejects a null CRTC before testing other flip conditions.
+That fallback can therefore disable page flipping, in addition to adding a
+software clock. A redirected-window-only clock may preserve the compositor's
+flip path. This is a source-backed hypothesis, not evidence that the running
+baseline actually flips or that a replacement improves performance.
+
+Raw captures, build/test logs, archived candidates and deadline analysis are
+under `.pi/device-debug/touch-perf-20261018/damage-region/`, with presentation
+timestamps under `.pi/device-debug/perf-60-20261018/` and the bounded trace
+under `producer-gap/native-window-b2-native.pftrace`.
+
+Final restoration installs the verified `e1f20f86…` APK again. The existing
+root bridge is PID 16286; both existing AVF grants remain true, and AVF is
+running VM 16326 with renderer D8. The fullscreen Surface has real RGB motion.
+Xorg 383 and KWin 476 retain uid 1000, cores 4–7, 50,000 ns timer slack,
+buffer age zero and their own-PID async sync-file scopes. Original Xorg,
+launcher, full-repaint effect, KWin, Venus and Gallium hashes are verified;
+no experiment service override, preload or tracing instance remains. KWin
+OpenGL/Zink/Venus/Mali and full repaint are active, and SELinux is Enforcing.
+
+Native → 1920×1200 → 1920×1280 resizing keeps the same VM. Every five-point
+touch check is within one guest pixel; the fit mode fills the 3:2 Surface.
+InputDispatcher confirms absolute pointer capture owned by MainActivity.
+Escape produces exactly one guest down/up pair and MainActivity stays resumed.
+Root frame logs through frame 19,740 have 23–31 Binder proxies and no frame
+submission/release errors. The account remains locked with no password change.
+Temporary Qt GPU probes and the input-check terminal are closed, while the
+bounded Xlib probe remains available for continued work. No performance
+change from this window experiment is shipped. The performance goal remains
+active; the App will be closed after the actual goal is achieved.
