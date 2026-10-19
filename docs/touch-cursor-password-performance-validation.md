@@ -1868,3 +1868,178 @@ a temporary file; a fresh direct XQueryPointer check provides the successful
 current-session coordinate evidence. The App is left fullscreen at 1920×1200
 with the VM available for continued investigation. No performance code from
 this experiment is retained. The stable-120/native-60 goal remains open.
+
+## Guest command arrival and compositor completion wait (2026-10-19)
+
+The preceding producer trace can be partitioned more precisely. In its 78
+producer gaps above 12 ms, the mean time before the first display-sync request
+is 8.378 ms, the entire sync exchange takes 5.249 ms, and the remaining work
+before Binder submission takes 0.125 ms. The pre-sync segment contains
+605.790 ms sleeping versus 32.683 ms running across those gaps. This points
+to waiting for upstream work rather than expensive processing after GPU sync.
+
+A second temporary native build adds scopes around the GPU worker event wait,
+command processing, display sync and used-ring notification. It leaves all
+synchronization and buffer ownership rules intact. Its 12-second trace has
+1,393 ResourceFlush calls and no trace-error/loss statistics. For 56 producer
+gaps above 12 ms, pre-sync time averages 8.107 ms; 430.713 ms of the 453.992 ms
+total pre-sync interval is inside the worker's event wait. Submit3d processing
+averages 0.015 ms and used-ring notification averages 0.011 ms. These findings
+do not support changing command-notification batching as the primary fix.
+
+Temporary printable context logging also resolves the earlier anonymous
+renderer IDs. In this boot, guest context 3 / renderer context 4 is Xorg and
+guest context 6 / renderer context 7 is KWin. The original context-name log
+format contains padded NUL characters; escaped debug formatting makes these
+records visible without changing the names passed to the renderer. These
+numbers are boot-specific and must not be assumed for unrelated captures.
+
+Independent guest tracefs instances record virtio-gpu commands and selected
+desktop scheduling events. The uninstrumented baseline records 1,406 paired
+ResourceFlush requests over approximately 12 seconds: request rate 117.220/s,
+mean request-to-response 4.598 ms and p99 8.281 ms. Thus the guest request
+stream itself is already below 120/s. The instrumented repeat gives 116.469
+requests/s. These are diagnostic command rates, not physical-presentation
+measurements. Each accepted capture has zero guest trace overruns/drops, and
+its temporary tracing instance is removed in a finally block. The initial
+2 MiB-per-CPU capture overran and is excluded; a 4 MiB retry is complete.
+
+A separate four-second raw-syscall capture includes user stacks for selected
+blocking calls on Xorg and KWin's main threads. It identifies 1,358.550 ms in
+KWin's `glXWaitGL` -> `glFinish` -> Zink timeline wait -> Venus semaphore wait
+chain. An additional 1,079.569 ms waits for Mesa's GL worker during buffer
+swapping. The Venus and Gallium symbols are resolved against exact matching
+`dcb191f5…` and `8e2ce18c…` binaries; older files in the build-root install
+directory have different hashes and are not valid symbol sources. KWin's
+matching executable hash and relocation table identify the GLX call site.
+The first unfiltered syscall-stack capture overran and is excluded from
+duration totals. These traces do not imply that every sleep can be removed.
+
+The [paired KWin GLX backend](https://github.com/KDE/kwin/blob/v5.27.10/src/backends/x11/standalone/x11_standalone_glx_backend.cpp)
+calls `glXWaitGL` when buffer age is disabled. Enabling buffer age also changes
+swap-event selection by default, so the next experiment explicitly keeps
+Intel swap events disabled and software vblank feedback selected. Full repaint,
+GLX swap interval, GPU completion checks and the desktop core mask remain in
+place. It tests that specific completion wait, without a no-op GL wrapper.
+
+All native profiling source edits are archived and restored before the
+performance comparison. The normal rebuild is byte-identical to D8, the
+installed APK is restored from the verified `e1f20f86…` artifact, and Android
+unit tests/debug assembly pass. The first restored presentation baseline
+(`gap-restored-wide`) is 115.746 fps over 59.950 seconds, p95 8.388 ms,
+p99 16.671 ms and no interval above 20 ms. Its 114 timestamp snapshots have
+complete coverage. Private evidence for this investigation is under
+`.pi/device-debug/touch-perf-20261018/producer-gap/`.
+
+The buffer-age experiment removes the identified `glXWaitGL` stack from the
+selected blocking-call capture, but regresses actual presentation cadence:
+
+| Configuration | Duration | Actual fps | Interval p95 / p99 | Intervals >20 ms |
+| --- | ---: | ---: | ---: | ---: |
+| Original configuration, `gap-restored-wide` | 59.950 s | 115.746 | 8.388 / 16.671 ms | 0 |
+| Buffer age, `gap-buffer-age-b1-wide` | 60.067 s | 111.110 | 16.664 / 16.685 ms | 6 |
+| Restored configuration, `gap-buffer-age-a2-wide` | 59.650 s | 116.479 | 8.378 / 16.670 ms | 1 |
+
+All three captures have complete timestamp coverage and pass the visible
+motion, colour and corner checks. The candidate is rejected. The original
+KWin environment is restored exactly, using the normal desktop wrapper;
+Xorg 381 and KWin 3344 remain uid 1000 on cores 4–7, with their own-PID
+sync-fd opt-in. The original full-repaint effect and hardware renderer are
+active, and no guest service override remains. Reduced CPU waiting alone is
+not sufficient evidence of a presentation improvement.
+
+### Isolating desktop composition from final presentation
+
+Temporarily suspending KWin composition through its session DBus API produces
+a strong wide-resolution diagnostic result, but worsens native cadence. The
+window manager stays running, and the existing GPU, sync-fd, CPU and Android
+presentation paths remain in place. These are separate untraced 60-second
+captures, each with complete timestamp coverage and visible RGB motion:
+
+| Capture | Workload / mode / composition | Actual fps | p95 / p99 / max ms | >20 ms |
+| --- | --- | ---: | ---: | ---: |
+| `gap-nocomposite-diagnostic-wide` | Xlib / 1920×1200 / off | 119.967 | 8.374 / 8.406 / 16.677 | 0 |
+| `gap-nocomposite-diagnostic-native` | Xlib / native / off | 60.000 | 16.692 / 24.993 / 25.046 | 58 |
+| `gap-nocomposite-gpu-wide` | QtQuick / 1920×1200 / off | 119.365 | 8.367 / 8.409 / 24.960 | 1 |
+| `gap-nocomposite-gpu-native` | QtQuick / native / off | 60.000 | 16.691 / 25.001 / 25.042 | 99 |
+| `gap-composite-restored-gpu-native` | QtQuick / native / restored | 60.000 | 16.681 / 16.699 / 25.008 | 3 |
+
+Fresh QtQuick clients with composition suspended also regain approximately
+correct animation time: 300 swaps take about five real seconds at native
+resolution, and 600 take about five seconds at 120 Hz. The client still caches
+its initial animation step across a mode switch; native-client log entries
+after switching to 120 Hz are excluded from this fresh-client observation.
+Only one fixture window/process is running during each accepted capture.
+
+Two separate 12-second native QtQuick traces distinguish these stalls from
+late guest production. With composition suspended, SurfaceFlinger records
+23 GPU-deadline misses and two Display HAL late presents among 719 frames.
+Its GPU-completion wait p99 is 8.128 ms and maximum 10.216 ms. With composition
+restored, all 719 traced frames are on time, GPU-wait p99 is 4.949 ms and
+maximum 5.361 ms. These wait durations include possible GPU contention and
+are not isolated shader execution times. No nonzero error/data-loss stats or
+ftrace overruns are reported; the informational `traced_chunks_discarded`
+counter is present in both captures. Traces are diagnostic and are not the
+source of the FPS table.
+
+Later read-only frequency sampling (60 samples per condition, separated by
+200 ms sleeps) finds the GPU core at 278.53 MHz for every native sample with
+composition suspended. In the surrounding composited samples, 33/60 and
+43/60 readings are above that frequency, reaching 576 MHz. The GPU top clock
+stays at 278.53 MHz in all three sets. These are separate observations rather
+than simultaneous per-frame attribution; they support investigating dynamic
+frequency behaviour but do not prove it causes the deadline misses. No
+frequency, governor, power or host scheduler setting is written.
+
+The wide result makes the KWin composition path worth further investigation;
+it does not justify disabling composition by default at both resolutions.
+Composition and the full-repaint effect are restored. No compositor setting
+or Xorg clock change from this experiment is retained.
+
+### KWin timer slack: apparent gain does not survive restoration
+
+The selected blocking stacks and a live readback show KWin using the normal
+50,000 ns timer slack. A temporary launcher applies
+[`PR_SET_TIMERSLACK`](https://man7.org/linux/man-pages/man2/PR_SET_TIMERSLACK.2const.html)
+only to its child before the normal KWin wrapper executes: 1,000 ns for the
+candidate and 50,000 ns for control. This changes timer-expiration coalescing,
+not the requested Venus wait, GPU completion checks or host timer policy.
+All candidate KWin threads read back 1,000 ns; Xorg stays at 50,000 ns. KWin
+retains uid 1000, cores 4–7, buffer age zero and its own-PID sync-fd opt-in.
+
+| Capture | KWin slack | Actual fps | p95 / p99 ms | >20 ms |
+| --- | ---: | ---: | ---: | ---: |
+| `gap-timer-a1-gpu-wide` | 50 µs | 112.712 | 16.662 / 16.677 | 1 |
+| `gap-timer-b1-gpu-wide` | 1 µs | 116.443 | 8.369 / 16.669 | 2 |
+| `gap-timer-a2-gpu-wide` | Restored 50 µs | 116.633 | 8.368 / 16.669 | 2 |
+
+These 60-second QtQuick captures have complete coverage and pass the pixel
+checks. The restored control restarts the bounded fixture to avoid its
+five-minute expiry. An independent ten-second guest CPU sample is 57.2% of
+one core across QML/Xorg/KWin before the candidate versus 60.2% during it;
+these short observations are not power measurements. The apparent first
+gain is absent against the restored control, so the timer change is rejected.
+The current compositor is restored to 50,000 ns, with no timer override in
+the shipped launcher or any host-system setting.
+
+Final restoration confirms the installed APK hash `e1f20f86…`, running D8
+renderer and original KWin/Venus/Gallium hashes. Xorg 381 and KWin 11761 use
+uid 1000, cores 4–7 and 50,000 ns timer slack; full repaint and OpenGL on
+Zink/Venus/Mali are active. No guest service override or tracing instance from
+these experiments remains. A read-only framework-resource lookup also reports
+`config_sustainedPerformanceModeSupported=false`; no sustained-performance
+window flag is applied.
+
+The existing root bridge is available (PID 23014), and the App retains its
+existing MANAGE_VIRTUAL_MACHINE and USE_CUSTOM_VIRTUAL_MACHINE grants. AVF
+continues running VM 23055. The fullscreen Surface is attached and real
+screenshots show the moving guest desktop. SELinux stays Enforcing; no new
+permission or policy is added. Root log samples from frame 22,620 through
+115,380 contain 29–30 Binder proxies and no submission/release errors.
+
+After restoring the bounded Xlib fixture, five direct XQueryPointer checks
+at native resolution and again after switching to 1920×1200 are within one
+guest pixel. Escape down/up again reaches the guest while Android's resumed
+activity remains Viruaisor. The VM PID does not change. All temporary GPU
+windows are stopped; no performance change from
+this investigation is shipped. The stable-120/native-60 goal remains open.
