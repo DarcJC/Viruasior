@@ -11,4 +11,24 @@ if grep -Eqi 'llvmpipe|lavapipe|softpipe|swiftshader' "$report"; then
     echo 'Software Vulkan renderer rejected' >&2
     exit 1
 fi
-exec python3 /opt/viruaisor/guest-gpu-draw-probe.py --venus
+# The agent's READY signal precedes GPU readiness on some cold boots. Only the
+# observed all-zero readback (75) permits another fresh EGL context. Real pixels
+# must pass before starting Plasma; the unit's outer 40s timeout still applies.
+attempt=1
+while :; do
+    status=0
+    python3 /opt/viruaisor/guest-gpu-draw-probe.py --venus || status=$?
+    if [ "$status" -eq 0 ]; then
+        exit 0
+    fi
+    if [ "$status" -ne 75 ]; then
+        exit "$status"
+    fi
+    if [ "$attempt" -ge 3 ]; then
+        echo 'GPU_DRAW_READBACK_FAIL: zero readback persisted after 3 attempts' >&2
+        exit 1
+    fi
+    echo "Waiting for Venus readback readiness (attempt $attempt/3)" >&2
+    attempt=$((attempt + 1))
+    sleep 1
+done

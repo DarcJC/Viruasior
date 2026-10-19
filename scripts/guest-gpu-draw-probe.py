@@ -16,7 +16,26 @@ PROFILE = "venus" if sys.argv[1:] == ["--venus"] else "gfxstream"
 GFX_ICD = ("/opt/viruaisor/venus/venus_icd.json" if PROFILE == "venus"
            else "/usr/share/vulkan/icd.d/gfxstream_vk_icd.json")
 SIZE = 32
+SAMPLE_POINTS = ((1, 1), (16, 16), (30, 30))
 I, U, P = C.c_int, C.c_uint, C.c_void_p
+
+
+class ReadbackNotReady(RuntimeError):
+    """The observed cold-start zero readback; never counts as a successful draw."""
+
+
+def validate_readback(pixels):
+    if len(pixels) != len(SAMPLE_POINTS) or any(len(pixel) != 4 for pixel in pixels):
+        raise RuntimeError("incomplete RGBA readback")
+    if all(all(channel == 0 for channel in pixel) for pixel in pixels):
+        raise ReadbackNotReady("all three shader samples are zero")
+    mismatches = 0
+    for (x, y), pixel in zip(SAMPLE_POINTS, pixels):
+        expected = (round(255 * (x + 0.5) / SIZE), round(255 * (y + 0.5) / SIZE), 128, 255)
+        if any(abs(actual - target) > 2 for actual, target in zip(pixel, expected)):
+            mismatches += 1
+    if mismatches:
+        raise RuntimeError("shader readback mismatch at %s samples" % mismatches)
 
 
 def bind(lib, name, result, args):
@@ -158,8 +177,8 @@ def draw(success_label="GPU_DRAW_READBACK_PASS (not Android Surface presentation
         if error:
             raise RuntimeError("draw: GL error 0x%x" % error)
         print("DRAW_STAGE=read-pixels", flush=True)
-        mismatches = 0
-        for x, y in ((1, 1), (16, 16), (30, 30)):
+        pixels = []
+        for x, y in SAMPLE_POINTS:
             pixel = (C.c_ubyte * 4)()
             read_pixels(x, y, 1, 1, 0x1908, 0x1401, pixel)
             error = get_error()
@@ -167,10 +186,8 @@ def draw(success_label="GPU_DRAW_READBACK_PASS (not Android Surface presentation
                 raise RuntimeError("readback: GL error 0x%x" % error)
             expected = (round(255 * (x + 0.5) / SIZE), round(255 * (y + 0.5) / SIZE), 128, 255)
             print("PIXEL(%s,%s)=%s expected=%s" % (x, y, list(pixel), expected), flush=True)
-            if any(abs(actual - target) > 2 for actual, target in zip(pixel, expected)):
-                mismatches += 1
-        if mismatches:
-            raise RuntimeError("shader readback mismatch at %s samples" % mismatches)
+            pixels.append(tuple(pixel))
+        validate_readback(pixels)
         print(success_label, flush=True)
     finally:
         if display:
@@ -182,9 +199,17 @@ def draw(success_label="GPU_DRAW_READBACK_PASS (not Android Surface presentation
             terminate(display)
 
 
-if __name__ == "__main__":
+def main():
     try:
         run()
+    except ReadbackNotReady as error:
+        print("GPU_DRAW_READBACK_NOT_READY: " + str(error), file=sys.stderr, flush=True)
+        return 75
     except Exception as error:
         print("GPU_DRAW_READBACK_FAIL: " + str(error), file=sys.stderr, flush=True)
-        sys.exit(1)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
