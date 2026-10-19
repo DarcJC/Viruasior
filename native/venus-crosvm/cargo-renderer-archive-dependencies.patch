@@ -1,0 +1,19 @@
+--- a/build.rs
++++ b/build.rs
+@@ -22,5 +22,16 @@ fn virglrenderer() -> PkgConfigResult<()> {
+         .atleast_version("1.0.0")
+         .probe("virglrenderer")?;
++    // Cargo bundles these native archives into this crate's rlib. Relinking
++    // only the final crosvm crate can otherwise keep the old renderer bytes.
++    // VIRUAISOR_RENDERER_ARCHIVE_DEPENDENCIES
++    for directory in &lib.link_paths {
++        for name in &lib.libs {
++            let archive = directory.join(format!("lib{name}.a"));
++            if archive.is_file() {
++                println!("cargo:rerun-if-changed={}", archive.display());
++            }
++        }
++    }
+     if lib.defines.contains_key("VIRGL_RENDERER_UNSTABLE_APIS") {
+         println!("cargo:rustc-cfg=virgl_renderer_unstable");
+     }

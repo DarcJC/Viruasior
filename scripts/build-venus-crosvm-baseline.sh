@@ -52,6 +52,11 @@ export CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS="-L native=$target_prefix/li
 cd "$work/crosvm"
 if [[ ${VENUS_CROSVM_CANDIDATE:-0} == 1 ]]; then
     grep -Fq 'rutabaga_gfx = { path = "../rutabaga", version = "=0.1.76" }' Cargo.toml
+    # The static renderer lives inside rutabaga's rlib, so final-crate metadata
+    # alone cannot invalidate it when only native sources change.
+    archive_patch="$repo/native/venus-crosvm/cargo-renderer-archive-dependencies.patch"
+    git -C "$work/rutabaga" apply --reverse --check "$archive_patch" 2>/dev/null || \
+        git -C "$work/rutabaga" apply "$archive_patch"
 else
     grep -Fq 'rutabaga_gfx = "=0.1.76-alpha.0"' Cargo.toml
 fi

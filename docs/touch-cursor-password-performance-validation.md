@@ -1679,3 +1679,94 @@ complete native desktop, one cursor and no black tiles. All 33 baseline guest
 Python tests pass; `git diff --check` is clean. The independent diagnostic
 service is stopped, SELinux remains Enforcing, and the APK/renderer and Android
 permissions are unchanged. The VM stays available for the ongoing goal.
+
+## Producer synchronization timing and static archive rebuilds (2026-10-19)
+
+A fresh untraced 1920×1200 baseline (`producer-timing-baseline-wide`) records
+117.569 presentations/s over 59.658 s, p95 8.379 ms, p99 16.666 ms and no
+intervals over 20 ms. RGB, motion, corner checks and timestamp coverage pass.
+The retained APK remains `e1f20f86…`, with renderer `d8f16c57…`; this is still
+below stable 120 fps.
+
+A 12-second Binder/scheduler trace records 1,398 frame calls. The gap from the
+previous call's return to the next call has p95 11.652 ms; synchronous frame
+handling averages 1.437 ms (p95 3.331 ms). These gaps include waiting for the
+next guest frame, so they alone cannot identify a GPU bottleneck. Thread-state
+totals must be restricted to the actual frame-calling utid and clipped to the
+capture interval: grouping every thread named `v_gpu` incorrectly sums several
+threads. The corrected frame-calling thread spends 869.518 ms running and
+10,708.311 ms sleeping in an 11,961.357 ms interval.
+
+Temporary native timing exposed a build defect before providing usable stage
+measurements. Updating the static renderer and changing only crosvm's final
+crate metadata leaves Cargo's cached rutabaga rlib holding the old archive.
+The first two profiling binaries contain zero timing markers even though the
+rebuilt native archive contains them. Their traces are invalid for stage
+attribution. An initial suspicion about Android user-build tracing restrictions
+was not established; it must not be treated as the reason for these omissions.
+
+The retained build fix makes the local rutabaga build script declare each
+existing native `.a` file reported by pkg-config as a Cargo dependency. The
+existing final-crate metadata is still used for directly linked display code.
+`scripts/test-renderer-archive-rebuild.sh` exercises the actual rutabaga build
+script in a small two-crate Cargo fixture: a native-only edit from return value
+1 to 2 leaves the old executable returning 1 before the fix, then correctly
+returns 2 with the dependency declarations. The test runs offline with the
+cached pkg-config crate. This fixes build correctness; no fps gain is claimed.
+The earlier queue-cache retest logs show rutabaga recompilation for both
+candidate and restoration, so this discovery does not invalidate that retest.
+
+The corrected profiling binary (`8a32ba8a…`, 14,118,480 bytes) contains eleven
+timing marker strings and emits them on-device. Ten scoped timing locations
+cover proxy requests/replies, ring snapshots/draining and fence operations.
+They use the existing graphics trace category in the test process; no system
+properties, permissions, SELinux policy or CPU affinity are changed. No fence,
+timeout, queue order or buffer reuse rule is removed. The exact temporary patch
+and baseline source hashes are archived privately under `producer-timing/`.
+
+The first instrumented capture has an initial long gap, so the steady repeat is
+used for attribution. The repeat contains 1,390 frame calls, 9,732 completed
+GPU fence waits and 13,906 bounded ring waits, with no recorded trace loss or
+error statistics. It is a diagnostic capture, not an fps acceptance run.
+
+| Stage | Mean ms | p95 ms | Maximum ms |
+| --- | ---: | ---: | ---: |
+| Bounded ring drain, all contexts | 0.006 | 0.003 | 0.613 |
+| GPU fence wait, all contexts | 0.431 | 2.339 | 7.977 |
+| GPU fence wait, renderer context 7 | 1.665 | 4.696 | 7.977 |
+| GPU fence wait, renderer context 4 | 0.673 | 3.858 | 5.655 |
+
+For the 78 producer gaps exceeding 12 ms, the mean gap is 13.752 ms and summed
+proxy reply waiting on the single frame-calling thread averages 5.035 ms.
+For 1,311 shorter gaps those values are 6.747 and 2.024 ms. This supports
+investigating GPU completion on the submission path, while the remaining
+8.716 ms mean time outside proxy waits in long gaps prevents attributing every
+missed refresh to GPU waiting. Context numbers are renderer IDs; they have not
+yet been independently mapped to individual guest applications. The timing
+alone does not justify skipping synchronization or claiming asynchronous
+acquire-fence submission will meet the target.
+
+The instrumented runtime passes RGB/motion/corner checks, and a real Android
+screenshot shows the complete desktop and one guest cursor. Profiling source
+edits are restored byte-for-byte before rebuilding the normal renderer. The
+packaged native binary and its strict installer pin are restored from the
+verified baseline. Only the build dependency fix, its regression test and this
+evidence are intended for retention; the temporary tracing is not shipped.
+
+Restoration is complete: the rebuilt normal renderer is byte-identical to
+`d8f16c57…` (14,118,808 bytes), contains no profiling markers, and the installed
+APK is again `e1f20f86…`. Both Android unit tests and debug assembly pass.
+The existing privileged bridge remains available, no new Android grants are
+requested, AVF boots VM PID 5703, and its attached fullscreen Surface displays
+actual animated guest frames. SELinux is Enforcing. Xorg PID 384 and KWin PID
+490 run as uid 1000 on cores 4–7 with their own-PID sync-fd opt-in, original
+Xorg/effect hashes and no service overrides. droid is still locked.
+
+The restored untraced run (`producer-timing-restored-wide`) records 117.930
+presentations/s over 59.908 s, p95 8.375 ms, p99 16.666 ms and three intervals
+over 20 ms (maximum 25.005 ms). All 114 timestamp snapshots have complete
+coverage; RGB/motion/corner checks pass and the restored screenshot again
+shows one guest cursor. These baseline repeats are not evidence of an
+optimization gain. The stable-120/native-60 goal remains open; GPU completion
+handoff and the remaining time outside proxy waiting require further work.
+The VM and bounded guest screen inhibitor remain active for that investigation.
