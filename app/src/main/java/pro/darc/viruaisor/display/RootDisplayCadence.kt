@@ -27,7 +27,11 @@ internal class RootDisplayCadence {
             val anchor = phase.expectedPresentationNanos - 1_000_000L
             target = anchor + Math.floorDiv(target - anchor + interval / 2, interval) * interval
         }
-        val earliest = nowNanos + period / 2
+        // A frame already at the sink can use a still-future high-refresh slot.
+        // Keep the existing native/fallback margin and never target the past.
+        val minimumLead = if (aligned && targetPeriodNanos < PERIOD_NANOS)
+            minOf(period / 2, 1_000_000L) else period / 2
+        val earliest = nowNanos + minimumLead
         if (target < earliest) {
             // Skip missed slots while retaining the phase; never queue stale frames.
             target += ((earliest - target + period - 1) / period) * period

@@ -1272,3 +1272,115 @@ this comparison did not run a profiler or write these settings. Final logs,
 mode/touch reports and raw samples are in `post-upload/validation.log`,
 `post-upload/validation/` and `release-pool-final-fit`. The measured candidate
 APK remains installed for continued optimization.
+
+## High-refresh presentation margin (2026-10-19)
+
+A new 12-second Perfetto capture on the retained release-pool build shows
+1,284 matched root buffer imports and closes. The gap from the previous
+handler completion to the next buffer import has a 13.800 ms p95, while the
+root handler itself has a 4.343 ms p95. Several 13–15 ms producer gaps are
+followed by another 1–3 ms in the handler, making a full 16.7 ms departure
+gap. This suggests that the half-period minimum presentation lead discards
+some still-future high-refresh slots. These traced timings are diagnostic;
+the trace's 108.07 layer updates per second are not mixed with untraced
+performance measurements.
+
+The candidate changes only the aligned high-refresh minimum lead to 1 ms.
+It keeps the existing phase anchor, skips expired targets, bounds sink
+back-pressure to one period, and advances the schedule only after successful
+submission. Native 60 Hz, missing clocks and incompatible clocks retain the
+half-period margin. GPU dependencies, release fences, the buffer budget and
+CPU selection are unchanged. Unit regressions cover a late but usable slot,
+the exact 1 ms boundary, an expired margin, aligned and unaligned native
+operation, and high-refresh fallback. The new usable-slot assertions fail
+against the old implementation; the final unit suite and APK build pass.
+
+The baseline APK is the retained release-pool build
+`43a000e94efd7f3dd7589f156daff5c34a9d37d82d3b3921bcca51cbe7e93c9c`.
+The candidate APK is
+`e1f20f862f3315d2e0f8d027bff053eedc7ee80749bf89acc0fa27edfca763bc`.
+Both contain renderer
+`d8f16c579ead776979eacfed8eab138aef776780bcc95bef155f0d61547bb9c7`.
+Each comparison restarts the VM and verifies Xorg/KWin masks 4–7 plus the
+same guest Gallium, Venus and CPU-wrapper hashes. Captures use the moving
+RGB fixture, actual SurfaceFlinger presentation timestamps, 350 ms polling,
+and overlap checks between every adjacent timestamp window. No profiler
+runs during these comparisons.
+
+The matched 60-second sequence is candidate A1 → baseline B1 → candidate A2
+→ baseline B2. All four captures have complete timestamp coverage:
+
+| Capture | Duration | Actual fps | p95 / p99 / max ms | Intervals >12 / >20 ms |
+| --- | ---: | ---: | ---: | ---: |
+| `deadline-A1-wide` | 60.108 s | 117.754 | 8.376 / 16.666 / 25.010 | 133 / 2 |
+| `deadline-B1-wide` | 59.858 s | 113.902 | 16.653 / 16.672 / 25.001 | 364 / 1 |
+| `deadline-A2-wide` | 59.992 s | 117.700 | 8.384 / 16.667 / 24.997 | 137 / 1 |
+| `deadline-B2-wide` | 59.767 s | 112.588 | 16.662 / 16.676 / 25.000 | 440 / 3 |
+
+Pooling interval counts and elapsed time gives **113.246 → 117.727 fps**,
+approximately **4.0% higher**. Missing 120 Hz refresh opportunities, estimated
+from each presentation gap rounded to physical refresh periods, fall from
+405.27 to 136.39 per minute, approximately **66% fewer**. There are no
+presentation intervals under 4 ms on either side, so the gain is not a burst
+of redundant presentations. The candidate p95 drops to one refresh interval;
+the p99 and occasional 25 ms gaps remain. Median buffer-ready-to-present time
+stays near 17.39 ms. This metric is not an input-latency measurement.
+
+The four root logs contain no recorded submission/release error. Candidate
+Binder proxy counts remain at 23–31; baseline counts remain at 23–31 or
+23–32, consistent with both builds containing the retained release pool.
+
+A fresh candidate VM then runs `deadline-A3-wide` for 180.125 seconds:
+117.935 fps, p95/p99 8.375/16.665 ms, maximum 25.004 ms and two intervals
+over 20 ms. All 348 snapshots overlap. Proxy count stays at 23–31 through
+23,760 posted frames with no recorded submission/release error. This longer
+window supports retaining the improvement but still does not meet a stable
+120 fps target.
+
+A separate candidate trace has 1,399 matched root buffer lifetimes. Among
+frames with producer gaps over 12 ms, handler time falls from baseline
+median/p95 2.665/3.650 ms to candidate 0.601/1.375 ms. This is consistent
+with avoiding the unnecessary wait after a late arrival. The candidate trace
+has 1,403 SurfaceFlinger buffer arrivals and 1,395 layer draws, with eight
+sub-4-ms arrivals and eight pending-buffer replacement markers. There is
+therefore a small amount of replacement, not a completely burst-free
+submission stream; the untraced measurements above establish the actual
+presentation benefit. Neither trace reports a nonzero error counter. Remaining
+producer gaps and occasional long presentations are unresolved.
+
+Final validation keeps VM PID 13181 alive across Home → App reattachment and
+wide → native → aspect-matched fit mode changes. All three mode checks and
+five-point guest touch mappings pass. Native and fit use the whole
+3408×2272 viewport; the moving RGB fixture has intact corners. The additional
+captures also have complete timestamp coverage:
+
+| Capture | Duration | Actual fps | p95 / p99 / max ms | Intervals >20 ms |
+| --- | ---: | ---: | ---: | ---: |
+| `deadline-final-native` | 180.100 s | 59.989 | 16.705 / 16.739 / 33.337 | 8 |
+| `deadline-final-fit` | 59.708 s | 117.756 | 8.384 / 16.667 / 16.764 | 0 |
+
+The native algorithm is unchanged, and this validation still has occasional
+long frames. Six of its eight long presentation intervals retain roughly
+16.7 ms desired/ready intervals, consistent with an extra display refresh
+being missed after the buffer was ready; the other two also have roughly
+33.3 ms desired/ready intervals. Neither average native throughput nor this
+single validation window proves that all native stalls are resolved.
+
+The four real GPU ordering modes pass again, including an initially
+unsignaled async sync-file and all 1,024 GPU-written words consumed by a
+separate device. Escape sends exactly one guest down/up pair and leaves the
+App focused. Root proxies remain bounded at 36 across reattachment/modes
+and end at 30, without recorded submission/release errors. Xorg and KWin
+remain on 4–7; all guest library hashes and the locked droid account are
+unchanged. Root/AVF access, VM boot, Surface attachment and actual moving
+guest frames were confirmed using existing grants. Host observations remain
+SELinux Enforcing, global hidden-API policy null, the existing specific
+VirtualMachine exemption and the same post-reboot perf settings recorded
+above. No host setting or prime-core affinity was changed.
+
+Retain the 1 ms high-refresh margin on the repeated presentation improvement.
+All 146 unit tests and the debug build pass, and the final source rebuild
+produces the same candidate APK bytes. Evidence is in
+`.pi/device-debug/touch-perf-20261018/deadline-profile/`, with presentation
+captures under `.pi/device-debug/perf-60-20261018/`. The candidate stays
+installed for continued work toward stable 120/60 fps.

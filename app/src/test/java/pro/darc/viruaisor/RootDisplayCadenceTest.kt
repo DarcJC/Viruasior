@@ -7,6 +7,65 @@ import pro.darc.viruaisor.display.RootDisplayCadence
 class RootDisplayCadenceTest {
     private val period = RootDisplayCadence.PERIOD_NANOS
 
+    @Test fun highRefreshLateArrivalCanStillUseTheNextFutureSlot() {
+        val cadence = RootDisplayCadence()
+        val interval = 8_333_333L
+        val now = 1_000_000_000L
+        val phase = RootDisplayCadence.Phase(now + interval + 1_000_000L, interval)
+        val first = requireNotNull(cadence.plan(now, 1L, phase, interval))
+        cadence.submitted(first)
+        // A traced producer gap of 13.5 ms still leaves 3.17 ms before this
+        // target. Sleeping until the following slot needlessly loses a refresh.
+        val arrival = first.submitAtNanos + 13_500_000L
+        val next = requireNotNull(cadence.plan(arrival, 1L, phase, interval))
+        assertEquals(first.presentAtNanos + interval, next.presentAtNanos)
+        assertTrue(next.submitAtNanos <= arrival)
+        assertTrue(next.presentAtNanos - arrival >= 1_000_000L)
+    }
+
+    @Test fun highRefreshKeepsOneMillisecondOfLeadAndSkipsAnExpiredMargin() {
+        val interval = 8_333_333L
+        for (lead in listOf(1_000_000L, 999_999L)) {
+            val cadence = RootDisplayCadence()
+            val now = 1_000_000_000L
+            val phase = RootDisplayCadence.Phase(now + interval + 1_000_000L, interval)
+            val first = requireNotNull(cadence.plan(now, 1L, phase, interval))
+            cadence.submitted(first)
+            val target = first.presentAtNanos + interval
+            val arrival = target - lead
+            val next = requireNotNull(cadence.plan(arrival, 1L, phase, interval))
+            assertEquals(if (lead == 1_000_000L) target else target + interval,
+                next.presentAtNanos)
+            assertTrue(next.presentAtNanos - arrival >= 1_000_000L)
+            assertTrue(next.submitAtNanos - arrival <= interval)
+        }
+    }
+
+    @Test fun nativeProfileKeepsItsExistingHalfPeriodMargin() {
+        val now = 1_000_000_000L
+        val aligned = RootDisplayCadence.Phase(now + period + 1_000_000L, period / 2)
+        for (phase in listOf(null, aligned)) {
+            val cadence = RootDisplayCadence()
+            val first = requireNotNull(cadence.plan(now, 1L, phase))
+            cadence.submitted(first)
+            val target = first.presentAtNanos + period
+            val next = requireNotNull(cadence.plan(target - 3_000_000L, 1L, phase))
+            assertEquals(target + period, next.presentAtNanos)
+        }
+    }
+
+    @Test fun highRefreshWithoutAnAlignedClockKeepsTheExistingMargin() {
+        val interval = 8_333_333L
+        for (phase in listOf(null, RootDisplayCadence.Phase(1_010_000_000L, 11_111_111L))) {
+            val cadence = RootDisplayCadence()
+            val first = requireNotNull(cadence.plan(1_000_000_000L, 1L, phase, interval))
+            cadence.submitted(first)
+            val target = first.presentAtNanos + interval
+            val next = requireNotNull(cadence.plan(target - 3_000_000L, 1L, phase, interval))
+            assertEquals(target + interval, next.presentAtNanos)
+        }
+    }
+
     @Test fun highRefreshProfileUsesEveryPhysicalTick() {
         val cadence = RootDisplayCadence()
         val interval = 8_333_333L
