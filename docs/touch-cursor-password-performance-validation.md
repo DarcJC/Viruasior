@@ -2243,3 +2243,45 @@ does not recover the first control's rate, so the full difference cannot be
 attributed to buffer age. This run establishes no benefit; buffer age zero
 and the exact saved KWin environment are restored. There is no new retained
 performance setting from this comparison.
+
+### Rejected full-swap completion-wait diagnostic
+
+A narrower private KWin prototype tests the wait without enabling buffer age.
+The paired binary is identified by SHA-256 `1d73d3da…`; GNU AArch64 objdump,
+its dynamic relocation table and the paired GLX source identify the full-swap
+return at `0x6c694`, WaitGL call at `0x6c6a8`, and partial-update branch at
+`0x6c720`. REA confirms the artifact identity but has no available native
+analysis provider for this ARM64 ELF on the configured Windows host. No REA
+decompilation or host configuration repair is claimed or performed.
+
+The diagnostic changes one instruction at `0x6c698` to branch to XFlush after
+a full-frame swap. It is explicitly restricted to buffer age zero. The partial
+update's WaitGL path remains intact, as do swap interval, GPU fences and
+consumer release fences. Its private launcher retains cores 4–7 and the
+own-PID sync-fd scope, and arms a five-minute recovery process. This is a
+temporary paired-binary experiment, not a production patch or shipped KWin.
+
+| Capture | Configuration | Actual fps | p95 / p99 ms | >20 ms |
+| --- | --- | ---: | ---: | ---: |
+| `scoped-swap-a2-wide` | Original KWin | 114.304 | 8.425 / 16.675 | 5 |
+| `scoped-swap-b1-wide` | Full-swap wait bypass | 115.744 | 8.380 / 16.671 | 4 |
+| `scoped-swap-a3-wide` | Original restored | 116.951 | 8.372 / 16.668 | 3 |
+
+Every row has complete timestamp coverage, real RGB motion and matching
+1920×1200 mode checks before and after sampling. The restored control is faster
+than the candidate, so no benefit is established and the prototype is rejected.
+The exact original KWin and environment are restored; its watchdog is stopped.
+The final root-frame log spans frames 39,780–136,620, with 29–30 Binder proxies
+and no submission or release errors. Original KWin/Venus/Gallium, private Xorg,
+full repaint and hardware composition are verified. The account remains locked.
+
+The earlier sample named `scoped-swap-a1-wide` actually runs at native resolution
+after the manual desktop restart; it is excluded from the wide comparison.
+The private measurement wrapper now asserts guest geometry and refresh rate
+both before and after collecting a named mode. Manual desktop restarts must
+reapply the requested guest mode before starting a fresh GPU client.
+
+The verified `7d10f469…` prepared bundle is also uploaded to the App's import
+cache using a temporary filename, checked on the tablet, then renamed into
+place. It is not imported over the existing VM disk. The committed clock fix
+remains active; neither buffer-age nor full-swap-wait changes are retained.
