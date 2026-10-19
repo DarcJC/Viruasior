@@ -11,6 +11,19 @@ import pro.darc.viruaisor.root.RootCommandExecutor
 import pro.darc.viruaisor.root.RootCommandResult
 
 class AvfPermissionClientTest {
+    @Test fun permissionTargetFollowsInstalledPackageAndRejectsShellSyntax() {
+        val calls = mutableListOf<List<String>>()
+        val client = AvfPermissionClient(RootCommandExecutor { command, _ ->
+            calls += command; RootCommandResult(0, "")
+        }, "org.example.virtualmachine.debug")
+        client.grantMissing("su", 10, { false }, {})
+        assertTrue(calls.all { it.last().contains("--user 10 org.example.virtualmachine.debug android.permission.") })
+        for (name in listOf("bad;id", "bad/name", "../other", "bad.name\n")) {
+            org.junit.Assert.assertThrows(IllegalArgumentException::class.java) {
+                AvfPermissionClient(packageName = name)
+            }
+        }
+    }
     @Test
     fun existingPermissionsNeverExecuteRootOrEnterRollbackJournal() {
         val result = AvfPermissionClient(RootCommandExecutor { _, _ -> error("Unexpected root operation") })
@@ -33,7 +46,7 @@ class AvfPermissionClientTest {
         })
         val result = client.grantMissing("/system/bin/su", 10, { it in granted }, { journal += it })
 
-        assertEquals(listOf(listOf("/system/bin/su", "-c", "/system/bin/pm grant --user 10 pro.darc.viruaisor android.permission.USE_CUSTOM_VIRTUAL_MACHINE")), calls)
+        assertEquals(listOf(listOf("/system/bin/su", "-c", "/system/bin/pm grant --user 10 ${BuildConfig.APPLICATION_ID} android.permission.USE_CUSTOM_VIRTUAL_MACHINE")), calls)
         assertEquals(setOf(AvfPermission.CUSTOM_VM), journal)
         assertTrue(result.all { it.isGranted })
         assertTrue(result.first().wasGranted)
@@ -107,7 +120,7 @@ class AvfPermissionClientTest {
             RootCommandResult(0, "")
         })
         assertNull(client.revokeAdded("su", 0, setOf(AvfPermission.CUSTOM_VM)))
-        assertEquals(listOf(listOf("su", "-c", "/system/bin/pm revoke --user 0 pro.darc.viruaisor android.permission.USE_CUSTOM_VIRTUAL_MACHINE")), calls)
+        assertEquals(listOf(listOf("su", "-c", "/system/bin/pm revoke --user 0 ${BuildConfig.APPLICATION_ID} android.permission.USE_CUSTOM_VIRTUAL_MACHINE")), calls)
     }
 
     @Test

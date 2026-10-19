@@ -28,6 +28,7 @@ object VmRuntime {
                 support = result.first,
                 bundle = result.second,
                 detail = result.third?.rootMessage(),
+                storage = VmStorageManager(context.applicationContext).state(result.second),
             )
         }
     }
@@ -47,6 +48,11 @@ object VmRuntime {
 
     internal fun setBundle(bundle: VmBundle) = update {
         it.copy(status = VmStatus.Stopped, bundle = bundle, detail = "VM bundle imported.")
+    }
+
+    internal fun setStorage(storage: VmStorageState) {
+        Log.i("ViruaisorStorage","rootBytes=${storage.rootBytes} busy=${storage.busy} pending=${storage.recoveryPending} mounted=${storage.sharedMounted} detail=${storage.message}")
+        update { it.copy(storage = storage) }
     }
 
     internal fun setStatus(status: VmStatus, detail: String? = null) = update {

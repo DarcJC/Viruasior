@@ -6,8 +6,8 @@ CFLAGS += -std=c11 -Wall -Wextra -Werror
 
 all: avf-agent
 
-avf-agent: avf-agent.c desktop_protocol.c desktop_protocol.h password_control.c password_control.h command_reader.h
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ avf-agent.c desktop_protocol.c password_control.c
+avf-agent: avf-agent.c desktop_protocol.c desktop_protocol.h password_control.c password_control.h command_reader.h storage_control.c storage_control.h
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ avf-agent.c desktop_protocol.c password_control.c storage_control.c
 
 desktop-protocol-test: desktop_protocol_test.c desktop_protocol.c desktop_protocol.h
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ desktop_protocol_test.c desktop_protocol.c
@@ -18,10 +18,14 @@ password-control-test: password_control_test.c password_control.c password_contr
 command-reader-test: command_reader_test.c command_reader.h
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ command_reader_test.c
 
-test: desktop-protocol-test password-control-test command-reader-test
+storage-control-test: storage_control_test.c storage_control.c storage_control.h
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ storage_control_test.c storage_control.c
+
+test: desktop-protocol-test password-control-test command-reader-test storage-control-test
 	./desktop-protocol-test
 	./password-control-test
 	./command-reader-test
+	./storage-control-test
 
 arm64-static:
 	$(MAKE) clean
@@ -36,4 +40,4 @@ install: avf-agent
 		$(DESTDIR)/usr/lib/systemd/system/avf-desktop@.service
 
 clean:
-	rm -f avf-agent desktop-protocol-test password-control-test command-reader-test
+	rm -f avf-agent desktop-protocol-test password-control-test command-reader-test storage-control-test

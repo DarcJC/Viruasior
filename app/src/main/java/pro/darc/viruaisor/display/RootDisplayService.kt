@@ -34,7 +34,7 @@ class RootDisplayService : RootService() {
 
     override fun onCreate() {
         check(Process.myUid() == 0) { "Display helper must be a root child" }
-        check(packageName == "pro.darc.viruaisor") { "Unexpected root display package" }
+        check(packageName == pro.darc.viruaisor.BuildConfig.APPLICATION_ID) { "Unexpected root display package" }
         authorization = RootDisplayAuthorization(applicationInfo.uid)
         Log.i(TAG, "Helper started: uid=${Process.myUid()} pid=${Process.myPid()} allowedUid=${applicationInfo.uid} context=${securityContext()}")
     }
@@ -245,10 +245,40 @@ class RootDisplayService : RootService() {
     private fun requireSingleCrosvm() {
         // waitDisplayService has NO VM ownership argument. Fail closed on competing VMs instead
         // of pretending UID authentication also authenticates the global display resource.
-        val crosvm = CrosvmProcessGuard(privateCandidate=::isPrivateCandidate).requireSingle()
+        val crosvm = CrosvmProcessGuard(privateCandidate=::isPrivateCandidate,
+            sharedBackend=::isOwnedSharedBackend).requireSingle()
         requireOwnedCrosvm(crosvm)
         validateExecutable(crosvm,desktopOnly=false)
         Log.i(TAG, "Single-VM lab guard: crosvm pid=${crosvm.name}; internal display ownership remains unverifiable")
+    }
+
+    private fun isOwnedSharedBackend(process: File, path: String): Boolean {
+        val storage = pro.darc.viruaisor.vm.VmSharedStorage
+        val privateExecutable=storage.privateExecutable(this)
+        if (path != "/apex/com.android.virt/bin/crosvm" &&
+            path != privateExecutable &&
+            !pro.darc.viruaisor.AppIdentity.isOverlaySnapshot(filesDir, path)) return false
+        if (!storage.isBackendCommand(storage.command(process), applicationInfo.uid,
+                storage.privilegedDirectory(packageName, applicationInfo.uid).path, storage.socket(this).path, privateExecutable)) return false
+        check(storage.ownedBy(process, applicationInfo.uid)) { "Unexpected virtio-fs process credentials." }
+        check(path == "/apex/com.android.virt/bin/crosvm" ||
+            path == privateExecutable ||
+            pro.darc.viruaisor.AppIdentity.isOverlaySnapshot(filesDir, path)) {
+            "Unexpected virtio-fs executable."
+        }
+        if (path == privateExecutable) {
+            val command=storage.command(process)
+            val ownerPid=command[10].substringAfter('=').toInt()
+            val owner=File("/proc/$ownerPid")
+            val delegated=command.last() == "--app-storage-client-fd=5"
+            if (delegated) {
+                check(Os.stat(owner.path).st_uid == 0 &&
+                    storage.command(owner).firstOrNull() == pro.darc.viruaisor.AppIdentity.rootProcess(packageName)) { "Unverified shared storage bridge." }
+            } else check(storage.ownedBy(owner,applicationInfo.uid) &&
+                storage.command(owner).firstOrNull() == pro.darc.viruaisor.AppIdentity.vmProcess(packageName)) { "Unverified shared storage owner." }
+        }
+        validateExecutable(process, desktopOnly = path != "/apex/com.android.virt/bin/crosvm")
+        return true
     }
 
     private fun requireOwnedCrosvm(process: File) {
@@ -262,8 +292,7 @@ class RootDisplayService : RootService() {
     }
 
     private fun isPrivateCandidate(process: File,path: String): Boolean {
-        val user=applicationInfo.uid / 100000
-        if (!Regex("^/data/user/$user/pro\\.darc\\.viruaisor/files/venus-overlay-lab/[0-9a-f]{32}\\.snapshot$").matches(path)) return false
+        if (!pro.darc.viruaisor.AppIdentity.isOverlaySnapshot(filesDir, path)) return false
         requireOwnedCrosvm(process)
         validateExecutable(process,desktopOnly=true)
         return true

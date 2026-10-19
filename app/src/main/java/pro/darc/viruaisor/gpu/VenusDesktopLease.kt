@@ -30,7 +30,7 @@ internal class VenusDesktopLease(context: Context, private val lost: (Throwable)
 
     fun open() {
         check(Process.myUid() == app.applicationInfo.uid)
-        check(File("/proc/self/cmdline").readText().substringBefore('\u0000') == "pro.darc.viruaisor:venus_vm")
+        check(File("/proc/self/cmdline").readText().substringBefore('\u0000') == pro.darc.viruaisor.AppIdentity.vmProcess(app.packageName))
         check(lab.mkdirs() || lab.isDirectory)
         File(lab,"$token.target").writeText("ORIGINAL:$token\n")
         control.writeText("0")

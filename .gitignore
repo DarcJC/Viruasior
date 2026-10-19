@@ -17,13 +17,19 @@ local.properties
 
 # Generated native binaries; keep their sources and build scripts
 /app/src/main/jniLibs/**/libviruaisor_native.so
+/app/src/main/jniLibs/**/libviruaisor_storage.so
+/app/src/main/jniLibs/**/libviruaisor_storage_launcher.so
 /app/src/main/jniLibs/**/libvenus_host_probe.so
 /app/src/main/jniLibs/**/libvenus_overlay_probe.so
 /app/src/main/jniLibs/**/libvenus_crosvm.so
 /app/src/main/jniLibs/**/libvenus_desktop_crosvm.so
+/app/src/main/jniLibs/**/librootfs_e2fsck.so
+/app/src/main/jniLibs/**/librootfs_resize2fs.so
+/app/src/main/assets/third_party/rootfs-tools-notices.txt
 /guest/avf-agent/desktop-protocol-test
 /guest/avf-agent/password-control-test
 /guest/avf-agent/command-reader-test
+/guest/avf-agent/storage-control-test
 /app/src/main/assets/third_party/venus-host-notices.txt
 /app/src/main/assets/venus/guest-probe.cpio.gz
 /guest/avf-agent/avf-agent

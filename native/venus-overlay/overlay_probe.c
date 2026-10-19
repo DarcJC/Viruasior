@@ -70,8 +70,8 @@ static unsigned long long start_time(pid_t pid, pid_t *parent) {
     }
     return 0;
 }
-static bool identity(pid_t pid, unsigned uid) {
-    char path[80], buf[8192], name[128];
+static bool identity(pid_t pid, unsigned uid, const char *package) {
+    char path[80], buf[8192], name[OVERLAY_PROCESS_NAME_MAX];
     unsigned u[4]; uint64_t caps = UINT64_MAX;
     snprintf(path, sizeof(path), "/proc/%d/status", pid);
     if (read_small(path, buf, sizeof(buf)) < 0) return false;
@@ -82,7 +82,7 @@ static bool identity(pid_t pid, unsigned uid) {
     if (!line || sscanf(line, "CapEff: %" SCNx64, &caps) != 1) return false;
     snprintf(path, sizeof(path), "/proc/%d/cmdline", pid);
     if (read_small(path, name, sizeof(name)) < 0) return false;
-    return overlay_identity_valid(uid, u[0], name, caps);
+    return overlay_identity_valid(uid, u[0], name, caps, package);
 }
 static unsigned members(uint64_t ns) {
     DIR *dir = opendir("/proc");
@@ -231,19 +231,21 @@ static bool release_stock_lease(const struct stock_children *children) {
 }
 int main(int argc, char **argv) {
     setvbuf(stdout, NULL, _IOLBF, 0);
-    if (getuid() || argc < 5 || !overlay_token_valid(argv[3])) return 64;
+    if (getuid() || argc < 7 || !overlay_token_valid(argv[3])) return 64;
     const char *mode = argv[4];
     bool desktop = !strcmp(mode, "venus-desktop");
     bool candidate = !strcmp(mode, "venus-exec") || desktop;
     bool stock = !strcmp(mode, "stock-exec") || candidate;
-    if (argc != (candidate ? 10 : stock ? 7 : 5) || (!stock && strcmp(mode, "normal") && strcmp(mode, "timeout") && strcmp(mode, "client-death") && strcmp(mode, "helper-death"))) return 64;
+    if (argc != (candidate ? 12 : stock ? 9 : 7) || (!stock && strcmp(mode, "normal") && strcmp(mode, "timeout") && strcmp(mode, "client-death") && strcmp(mode, "helper-death"))) return 64;
     char *end; long parsed = strtol(argv[1], &end, 10);
     if (*end || parsed <= 1 || parsed > INT32_MAX) return 64;
     pid_t pid = (pid_t)parsed;
     unsigned long value = strtoul(argv[2], &end, 10);
     if (*end || value > UINT32_MAX) return 64;
     unsigned uid = (unsigned)value;
-    int result = 1, mounted = 0, dir = -1, target = -1, snapshot = -1, nsfd = -1, pidfd = -1;
+    const char *package = argv[argc - 2], *files_path = argv[argc - 1];
+    if (!overlay_files_dir_valid(uid, package, files_path)) return 64;
+    int result = 1, mounted = 0, files = -1, dir = -1, target = -1, snapshot = -1, nsfd = -1, pidfd = -1;
     struct stock_children children = { .virtmgr_fd = -1, .crosvm_fd = -1 };
     struct stat original_image = {0}, virtmgr_image = {0}, copied_image = {0};
     bool stock_seen = false;
@@ -282,7 +284,7 @@ int main(int argc, char **argv) {
     }
     pid_t parent = 0;
     unsigned long long start = start_time(pid, &parent);
-    REQUIRE(start && identity(pid, uid), "ordinary-app-identity");
+    REQUIRE(start && identity(pid, uid, package), "ordinary-app-identity");
     snprintf(path, sizeof(path), "/proc/%d/cmdline", parent);
     char parent_name[128];
     REQUIRE(read_small(path, parent_name, sizeof(parent_name)) > 0 &&
@@ -297,13 +299,15 @@ int main(int argc, char **argv) {
     snprintf(path, sizeof(path), "/proc/%d/ns/mnt", pid);
     nsfd = open(path, O_RDONLY | O_CLOEXEC);
     struct stat st;
-    REQUIRE(nsfd >= 0 && !fstat(nsfd, &st) && st.st_ino == target_ns && start_time(pid, NULL) == start && identity(pid, uid), "stable-identity");
+    REQUIRE(nsfd >= 0 && !fstat(nsfd, &st) && st.st_ino == target_ns && start_time(pid, NULL) == start && identity(pid, uid, package), "stable-identity");
     /* Enter the EXISTING app namespace. Never unshare a helper-only namespace. */
     REQUIRE(!setns(nsfd, CLONE_NEWNS), "setns-app");
     REQUIRE(ns_inode(getpid()) == target_ns, "entered-target");
     REQUIRE(!mount(NULL, "/", NULL, MS_REC | MS_PRIVATE, NULL) && private_mounts(), "private-propagation");
-    snprintf(path, sizeof(path), "/data/user/%u/pro.darc.viruaisor/files/venus-overlay-lab", uid / 100000);
-    dir = open(path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    files = open(files_path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    REQUIRE(files >= 0 && !fstat(files, &st) && S_ISDIR(st.st_mode) && st.st_uid == uid, "context-files-directory");
+    dir = openat(files, "venus-overlay-lab", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    close(files); files = -1;
     REQUIRE(dir >= 0 && !fstat(dir, &st) && st.st_uid == uid, "fixed-lab-directory");
     target = stock ? open(STOCK_CROSVM, O_RDONLY | O_CLOEXEC) : openat(dir, target_name, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
     if (stock) REQUIRE(target >= 0 && !fstat(target, &st) && same_inode(&st, &original_image), "fixed-stock-target");
@@ -402,6 +406,7 @@ cleanup:
     if (snapshot >= 0) { close(snapshot); unlinkat(dir, snapshot_name, 0); }
     if (target >= 0) close(target);
     if (dir >= 0) close(dir);
+    if (files >= 0) close(files);
     if (nsfd >= 0) close(nsfd);
     if (pidfd >= 0) close(pidfd);
     return result;

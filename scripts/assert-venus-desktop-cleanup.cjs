@@ -1,6 +1,8 @@
 const fs=require('node:fs');
+const {resolveApplicationId,parsePackageArgs,validateApplicationId}=require('./application-id.cjs');
 
-function inspectCleanup(log,processes,layers) {
+function inspectCleanup(log,processes,layers,applicationId) {
+  validateApplicationId(applicationId);
   const decoded=log.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g,'');
   const lease=[...decoded.matchAll(/DESKTOP_LEASE_READY token=([0-9a-f]{32}) uid=(\d+) pid=(\d+)/g)].at(-1);
   const session=lease ? decoded.slice(lease.index) : decoded;
@@ -12,7 +14,7 @@ function inspectCleanup(log,processes,layers) {
     matchingEnd:!!end,
     nativeExit:!!end && end[1]==='0',
     rollback:/ROLLBACK=PASS(?:\s|$)/.test(outcome),
-    noVmOrHelper:!(/\bcrosvm(?:_|\b)|\bvirtmgr(?:_|\b)|libvenus_overla|pro\.darc\.viruaisor:root:/i.test(processes)),
+    noVmOrHelper:!(/\bcrosvm(?:_|\b)|\bvirtmgr(?:_|\b)|libvenus_overla/i.test(processes)||processes.includes(`${applicationId}:root:`)),
     noDisplayLayer:!layers.includes('ViruaisorRootDisplay'),
   };
   const missing=Object.keys(requirements).filter(key=>!requirements[key]);
@@ -22,7 +24,9 @@ function inspectCleanup(log,processes,layers) {
 }
 module.exports={inspectCleanup};
 if (require.main===module) {
-  const report=inspectCleanup(...process.argv.slice(2,5).map(path=>fs.readFileSync(path,'utf8')));
+  const {args,packageName}=parsePackageArgs(process.argv.slice(2));
+  if(args.length!==3) throw Error('Expected log, processes and layers files and optional --package');
+  const report=inspectCleanup(...args.map(path=>fs.readFileSync(path,'utf8')),resolveApplicationId({packageName}));
   process.stdout.write(JSON.stringify(report,null,2)+'\n');
   process.exitCode=report.passed ? 0 : 1;
 }

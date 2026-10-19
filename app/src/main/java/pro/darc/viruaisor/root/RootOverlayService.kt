@@ -21,7 +21,7 @@ class RootOverlayService : RootService() {
     @Volatile private var child: java.lang.Process? = null
 
     override fun onCreate() {
-        check(Process.myUid() == 0 && packageName == "pro.darc.viruaisor")
+        check(Process.myUid() == 0 && packageName == pro.darc.viruaisor.BuildConfig.APPLICATION_ID)
         authorization = RootOverlayAuthorization(applicationInfo.uid)
     }
 
@@ -72,6 +72,7 @@ class RootOverlayService : RootService() {
             Log.i(TAG, "CANDIDATE_PINNED sha256=${artifact.hash} size=${artifact.stat.st_size}")
             arguments.addAll(listOf(artifact.stat.st_dev.toString(), artifact.stat.st_ino.toString(), artifact.stat.st_size.toString()))
         }
+        arguments.addAll(listOf(packageName, filesDir.path))
         val builder = ProcessBuilder(arguments).redirectErrorStream(true)
         if (stock) builder.redirectInput(input)
         val process = builder.start()

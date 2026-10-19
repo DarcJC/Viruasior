@@ -43,3 +43,11 @@ Each accepted connection begins with `READY`. The daemon handles `SHUTDOWN`, pro
 `START_DESKTOP`/`STOP_DESKTOP`, and legacy argument-free desktop commands as safe `2d` aliases.
 Unknown profile text is rejected rather than passed to systemd. `RESIZE` is reserved and reports
 `display-unavailable` in this headless version.
+# Storage status
+
+`STORAGE_STATUS` returns `OK STORAGE <root-device-bytes> <mounted>` after the READY
+greeting. It reports the block device backing `/` and checks that
+`viruaisor-storage-0` is mounted as virtiofs at `/mnt/shared`. The command is read
+only; the app supplies the systemd mount-extra kernel argument. Use this paired
+agent with the new rootfs resize workflow; an older agent cannot verify a new
+disk and triggers rollback. See `docs/vm-storage.md` in the repository root.

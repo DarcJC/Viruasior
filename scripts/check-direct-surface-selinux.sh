@@ -2,8 +2,10 @@
 set -euo pipefail
 
 ADB="${ADB:-/c/Tools/Android/platform-tools/adb.exe}"
-PACKAGE=pro.darc.viruaisor
-ACTIVITY="$PACKAGE/.MainActivity"
+source "$(dirname "${BASH_SOURCE[0]}")/application-id.sh"
+resolve_application_id "$@"
+(( ${#APPLICATION_ARGS[@]} == 0 )) || { echo 'Usage: check-direct-surface-selinux.sh [--package application.id]' >&2; exit 2; }
+ACTIVITY="$PACKAGE/pro.darc.viruaisor.MainActivity"
 SERVICE=android.system.virtualizationservice
 
 "$ADB" get-state >/dev/null

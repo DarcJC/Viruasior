@@ -1,6 +1,7 @@
 const fs=require('node:fs');
 const zlib=require('node:zlib');
 const crypto=require('node:crypto');
+const {resolveApplicationId,parsePackageArgs,validateApplicationId}=require('./application-id.cjs');
 
 function decodePng(png) {
   if(png.length<33 || png.subarray(0,8).toString('hex')!=='89504e470d0a1a0a') throw Error('Invalid PNG');
@@ -40,10 +41,11 @@ function decodePng(png) {
   return {width,height,channels,pixels};
 }
 
-function inspectSurfacePixels(png,xml) {
+function inspectSurfacePixels(png,xml,applicationId) {
+  validateApplicationId(applicationId);
   const image=decodePng(png);
   const nodes=[...xml.matchAll(/<node\b[^>]*>/g)].map(m=>m[0]).filter(node=>
-    /\bpackage="pro\.darc\.viruaisor"/.test(node)&&
+    node.includes(`package="${applicationId}"`)&&
     /\bclass="(?:android\.view\.SurfaceView|pro\.darc\.viruaisor\.display\.DesktopSurfaceView)"/.test(node));
   if(nodes.length!==1) throw Error('Expected one visible Viruaisor SurfaceView');
   const match=/\bbounds="\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]"/.exec(nodes[0]);
@@ -81,12 +83,14 @@ function inspectSurfaceComposition(text) {
 module.exports={inspectSurfacePixels,decodePng,inspectSurfaceComposition};
 if(require.main===module) {
   try {
-    const report=inspectSurfacePixels(fs.readFileSync(process.argv[2]),fs.readFileSync(process.argv[3],'utf8'));
-    const token=process.argv[4];
+    const {args,packageName}=parsePackageArgs(process.argv.slice(2));
+    if(args.length<2 || args.length>4) throw Error('Usage: assert-surface-pixels.cjs png xml [token [surfaceflinger]] [--package application.id]');
+    const report=inspectSurfacePixels(fs.readFileSync(args[0]),fs.readFileSync(args[1],'utf8'),resolveApplicationId({packageName}));
+    const token=args[2];
     if(token && !/^[a-f0-9]{32}$/.test(token)) throw Error('Invalid lease token');
     report.leaseToken=token??null;
-    if(process.argv[5]) {
-      const composition=inspectSurfaceComposition(fs.readFileSync(process.argv[5],'utf8'));
+    if(args[3]) {
+      const composition=inspectSurfaceComposition(fs.readFileSync(args[3],'utf8'));
       report.composition=composition.type;
       report.passed=report.passed && composition.passed;
     }

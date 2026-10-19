@@ -86,7 +86,15 @@ if [[ ${VENUS_CROSVM_DISPLAY:-0} == 1 ]]; then
     link_metadata+="-$(sha256sum "$target_prefix/lib/libvenus_android_display.a" | cut -d ' ' -f1)"
     # AVF wraps partition images in its small protobuf composite-disk descriptor.
     # Without this feature the descriptor is silently treated as a tiny raw disk.
-    features+=,android_display,net,composite-disk
+    features+=,android_display,net,composite-disk,fs_runtime_ugid_map
+    storage_patch="$repo/native/storage/crosvm-storage-fd.patch"
+    git apply --reverse --check "$storage_patch" 2>/dev/null || git apply "$storage_patch"
+    cp "$repo/native/storage/storage_fd_policy.rs" src/crosvm/storage_fd_policy.rs
+    cp "$repo/native/storage/storage_fd_policy.rs" devices/src/virtio/vhost_user_backend/fs/storage_fd_policy.rs
+    rustc --edition=2021 --test "$repo/native/storage/storage_fd_policy.rs" \
+        -o /tmp/viruaisor-storage-fd-policy-test
+    /tmp/viruaisor-storage-fd-policy-test
+    bash "$repo/scripts/test-storage-fsetid.sh"
     display_args=(-C "link-arg=$target_prefix/lib/libvenus_android_display.a"
         -C 'link-arg=-lbinder_ndk' -C 'link-arg=-lnativewindow' -C 'link-arg=-landroid' -C 'link-arg=-llog'
         -C "link-arg=$ndk/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_static.a"

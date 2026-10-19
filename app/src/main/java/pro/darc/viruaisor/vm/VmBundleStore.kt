@@ -5,13 +5,12 @@ import android.net.Uri
 import org.json.JSONObject
 import java.io.BufferedInputStream
 import java.io.File
-import java.io.FileOutputStream
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
 
 class VmBundleStore(private val context: Context) {
     private val vmsDirectory: File
-        get() = File(context.filesDir, "vms")
+        get() = File(context.filesDir.canonicalFile, "vms")
     private val defaultDirectory: File
         get() = File(vmsDirectory, "default")
 
@@ -67,7 +66,7 @@ class VmBundleStore(private val context: Context) {
             } else {
                 val parent = output.parentFile ?: error("Invalid bundle entry: ${entry.name}")
                 require(parent.mkdirs() || parent.isDirectory) { "Could not create ${parent.name}." }
-                FileOutputStream(output).buffered().use { file -> zip.copyTo(file) }
+                RootfsTransaction.sparseCopy(zip, output)
             }
             zip.closeEntry()
             entry = zip.nextEntry

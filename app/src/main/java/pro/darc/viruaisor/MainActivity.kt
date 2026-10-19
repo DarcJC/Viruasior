@@ -86,6 +86,7 @@ import pro.darc.viruaisor.vm.DisplaySize
 import pro.darc.viruaisor.vm.DisplayModePolicy
 import pro.darc.viruaisor.vm.GuestPasswordProtocol
 import pro.darc.viruaisor.vm.GuestPasswordRuntime
+import pro.darc.viruaisor.vm.RootfsCapacity
 import pro.darc.viruaisor.gpu.VenusHostRuntime
 
 class MainActivity : ComponentActivity() {
@@ -151,6 +152,8 @@ class MainActivity : ComponentActivity() {
                             VmService.stopIntent(this),
                         )
                     },
+                    onResizeRootfs = { bytes -> ContextCompat.startForegroundService(this, VmService.resizeRootfsIntent(this,bytes)); Unit },
+                    onRestoreRootfs = { ContextCompat.startForegroundService(this, VmService.restoreRootfsIntent(this)); Unit },
                     onResize = { size -> ContextCompat.startForegroundService(this,VmService.resizeIntent(this,size)); Unit },
                     onSurfaceReady = {
                         ContextCompat.startForegroundService(
@@ -259,7 +262,11 @@ class MainActivity : ComponentActivity() {
             ACTION_DEBUG_STOP -> ContextCompat.startForegroundService(this, VmService.stopIntent(this))
             ACTION_DEBUG_GRANT_AVF -> AvfPermissionRuntime.grantMissing(this)
             ACTION_DEBUG_ROOT_DISPLAY -> useRootDisplay = true
-            "pro.darc.viruaisor.action.DEBUG_RESIZE" -> {
+            (pro.darc.viruaisor.AppIdentity.ACTION_PREFIX + "DEBUG_ROOTFS_RESIZE") -> ContextCompat.startForegroundService(
+                this,VmService.resizeRootfsIntent(this,intent.getLongExtra("bytes",0)))
+            (pro.darc.viruaisor.AppIdentity.ACTION_PREFIX + "DEBUG_ROOTFS_RESTORE") -> ContextCompat.startForegroundService(
+                this,VmService.restoreRootfsIntent(this))
+            (pro.darc.viruaisor.AppIdentity.ACTION_PREFIX + "DEBUG_RESIZE") -> {
                 val size = runCatching { DisplaySize(intent.getIntExtra("width",0),intent.getIntExtra("height",0)) }.getOrNull()
                 if (size != null) {
                     val rate=intent.getIntExtra("millihz",0)
@@ -277,12 +284,12 @@ class MainActivity : ComponentActivity() {
     }
 
     private companion object {
-        const val ACTION_DEBUG_START = "pro.darc.viruaisor.action.DEBUG_START"
-        const val ACTION_DEBUG_IMPORT_PREPARED = "pro.darc.viruaisor.action.DEBUG_IMPORT_PREPARED_MANJARO"
-        const val ACTION_DEBUG_STOP = "pro.darc.viruaisor.action.DEBUG_STOP"
-        const val ACTION_DEBUG_CONSOLE = "pro.darc.viruaisor.action.DEBUG_CONSOLE"
-        const val ACTION_DEBUG_GRANT_AVF = "pro.darc.viruaisor.action.DEBUG_GRANT_AVF"
-        const val ACTION_DEBUG_ROOT_DISPLAY = "pro.darc.viruaisor.action.DEBUG_ROOT_DISPLAY"
+        const val ACTION_DEBUG_START = (pro.darc.viruaisor.AppIdentity.ACTION_PREFIX + "DEBUG_START")
+        const val ACTION_DEBUG_IMPORT_PREPARED = (pro.darc.viruaisor.AppIdentity.ACTION_PREFIX + "DEBUG_IMPORT_PREPARED_MANJARO")
+        const val ACTION_DEBUG_STOP = (pro.darc.viruaisor.AppIdentity.ACTION_PREFIX + "DEBUG_STOP")
+        const val ACTION_DEBUG_CONSOLE = (pro.darc.viruaisor.AppIdentity.ACTION_PREFIX + "DEBUG_CONSOLE")
+        const val ACTION_DEBUG_GRANT_AVF = (pro.darc.viruaisor.AppIdentity.ACTION_PREFIX + "DEBUG_GRANT_AVF")
+        const val ACTION_DEBUG_ROOT_DISPLAY = (pro.darc.viruaisor.AppIdentity.ACTION_PREFIX + "DEBUG_ROOT_DISPLAY")
         const val EXTRA_TEXT_BASE64 = "textBase64"
         val BUNDLE_MIME_TYPES = arrayOf(
             "application/zip",
@@ -309,6 +316,8 @@ private fun VmScreen(
     onPreparedBundle: (() -> Unit)?,
     onStart: () -> Unit,
     onStop: () -> Unit,
+    onResizeRootfs: (Long) -> Unit,
+    onRestoreRootfs: () -> Unit,
     onResize: (DisplayMode) -> Unit,
     onSurfaceReady: () -> Unit,
     onSurfaceGone: () -> Unit,
@@ -371,6 +380,7 @@ private fun VmScreen(
             }
             if (!fullscreen) {
                 StatusCard(state)
+                StorageCard(state,onResizeRootfs,onRestoreRootfs)
                 if (state.display.modes.isNotEmpty()) ResolutionControl(state,onResize)
                 DroidPasswordControl(state.status is VmStatus.GuestAgentReady)
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -384,7 +394,7 @@ private fun VmScreen(
                     Text("导入已准备的 Manjaro Plasma 镜像")
                 }
                 RootCard(rootAccess, onRequestRoot)
-                AvfPermissionCard(permissionSetup, rootAccess is RootAccess.Granted, state.isActive, onGrantAvf, onRevokeAvf)
+                AvfPermissionCard(permissionSetup, rootAccess is RootAccess.Granted, state.isActive || state.storage.busy, onGrantAvf, onRevokeAvf)
                 AvfCard(state.support)
                 OutlinedButton(onClick = onToggleRootDisplay, enabled = rootAccess is RootAccess.Granted) {
                     Text(if (useRootDisplay) "关闭 Root 显示桥接" else "实验 Root Direct Surface（仅显示桥接）")
@@ -409,6 +419,49 @@ private fun VmScreen(
             }
         }
     }
+}
+
+@Composable
+private fun StorageCard(state: VmUiState, resize: (Long) -> Unit, restore: () -> Unit) {
+    var dialog by remember { mutableStateOf(false) }
+    var restoring by remember { mutableStateOf(false) }
+    val storage = state.storage
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp),verticalArrangement=Arrangement.spacedBy(8.dp)) {
+            Text("存储 · VM 0",style=MaterialTheme.typography.titleMedium)
+            Text("根盘：${"%.2f".format(storage.rootBytes.toDouble()/RootfsCapacity.GIB)} GiB")
+            Text("共享目录：${storage.sharedPath ?: "外部存储不可用"} → /mnt/shared",style=MaterialTheme.typography.bodySmall)
+            Text(when(storage.sharedMounted) { true -> "virtio-fs 已挂载"; false -> "virtio-fs 未挂载"; null -> "virtio-fs 等待启动验证" },style=MaterialTheme.typography.bodySmall)
+            storage.message?.let { Text(it,style=MaterialTheme.typography.bodySmall) }
+            OutlinedButton(onClick={dialog=true},enabled=state.bundle != null && state.support is AvfSupport.Available &&
+                !storage.busy && !storage.recoveryPending && state.status !is VmStatus.Importing && state.status !is VmStatus.Stopping) {
+                Text(if(storage.busy) "正在处理根盘…" else "调整根盘容量")
+            }
+            if(storage.recoveryPending) {
+                Text("恢复盘已保留；新盘通过启动验证后自动清理。",style=MaterialTheme.typography.bodySmall)
+                OutlinedButton(onClick={restoring=true},enabled=!state.isActive && !storage.busy) { Text("恢复调整前的根盘") }
+            }
+        }
+    }
+    if(dialog) {
+        var value by remember { mutableStateOf(((storage.rootBytes+RootfsCapacity.GIB-1)/RootfsCapacity.GIB).toString()) }
+        var error by remember { mutableStateOf<String?>(null) }
+        AlertDialog(onDismissRequest={dialog=false},title={Text("调整根盘容量")},text={
+            Column(verticalArrangement=Arrangement.spacedBy(8.dp)) {
+                Text("以 GiB 设置目标容量。运行中的虚拟机会先正常关闭，调整后重新启动。缩小时需保留足够可用空间。")
+                OutlinedTextField(value=value,onValueChange={value=it;error=null},label={Text("目标容量（GiB）")},
+                    keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Number),singleLine=true)
+                error?.let { Text(it,color=MaterialTheme.colorScheme.error) }
+            }
+        },confirmButton={TextButton(onClick={
+            runCatching { RootfsCapacity.parseGiB(value).also { require(it != storage.rootBytes) { "目标容量与当前相同。" } } }
+                .onSuccess { dialog=false;resize(it) }.onFailure { error=it.message }
+        }) { Text("调整容量") }},dismissButton={TextButton(onClick={dialog=false}) { Text("取消") }})
+    }
+    if(restoring) AlertDialog(onDismissRequest={restoring=false},title={Text("恢复原根盘")},
+        text={Text("将恢复调整前的根盘，新根盘上的改动会被放弃。共享目录中的文件不受此操作影响。")},
+        confirmButton={TextButton(onClick={restoring=false;restore()}) { Text("恢复原盘") }},
+        dismissButton={TextButton(onClick={restoring=false}) { Text("取消") }})
 }
 
 @Composable

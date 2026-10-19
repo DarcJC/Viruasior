@@ -16,6 +16,7 @@
 #include "desktop_protocol.h"
 #include "password_control.h"
 #include "command_reader.h"
+#include "storage_control.h"
 
 #define DEFAULT_PORT 4050U
 #define BACKLOG 8
@@ -130,6 +131,9 @@ static void handle_client(int fd) {
         int result=valid ? change_droid_password(password,length) : -1;
         explicit_bzero(password,sizeof(password));
         reply(fd,result==0 ? "OK PASSWORD\n" : "ERROR password-update\n");
+    } else if (strcmp(command, "STORAGE_STATUS") == 0) {
+        char status[128];
+        reply(fd, storage_status(status, sizeof(status)) == 0 ? status : "ERROR storage-status\n");
     } else if (strcmp(command, "SHUTDOWN") == 0) {
         reply(fd, "OK\n");
         (void)systemctl("poweroff", NULL, true);

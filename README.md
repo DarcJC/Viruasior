@@ -18,6 +18,12 @@ keeps VM lifecycle ownership in `VmService`, and controls guest services over vs
   independent virtio trackpad. See [current repaint, input and performance results](docs/high-refresh-trackpad-validation.md).
 
 - A single VM bundle is imported into app-private `filesDir/vms/default/` storage.
+- VM 0 exports external-files `storage/0` through AVF virtio-fs at `/mnt/shared`.
+  The Storage card supports offline ext4 grow/shrink with a retained original and
+  durable recovery. The paired guest agent and native tools are required.
+  M367FC device validation passed for sharing, 8→12→8 GiB and failure recovery.
+  Runtime package identity follows Context/build metadata, including native
+  helpers and device scripts. See [storage behavior, builds and validation](docs/vm-storage.md).
 - Guests boot headlessly to `multi-user.target`; desktop services start only on an explicit
   `START_DESKTOP` request after the Android Surface is ready.
 - Guest GPU acceleration is the graphics development target. The ordinary VM default remains

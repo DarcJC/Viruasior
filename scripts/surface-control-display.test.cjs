@@ -56,7 +56,8 @@ test('root-owned scanout submits the shared AHB through its own visible buffer l
   assert.match(rootService, /HardwareBuffer\.CREATOR\.createFromParcel\(data\)/);
   assert.match(rootService, /owned\.present\(buffer,/);
   assert.match(rootService, /sendBufferRelease/);
-  assert.match(rootSurface, /setBuffer\(child, buffer, null, onRelease\)/);
+  assert.match(rootSurface, /val retained = buffers\.get\(buffer\.id, frameWidth, frameHeight\) \{ retainHardwareBuffer\(buffer\) \}/);
+  assert.match(rootSurface, /setBuffer\(child, retained, null, onRelease\)/);
   assert.match(rootSurface,
     /setName\("ViruaisorRootDisplayProducer"\)[\s\S]*api\.create\(producerControl, width, height\)/,
     'the BLAST producer must use a layer separate from the direct-buffer fallback');

@@ -34,7 +34,7 @@ else if(args.startsWith('logcat ')) {
     const bash=process.env.TEST_BASH || (process.platform==='win32'?'C:/Program Files/Git/bin/bash.exe':'bash');
     const result=spawnSync(bash,[path.join(root,'scripts/test-root-display-cleanup.sh').replace(/\\/g,'/'),path.relative(root,dir).replace(/\\/g,'/')],{
       cwd:root,encoding:'utf8',timeout:15000,
-      env:{...process.env,ADB:adb.replace(/\\/g,'/'),NODE:process.execPath.replace(/\\/g,'/'),
+      env:{...process.env,PACKAGE:'pro.darc.viruaisor',ADB:adb.replace(/\\/g,'/'),NODE:process.execPath.replace(/\\/g,'/'),
         TEST_NODE:process.execPath.replace(/\\/g,'/'),TEST_MOCK:mock.replace(/\\/g,'/'),TEST_TRACE:trace,TEST_COUNTER:counter},
     });
     if(result.error) throw result.error;

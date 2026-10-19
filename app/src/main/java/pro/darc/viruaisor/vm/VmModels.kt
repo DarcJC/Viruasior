@@ -66,22 +66,33 @@ data class VmUiState(
     val bundle: VmBundle? = null,
     val detail: String? = null,
     val display: VmDisplayState = VmDisplayState(),
+    val storage: VmStorageState = VmStorageState(),
 ) {
     val canImport: Boolean
-        get() = support is AvfSupport.Available && status !is VmStatus.Importing && !isActive
+        get() = support is AvfSupport.Available && status !is VmStatus.Importing && !isActive &&
+            !storage.busy && !storage.recoveryPending
 
     val canStart: Boolean
-        get() = support is AvfSupport.Available && bundle != null &&
+        get() = support is AvfSupport.Available && bundle != null && !storage.busy &&
             (status is VmStatus.Stopped || status is VmStatus.Crashed)
 
     val canStop: Boolean
-        get() = status is VmStatus.Starting || status is VmStatus.Running ||
-            status is VmStatus.GuestAgentReady
+        get() = !storage.busy && (status is VmStatus.Starting || status is VmStatus.Running ||
+            status is VmStatus.GuestAgentReady)
 
     val isActive: Boolean
         get() = status is VmStatus.Starting || status is VmStatus.Running ||
             status is VmStatus.GuestAgentReady || status is VmStatus.Stopping
 }
+
+data class VmStorageState(
+    val busy: Boolean = false,
+    val rootBytes: Long = 0,
+    val recoveryPending: Boolean = false,
+    val sharedPath: String? = null,
+    val sharedMounted: Boolean? = null,
+    val message: String? = null,
+)
 
 internal object AvfCapability {
     const val FEATURE = "android.software.virtualization_framework"

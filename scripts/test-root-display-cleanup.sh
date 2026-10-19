@@ -5,14 +5,17 @@ export MSYS_NO_PATHCONV=1
 ADB=${ADB:-/c/Tools/Android/platform-tools/adb.exe}
 NODE=${NODE:-node}
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+source "$repo/scripts/application-id.sh"
+resolve_application_id "$@"
+set -- "${APPLICATION_ARGS[@]}"
 [[ $# -eq 1 ]] || { echo 'Usage: bash scripts/test-root-display-cleanup.sh .pi/device-debug/<capture>' >&2; exit 2; }
 OUT=$(realpath -m "$1")
 [[ "$OUT" == "$repo/.pi/device-debug/"* && -f "$OUT/policy-before.txt" ]] || {
     echo 'FAIL: expected an existing experiment capture beneath .pi/device-debug/' >&2; exit 2;
 }
 START=$($ADB shell "date '+%m-%d %H:%M:%S.000'" | tr -d '\r')
-$ADB shell am start -W -f 0x20000000 -n pro.darc.viruaisor/.MainActivity \
-    -a pro.darc.viruaisor.action.DEBUG_STOP
+$ADB shell am start -W -f 0x20000000 -n "$PACKAGE/pro.darc.viruaisor.MainActivity" \
+    -a "$PACKAGE.action.DEBUG_STOP"
 
 capture() {
     $ADB shell ps -AZ > "$OUT/processes-after-stop.txt"
@@ -22,7 +25,8 @@ capture() {
 deadline=$((SECONDS + 30))
 while (( SECONDS < deadline )); do
     capture
-    if ! grep -E 'crosvm|virtmgr|libvenus_overla|pro\.darc\.viruaisor:root:' "$OUT/processes-after-stop.txt" >/dev/null && \
+    if ! grep -E 'crosvm|virtmgr|libvenus_overla' "$OUT/processes-after-stop.txt" >/dev/null && \
+       ! grep -F "$PACKAGE:root:" "$OUT/processes-after-stop.txt" >/dev/null && \
        ! grep -F 'ViruaisorRootDisplay' "$OUT/layers-after-stop.txt" >/dev/null && \
        grep -q 'status=Stopped' "$OUT/cleanup-progress.txt"; then
         $ADB shell 'getenforce; settings get global hidden_api_policy; settings get global hidden_api_blacklist_exemptions' \

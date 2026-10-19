@@ -10,7 +10,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "pro.darc.viruaisor"
+        applicationId = providers.gradleProperty("viruaisor.applicationId").orElse("pro.darc.viruaisor").get()
         minSdk = 37
         targetSdk = 37
         versionCode = 1
@@ -31,12 +31,15 @@ android {
         targetCompatibility = JavaVersion.VERSION_11
     }
     buildFeatures {
+        buildConfig = true
         compose = true
     }
     packaging {
         jniLibs.useLegacyPackaging = true // Extract the bounded native Venus worker into the executable library directory.
         jniLibs.keepDebugSymbols += "**/libvenus_crosvm.so" // Preserve the reviewed executable SHA-256.
         jniLibs.keepDebugSymbols += "**/libvenus_desktop_crosvm.so"
+        jniLibs.keepDebugSymbols += "**/librootfs_e2fsck.so"
+        jniLibs.keepDebugSymbols += "**/librootfs_resize2fs.so"
     }
 }
 

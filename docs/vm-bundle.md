@@ -1,5 +1,12 @@
 # Viruaisor VM bundle v1
 
+VM 0 now also exports application external-files `storage/0` at guest
+`/mnt/shared`. Offline rootfs capacity changes support raw ext partition images
+and preserve a recovery copy until the paired agent verifies boot and device
+capacity. See [storage compatibility and acceptance](vm-storage.md); no manifest
+version change is needed. The shared UID/GID mapping targets the paired Manjaro
+`droid` user (1000:984).
+
 The MVP imports one ZIP file into the app-private `filesDir/vms/default/` directory. `vm.json`
 must be at the ZIP root. Paths in the manifest are relative to that root.
 

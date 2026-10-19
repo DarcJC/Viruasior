@@ -15,7 +15,9 @@ data class AvfPermissionChange(
 
 internal class AvfPermissionClient(
     private val executor: RootCommandExecutor = ProcessRootCommandExecutor(),
+    private val packageName: String = pro.darc.viruaisor.BuildConfig.APPLICATION_ID,
 ) {
+    init { pro.darc.viruaisor.AppIdentity.requirePackageName(packageName) }
     fun grantMissing(
         suPath: String?,
         userId: Int,
@@ -53,7 +55,7 @@ internal class AvfPermissionClient(
             // Each command targets exactly this package and the current Android user. No settings,
             // AppOps, SELinux policy, filesystem permissions, or VM operations belong in this path.
             val script = permissions.joinToString("; ") {
-                "/system/bin/pm $operation --user $userId $PACKAGE_NAME ${it.androidName}"
+                "/system/bin/pm $operation --user $userId $packageName ${it.androidName}"
             }
             val result = executor.execute(listOf(suPath, "-c", script), COMMAND_TIMEOUT_SECONDS)
             when {
@@ -67,7 +69,6 @@ internal class AvfPermissionClient(
     }
 
     internal companion object {
-        const val PACKAGE_NAME = "pro.darc.viruaisor"
         const val COMMAND_TIMEOUT_SECONDS = 20L
     }
 }

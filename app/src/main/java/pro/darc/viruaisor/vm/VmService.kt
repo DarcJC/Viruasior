@@ -21,6 +21,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -64,11 +65,18 @@ class VmService : Service() {
     private var displayMonitor: Job? = null
     private var resizeTimeout: Job? = null
     @Volatile private var displayGeneration = 0
+    private lateinit var storageManager: VmStorageManager
+    private var storageOperation = false
+    private var pendingRootfsBoot = false
+    private var storageChecked = false
+    private var storageReadyJob: Job? = null
+    private var rootfsBootTimeout: Job? = null
 
     override fun onCreate() {
         super.onCreate()
         Log.d(TAG, "onCreate service=${System.identityHashCode(this)}")
         createNotificationChannel()
+        storageManager = VmStorageManager(this)
         val executor = Executor { command ->
             scope.launch { command.run() }
             Unit
@@ -140,6 +148,8 @@ class VmService : Service() {
             }
             ACTION_START -> launchLifecycle { startVm() }
             ACTION_STOP -> launchLifecycle { stopVm() }
+            ACTION_ROOTFS_RESIZE -> launchLifecycle { resizeRootfs(intent.getLongExtra("bytes", 0)) }
+            ACTION_ROOTFS_RESTORE -> launchLifecycle { restoreRootfs() }
             ACTION_SURFACE_READY -> scope.launch {
                 desktopRequested = true
                 startDesktopIfReady()
@@ -177,6 +187,8 @@ class VmService : Service() {
         readinessJob?.cancel()
         displayMonitor?.cancel()
         resizeTimeout?.cancel()
+        storageReadyJob?.cancel()
+        rootfsBootTimeout?.cancel()
         displayGeneration++
         InputBackendRegistry.unbind(engine)
         engine.clearCallback()
@@ -198,6 +210,11 @@ class VmService : Service() {
             fail("Stop the VM before importing another bundle.")
             return
         }
+        val existingBundle = bundle ?: VmRuntime.state.value.bundle
+        if (existingBundle != null && storageManager.pending(existingBundle)) {
+            fail("请先启动验证或恢复根盘，再替换 VM bundle。")
+            return
+        }
 
         VmRuntime.setImporting()
         updateNotification("Importing VM bundle")
@@ -215,6 +232,7 @@ class VmService : Service() {
             }.also {
                 bundle = it
                 VmRuntime.setBundle(it)
+                VmRuntime.setStorage(storageManager.state(it, "VM bundle imported."))
             }
         } catch (error: Throwable) {
             fail("Import failed: ${error.rootMessage()}")
@@ -252,6 +270,24 @@ class VmService : Service() {
         }
         if (state.isActive) return
 
+        try {
+            engine.requireStopped()
+            if (storageManager.pending(importedBundle)) {
+                quiesceStorage()
+                if (storageManager.awaitingBoot(importedBundle)) {
+                    pendingRootfsBoot=true
+                    VmRuntime.setStorage(storageManager.state(importedBundle, "正在启动验证已完成调整的根盘。"))
+                } else {
+                    storageManager.recover(importedBundle)
+                    pendingRootfsBoot=false
+                    VmRuntime.setStorage(storageManager.state(importedBundle, "已恢复上一次未完成的根盘操作。"))
+                }
+            } else pendingRootfsBoot=false
+        } catch (error: Throwable) {
+            fail("根盘恢复被阻止：${error.rootMessage()}")
+            return
+        }
+
         val selectedBundle = nativeDisplayBundle(importedBundle)
         VmRuntime.prepareDisplayConfig(selectedBundle.display)
 
@@ -259,18 +295,23 @@ class VmService : Service() {
         displayGeneration++
         displayMonitor?.cancel()
         VmRuntime.resetDisplay()
+        storageChecked = false
+        storageReadyJob?.cancel()
         desktopStartGate.reset()
         VmRuntime.setStatus(VmStatus.Starting, "VM starting")
         updateNotification("VM starting")
         try {
             if (selectedBundle.gpuProfile == VmGpuProfile.VENUS) {
+                val leaseGeneration = displayGeneration
                 val lease=VenusDesktopLease(this) { error ->
                     scope.launch {
                         lifecycleMutex.withLock {
+                            if (leaseGeneration != displayGeneration) return@withLock
                             engine.requestHardStop()
                             runCatching { engine.closeStopped() }
                             closeVenusLease()
-                            fail("Venus runtime lost: ${error.rootMessage()}")
+                            if (pendingRootfsBoot) rollbackBoot("Venus runtime lost: ${error.rootMessage()}")
+                            else fail("Venus runtime lost: ${error.rootMessage()}")
                         }
                     }
                 }
@@ -279,11 +320,143 @@ class VmService : Service() {
             }
             check(engine.start(selectedBundle)) { "AVF startup failed" }
             venusLease?.verifyExecution()
+            if (pendingRootfsBoot) {
+                val generation = displayGeneration
+                rootfsBootTimeout?.cancel()
+                rootfsBootTimeout = scope.launch {
+                    delay(180_000)
+                    lifecycleMutex.withLock {
+                        if (generation == displayGeneration && pendingRootfsBoot) {
+                            rollbackBoot("新根盘启动验证超时，已尝试恢复原盘。")
+                        }
+                    }
+                }
+            }
         } catch (error: Throwable) {
+            Log.e(TAG, "VM startup failed before cleanup", error)
             engine.requestHardStop()
             runCatching { engine.closeStopped() }
             closeVenusLease()
             fail("VM startup failed: ${error.rootMessage()}")
+            if (pendingRootfsBoot) rollbackBoot("新根盘启动失败，已尝试恢复原盘。")
+        }
+    }
+
+    private suspend fun quiesceStorage() {
+        withTimeout(15_000) {
+            while (runCatching { engine.requireStopped() }.isFailure) delay(100)
+        }
+        engine.requireStopped()
+        engine.closeStopped()
+        closeVenusLease()
+        withTimeout(8_000) {
+            while (VmSharedStorage.backends(this@VmService).isNotEmpty()) delay(100)
+        }
+        engine.requireStopped()
+        if (VmRuntime.state.value.isActive) VmRuntime.setStatus(VmStatus.Stopped,"AVF 已确认 VM 停止。")
+    }
+
+    private suspend fun resizeRootfs(target: Long) {
+        VmRuntime.initialize(this)
+        val selected = VmRuntime.state.value.bundle ?: return fail("请先导入 VM bundle。")
+        if (VmRuntime.state.value.storage.busy || VmRuntime.state.value.status is VmStatus.Importing) return
+        try { storageManager.preflight(selected, target) }
+        catch (error: Throwable) { VmRuntime.setStorage(storageManager.state(selected,error.rootMessage())); return }
+        val resume = VmRuntime.state.value.isActive
+        storageOperation = true
+        VmRuntime.setStorage(storageManager.state(selected, "正在停止 VM 并准备根盘副本…").copy(busy=true))
+        val wakeLock = getSystemService(PowerManager::class.java).newWakeLock(
+            PowerManager.PARTIAL_WAKE_LOCK, "$packageName:rootfs-resize")
+        wakeLock.acquire(60 * 60 * 1000L)
+        try {
+            if (resume) stopVm()
+            quiesceStorage()
+            updateNotification("正在检查并调整根盘副本")
+            storageManager.resize(selected, target)
+            pendingRootfsBoot = true
+            VmRuntime.setStorage(storageManager.state(selected, "根盘容量已调整；下次启动确认后清理恢复盘。"))
+            if (resume) startVm()
+        } catch (error: Throwable) {
+            Log.e("ViruaisorStorage","ROOTFS_RESIZE_FAILED",error)
+            val recovered = runCatching { quiesceStorage(); storageManager.recover(selected) }
+            pendingRootfsBoot = false
+            val message = "根盘调整失败：${error.rootMessage()}" +
+                (recovered.exceptionOrNull()?.let { "；恢复未完成：${it.rootMessage()}" } ?: "；原盘已保留/恢复。")
+            VmRuntime.setStorage(storageManager.state(selected,message))
+            if (resume && recovered.isSuccess) startVm()
+        } finally {
+            if (wakeLock.isHeld) wakeLock.release()
+            storageOperation = false
+            VmRuntime.setStorage(VmRuntime.state.value.storage.copy(busy=false))
+        }
+    }
+
+    private suspend fun restoreRootfs() {
+        VmRuntime.initialize(this)
+        val selected = VmRuntime.state.value.bundle ?: return
+        if (VmRuntime.state.value.isActive || VmRuntime.state.value.storage.busy) return
+        storageOperation = true
+        try {
+            VmRuntime.setStorage(storageManager.state(selected,"正在恢复原根盘…").copy(busy=true))
+            quiesceStorage()
+            storageManager.recover(selected)
+            pendingRootfsBoot = false
+            VmRuntime.setStorage(storageManager.state(selected,"原根盘已恢复。"))
+        } catch (error: Throwable) {
+            VmRuntime.setStorage(storageManager.state(selected,"恢复被阻止：${error.rootMessage()}"))
+        } finally { storageOperation=false; finishForegroundIfIdle() }
+    }
+
+    private suspend fun rollbackBoot(message: String) {
+        val selected = bundle ?: return
+        rootfsBootTimeout = null
+        storageReadyJob?.cancel()
+        storageOperation = true
+        try {
+            if (VmRuntime.state.value.isActive) stopVm()
+            quiesceStorage()
+            storageManager.recover(selected)
+            pendingRootfsBoot = false
+            VmRuntime.setStorage(storageManager.state(selected,message))
+            VmRuntime.setStatus(VmStatus.Stopped,message)
+            // Leave the recovered original stopped: no automatic retry loop on a broken guest.
+        } catch (error: Throwable) {
+            VmRuntime.setStorage(storageManager.state(selected,"$message 恢复未完成：${error.rootMessage()}"))
+            fail("根盘恢复需要处理，已保留恢复文件。")
+        } finally { storageOperation=false; finishForegroundIfIdle() }
+    }
+
+    private fun verifyGuestStorage() {
+        if (storageReadyJob?.isActive == true) return
+        val selected = bundle ?: return
+        val generation = displayGeneration
+        storageReadyJob = scope.launch {
+            var desktopAllowed = false
+            lifecycleMutex.withLock {
+                if (generation != displayGeneration || VmRuntime.state.value.status !is VmStatus.GuestAgentReady) return@withLock
+                val result = runCatching { controlClient.storageStatus(selected.vsockPort) }
+                if (generation != displayGeneration || VmRuntime.state.value.status !is VmStatus.GuestAgentReady) return@withLock
+                if (pendingRootfsBoot) {
+                    val verified = result.mapCatching { storageManager.confirmBoot(selected,it.rootBytes) }
+                    if (verified.isFailure) {
+                        // A separate coroutine owns rollback so cancellation cannot cancel this lock holder.
+                        scope.launch { lifecycleMutex.withLock {
+                            if (generation == displayGeneration && pendingRootfsBoot)
+                                rollbackBoot("根盘验证失败：${verified.exceptionOrNull()?.rootMessage()}")
+                        } }
+                        return@withLock
+                    }
+                    pendingRootfsBoot=false
+                    rootfsBootTimeout?.cancel()
+                    rootfsBootTimeout=null
+                }
+                storageChecked=true
+                VmRuntime.setStorage(storageManager.state(selected,
+                    result.fold({ if (it.mounted) "共享目录已挂载：/mnt/shared" else "共享目录未挂载，请检查 guest virtio-fs 驱动。" },
+                        { "共享状态未确认：${it.rootMessage()}" })).copy(sharedMounted=result.getOrNull()?.mounted))
+                desktopAllowed=true
+            }
+            if (desktopAllowed && generation == displayGeneration) startDesktopIfReady()
         }
     }
 
@@ -349,16 +522,19 @@ class VmService : Service() {
                 if (VmRuntime.state.value.status !is VmStatus.Stopping) {
                     VmRuntime.setStatus(VmStatus.GuestAgentReady, "Guest agent ready")
                     updateNotification("Guest agent ready")
-                    scope.launch { startDesktopIfReady() }
+                    verifyGuestStorage()
                 }
             }
             is VmEngineEvent.Error -> {
-                if (venusLease == null) fail("VM error: ${event.message}") else scope.launch {
+                val errorGeneration = displayGeneration
+                if (venusLease == null && !pendingRootfsBoot) fail("VM error: ${event.message}") else scope.launch {
                     lifecycleMutex.withLock {
+                        if (errorGeneration != displayGeneration) return@withLock
                         engine.requestHardStop()
                         runCatching { engine.closeStopped() }
                         closeVenusLease()
-                        fail("VM error: ${event.message}")
+                        if (pendingRootfsBoot) rollbackBoot("VM error: ${event.message}")
+                        else fail("VM error: ${event.message}")
                     }
                 }
             }
@@ -372,7 +548,17 @@ class VmService : Service() {
                     val reason = stopReason(event.reason)
                     VmRuntime.setStatus(VmStatus.Crashed(reason), "VM crashed: $reason")
                 }
-                scope.launch { lifecycleMutex.withLock { closeVenusLease(); finishForegroundIfIdle() } }
+                val stoppedGeneration = displayGeneration
+                val stoppedLease = venusLease
+                val unverifiedAtStop = pendingRootfsBoot
+                scope.launch { lifecycleMutex.withLock {
+                    if (stoppedGeneration != displayGeneration) return@withLock
+                    engine.closeStopped()
+                    if (venusLease === stoppedLease) closeVenusLease()
+                    if (unverifiedAtStop && pendingRootfsBoot && !storageOperation)
+                        rollbackBoot("新根盘在完成验证前停止，已尝试恢复原盘。")
+                    finishForegroundIfIdle()
+                } }
             }
         }
     }
@@ -390,7 +576,7 @@ class VmService : Service() {
                 if (ready) {
                     VmRuntime.setStatus(VmStatus.GuestAgentReady, "Guest agent ready")
                     updateNotification("Guest agent ready")
-                    startDesktopIfReady()
+                    verifyGuestStorage()
                     return@launch
                 }
                 delay(READY_RETRY_MS)
@@ -403,7 +589,7 @@ class VmService : Service() {
     }
 
     private fun startDesktopIfReady() {
-        if (!desktopRequested) return
+        if (!desktopRequested || !storageChecked) return
         if (VmRuntime.state.value.status !is VmStatus.GuestAgentReady) return
         val selectedBundle = bundle ?: return
         if (!desktopStartGate.tryBegin()) return
@@ -482,6 +668,7 @@ class VmService : Service() {
     }
 
     private fun finishForegroundIfIdle() {
+        if (storageOperation) return
         if (pendingLifecycleCommands.hasPending()) return
         if (venusLease != null) return // Teardown must finish before the owning service is destroyed.
         val status = VmRuntime.state.value.status
@@ -536,15 +723,17 @@ class VmService : Service() {
 
     companion object {
         private const val TAG = "ViruaisorService"
-        private const val ACTION_IMPORT = "pro.darc.viruaisor.action.IMPORT_VM"
-        private const val ACTION_IMPORT_PREPARED = "pro.darc.viruaisor.action.IMPORT_PREPARED_MANJARO"
+        private const val ACTION_IMPORT = (pro.darc.viruaisor.AppIdentity.ACTION_PREFIX + "IMPORT_VM")
+        private const val ACTION_IMPORT_PREPARED = (pro.darc.viruaisor.AppIdentity.ACTION_PREFIX + "IMPORT_PREPARED_MANJARO")
         const val PREPARED_BUNDLE_NAME = "manjaro-plasma-venus.zip"
-        private const val ACTION_START = "pro.darc.viruaisor.action.START_VM"
-        private const val ACTION_STOP = "pro.darc.viruaisor.action.STOP_VM"
-        private const val ACTION_SURFACE_READY = "pro.darc.viruaisor.action.SURFACE_READY"
-        private const val ACTION_SURFACE_GONE = "pro.darc.viruaisor.action.SURFACE_GONE"
-        private const val ACTION_DEBUG_CONSOLE = "pro.darc.viruaisor.action.DEBUG_CONSOLE"
-        private const val ACTION_RESIZE = "pro.darc.viruaisor.action.RESIZE"
+        private const val ACTION_START = (pro.darc.viruaisor.AppIdentity.ACTION_PREFIX + "START_VM")
+        private const val ACTION_STOP = (pro.darc.viruaisor.AppIdentity.ACTION_PREFIX + "STOP_VM")
+        private const val ACTION_SURFACE_READY = (pro.darc.viruaisor.AppIdentity.ACTION_PREFIX + "SURFACE_READY")
+        private const val ACTION_SURFACE_GONE = (pro.darc.viruaisor.AppIdentity.ACTION_PREFIX + "SURFACE_GONE")
+        private const val ACTION_DEBUG_CONSOLE = (pro.darc.viruaisor.AppIdentity.ACTION_PREFIX + "DEBUG_CONSOLE")
+        private const val ACTION_RESIZE = (pro.darc.viruaisor.AppIdentity.ACTION_PREFIX + "RESIZE")
+        private const val ACTION_ROOTFS_RESIZE = (pro.darc.viruaisor.AppIdentity.ACTION_PREFIX + "RESIZE_ROOTFS")
+        private const val ACTION_ROOTFS_RESTORE = (pro.darc.viruaisor.AppIdentity.ACTION_PREFIX + "RESTORE_ROOTFS")
         private const val EXTRA_TEXT = "text"
         private const val CHANNEL_ID = "vm_runtime"
         private const val NOTIFICATION_ID = 1001
@@ -564,6 +753,12 @@ class VmService : Service() {
 
         fun stopIntent(context: Context) =
             Intent(context, VmService::class.java).setAction(ACTION_STOP)
+
+        fun resizeRootfsIntent(context: Context, bytes: Long) =
+            Intent(context, VmService::class.java).setAction(ACTION_ROOTFS_RESIZE).putExtra("bytes", bytes)
+
+        fun restoreRootfsIntent(context: Context) =
+            Intent(context, VmService::class.java).setAction(ACTION_ROOTFS_RESTORE)
 
         fun surfaceReadyIntent(context: Context) =
             Intent(context, VmService::class.java).setAction(ACTION_SURFACE_READY)

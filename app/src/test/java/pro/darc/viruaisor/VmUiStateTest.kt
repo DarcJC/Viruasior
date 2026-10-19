@@ -7,9 +7,17 @@ import pro.darc.viruaisor.vm.AvfSupport
 import pro.darc.viruaisor.vm.VmBundle
 import pro.darc.viruaisor.vm.VmStatus
 import pro.darc.viruaisor.vm.VmUiState
+import pro.darc.viruaisor.vm.VmStorageState
 import java.io.File
 
 class VmUiStateTest {
+    @Test fun storageOperationDisablesConflictingLifecycleActions() {
+        val state = VmUiState(support=AvfSupport.Available(2),bundle=bundle,
+            storage=VmStorageState(busy=true))
+        assertFalse(state.canStart)
+        assertFalse(state.canImport)
+        assertFalse(state.copy(status=VmStatus.GuestAgentReady).canStop)
+    }
     private val bundle = VmBundle(
         directory = File("bundle"),
         kernel = File("bundle/Image"),

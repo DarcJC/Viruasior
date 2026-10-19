@@ -8,6 +8,7 @@ import java.nio.file.NoSuchFileException
 internal class CrosvmProcessGuard(
     private val proc: File = File("/proc"),
     private val privateCandidate: (File,String) -> Boolean = { _,_ -> false },
+    private val sharedBackend: (File,String) -> Boolean = { _,_ -> false },
     private val readExecutable: (File) -> String? = { process ->
         try {
             Files.readSymbolicLink(File(process, "exe").toPath()).toString()
@@ -27,7 +28,8 @@ internal class CrosvmProcessGuard(
                 // A visibility failure must not silently hide a competing VM.
                 throw IllegalStateException("Cannot inspect executable for pid=${process.name}", error)
             }
-            executable != null && (AVF_CROSVM.matches(executable) || privateCandidate(process,executable))
+            executable != null && !sharedBackend(process, executable) &&
+                (AVF_CROSVM.matches(executable) || privateCandidate(process,executable))
         }
         check(crosvm.size == 1) {
             "Root display experiment requires exactly one crosvm; found ${crosvm.size}"

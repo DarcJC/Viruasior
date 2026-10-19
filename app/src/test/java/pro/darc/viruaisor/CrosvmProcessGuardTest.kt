@@ -11,6 +11,15 @@ import java.io.File
 import java.nio.file.AccessDeniedException
 
 class CrosvmProcessGuardTest {
+    @Test fun authenticatedFsBackendDoesNotCountAsASecondVm() {
+        process("123", "crosvm_default", "/apex/com.android.virt/bin/crosvm")
+        process("456", "crosvm", "/apex/com.android.virt/bin/crosvm")
+        val guarded = CrosvmProcessGuard(proc,
+            sharedBackend = { process, _ -> process.name == "456" },
+            readExecutable = { executables[it.name] })
+        assertEquals("123", guarded.requireSingle().name)
+    }
+
     @Test fun privateRuntimeIsCountedOnlyWhenItsProvenanceIsAuthenticated() {
         val image="/data/user/0/pro.darc.viruaisor/files/venus-overlay-lab/" + "a".repeat(32) + ".snapshot"
         process("123","crosvm_default",image)

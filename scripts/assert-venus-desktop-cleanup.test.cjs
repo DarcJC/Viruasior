@@ -1,6 +1,7 @@
 const {test}=require('node:test');
 const assert=require('node:assert/strict');
-const {inspectCleanup}=require('./assert-venus-desktop-cleanup.cjs');
+const {inspectCleanup:inspect}=require('./assert-venus-desktop-cleanup.cjs');
+const inspectCleanup=(...args)=>inspect(...args,'pro.darc.viruaisor');
 const token='a'.repeat(32);
 const log=`DESKTOP_LEASE_READY token=${token} uid=10278 pid=123
 DESKTOP_EXECUTION_VERIFIED token=${token} name=crosvm_default caps=0
@@ -9,6 +10,9 @@ DESKTOP_LEASE_END token=${token} native_exit=0
 ROLLBACK=PASS`;
 const processes='LABEL USER PID NAME\nu:r:untrusted_app:s0 u0_a278 123 pro.darc.viruaisor:venus_vm';
 const layers='StatusBar\nNavigationBar';
+test('renamed root bridge remains part of the cleanup gate',()=>{
+  assert.equal(inspect(log,processes+'\norg.example.renamed:root:libsu',layers,'org.example.renamed').passed,false);
+});
 
 test('accepts verified teardown of the latest owned Venus session',()=>{
   assert.equal(inspectCleanup(log,processes,layers).passed,true);

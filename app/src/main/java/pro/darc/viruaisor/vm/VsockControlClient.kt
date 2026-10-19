@@ -22,6 +22,8 @@ class VsockControlClient(private val engine: AvfVmEngine) {
 
     fun shutdown(port: Long) = send(port, SHUTDOWN)
 
+    internal fun storageStatus(port: Long) = GuestStorageProtocol.parse(exchange(port, "STORAGE_STATUS", 15_000))
+
     fun startDesktop(port: Long, profile: VmGpuProfile) =
         request(port, GuestDesktopProtocol.start(profile), if (profile == VmGpuProfile.VENUS) 95_000 else COMMAND_TIMEOUT_MS)
 

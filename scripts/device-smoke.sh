@@ -2,9 +2,11 @@
 set -euo pipefail
 
 ADB="${ADB:-/c/Tools/Android/platform-tools/adb.exe}"
-PACKAGE=pro.darc.viruaisor
-ACTIVITY="$PACKAGE/.MainActivity"
-EXPECTED_STATUS="${1:-VM stopped}"
+source "$(dirname "${BASH_SOURCE[0]}")/application-id.sh"
+resolve_application_id "$@"
+(( ${#APPLICATION_ARGS[@]} <= 1 )) || { echo 'Usage: device-smoke.sh [expected-status] [--package application.id]' >&2; exit 2; }
+ACTIVITY="$PACKAGE/pro.darc.viruaisor.MainActivity"
+EXPECTED_STATUS="${APPLICATION_ARGS[0]:-VM stopped}"
 
 "$ADB" get-state >/dev/null
 "$ADB" shell am force-stop "$PACKAGE"
@@ -28,7 +30,7 @@ if ! grep -Fq "text=\"$EXPECTED_STATUS\"" <<<"$ui"; then
     echo "FAIL: expected VM status '$EXPECTED_STATUS'" >&2
     exit 1
 fi
-if ! "$ADB" shell pidof "$PACKAGE" >/dev/null; then
+if ! "$ADB" shell pidof "$PACKAGE:venus_vm" >/dev/null; then
     echo "FAIL: app process is not running" >&2
     exit 1
 fi

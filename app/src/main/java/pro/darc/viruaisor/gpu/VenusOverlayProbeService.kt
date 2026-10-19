@@ -173,7 +173,7 @@ class VenusOverlayProbeService : Service() {
         }
     }
     companion object {
-        const val ACTION = "pro.darc.viruaisor.action.OVERLAY_SENTINEL_PROBE"
+        const val ACTION = (pro.darc.viruaisor.AppIdentity.ACTION_PREFIX + "OVERLAY_SENTINEL_PROBE")
         private const val CHANNEL = "venus-overlay-lab"
         private const val TAG = "ViruaisorOverlay"
     }

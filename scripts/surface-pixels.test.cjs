@@ -1,7 +1,8 @@
 const {test}=require('node:test');
 const assert=require('node:assert/strict');
 const zlib=require('node:zlib');
-const {inspectSurfacePixels,inspectSurfaceComposition}=require('./assert-surface-pixels.cjs');
+const {inspectSurfacePixels:inspectPixels,inspectSurfaceComposition}=require('./assert-surface-pixels.cjs');
+const inspectSurfacePixels=(png,xml,applicationId='pro.darc.viruaisor')=>inspectPixels(png,xml,applicationId);
 
 function png(width,height,pixel) {
   const header=Buffer.alloc(13); header.writeUInt32BE(width);header.writeUInt32BE(height,4);header[8]=8;header[9]=2;
@@ -30,6 +31,12 @@ test('ambiguous, missing, out-of-bounds and malformed captures fail closed',()=>
   assert.throws(()=>inspectSurfacePixels(Buffer.from('not a PNG'),xml));
 });
 module.exports={png,xml};
+test('renamed installed package keeps the stable SurfaceView class namespace',()=>{
+  const image=png(100,100,(x,y)=>[x*2,y*2,(x+y)%256]);
+  const renamed=xml.replace('package="pro.darc.viruaisor"','package="org.example.renamed"');
+  assert.equal(inspectSurfacePixels(image,renamed,'org.example.renamed').passed,true);
+  assert.throws(()=>inspectSurfacePixels(image,xml,'org.example.renamed'));
+});
 test('physical-output gate checks this root layer, never another client-composed window',()=>{
   const block=type=>` - Output Layer 0x1(ViruaisorRootDisplay#123)\n hwc: layer=0x1 composition=${type} (1)\n`;
   const other=' - Output Layer 0x2(AnotherWindow#456)\n hwc: layer=0x2 composition=CLIENT (1)\n';

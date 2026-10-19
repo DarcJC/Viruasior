@@ -3,7 +3,10 @@ set -euo pipefail
 
 ADB=${ADB:-/c/Tools/Android/platform-tools/adb.exe}
 NODE=${NODE:-node}
-TIMEOUT=${1:-180}
+source "$(dirname "${BASH_SOURCE[0]}")/application-id.sh"
+resolve_application_id "$@"
+(( ${#APPLICATION_ARGS[@]} <= 1 )) || { echo 'Usage: test-root-direct-surface.sh [timeout] [--package application.id]' >&2; exit 2; }
+TIMEOUT=${APPLICATION_ARGS[0]:-180}
 [[ "$TIMEOUT" =~ ^[1-9][0-9]*$ ]] || { echo "Timeout must be a positive integer" >&2; exit 2; }
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 # Avoid Git Bash's conversion of remote /data and /sdcard paths to Windows paths.
@@ -49,19 +52,19 @@ trap 'kill "$recorder" 2>/dev/null || true; wait "$recorder" 2>/dev/null || true
 # A prepared app with root, AVF grants and an imported bundle is required. Never modify policy.
 # Replace a stale task base intent so a process restart cannot replay an earlier
 # one-shot debug import while this run is starting.
-$ADB shell am start -W -f 0x10008000 -n pro.darc.viruaisor/.MainActivity \
-    -a pro.darc.viruaisor.action.DEBUG_ROOT_DISPLAY
-$ADB shell am start -W -f 0x20000000 -n pro.darc.viruaisor/.MainActivity \
-    -a pro.darc.viruaisor.action.DEBUG_START
+$ADB shell am start -W -f 0x10008000 -n "$PACKAGE/pro.darc.viruaisor.MainActivity" \
+    -a "$PACKAGE.action.DEBUG_ROOT_DISPLAY"
+$ADB shell am start -W -f 0x20000000 -n "$PACKAGE/pro.darc.viruaisor.MainActivity" \
+    -a "$PACKAGE.action.DEBUG_START"
 
 capture() {
     cp "$OUT/logcat-live.txt" "$OUT/logcat.txt"
     $ADB shell 'getenforce; settings get global hidden_api_policy; settings get global hidden_api_blacklist_exemptions' > "$OUT/policy-after.txt"
-    $ADB shell 'ps -AZ | grep -E "viruaisor|crosvm|virtualization"' > "$OUT/processes.txt" || true
+    $ADB shell ps -AZ > "$OUT/processes.txt"
     $ADB shell dumpsys SurfaceFlinger > "$OUT/surfaceflinger.txt"
     $ADB exec-out screencap -p > "$OUT/screen.png"
-    $ADB shell uiautomator dump /sdcard/Android/data/pro.darc.viruaisor/files/viruaisor-frame.xml >/dev/null
-    $ADB pull /sdcard/Android/data/pro.darc.viruaisor/files/viruaisor-frame.xml "$OUT/frame-ui.xml" >/dev/null
+    $ADB shell uiautomator dump "/sdcard/Android/data/$PACKAGE/files/viruaisor-frame.xml" >/dev/null
+    $ADB pull "/sdcard/Android/data/$PACKAGE/files/viruaisor-frame.xml" "$OUT/frame-ui.xml" >/dev/null
 }
 
 attached=false

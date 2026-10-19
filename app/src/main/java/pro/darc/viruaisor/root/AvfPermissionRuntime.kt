@@ -28,7 +28,7 @@ object AvfPermissionRuntime {
 
     fun grantMissing(context: Context) = launchOperation(context) { app ->
         val root = RootRuntime.state.value as? RootAccess.Granted
-        val changes = AvfPermissionClient().grantMissing(
+        val changes = AvfPermissionClient(packageName = app.packageName).grantMissing(
             suPath = root?.suPath,
             userId = currentUserId,
             isGranted = { permission -> hasPermission(app, permission) },
@@ -52,7 +52,7 @@ object AvfPermissionRuntime {
         val journal = readJournal(app)
         val added = journal.filterTo(mutableSetOf()) { hasPermission(app, it) }
         Log.i(TAG, "Rollback user=$currentUserId package=${app.packageName} added=$added; Android may terminate this app on revocation")
-        val error = AvfPermissionClient().revokeAdded(root.suPath, currentUserId, added)
+        val error = AvfPermissionClient(packageName = app.packageName).revokeAdded(root.suPath, currentUserId, added)
         // Android may kill the app on revoke. The durable journal survives and is reconciled on retry.
         writeJournal(app, journal.filterTo(mutableSetOf()) { hasPermission(app, it) })
         VmRuntime.refreshSupport(app)
@@ -69,7 +69,7 @@ object AvfPermissionRuntime {
         val app = context.applicationContext
         scope.launch {
             mutableState.value = try {
-                check(app.packageName == AvfPermissionClient.PACKAGE_NAME) { "Unexpected package" }
+                check(app.packageName == pro.darc.viruaisor.BuildConfig.APPLICATION_ID) { "Unexpected package" }
                 operation(app)
             } catch (error: Exception) {
                 Log.e(TAG, "AVF permission setup failed", error)

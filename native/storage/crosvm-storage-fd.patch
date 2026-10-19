@@ -1,0 +1,274 @@
+diff --git a/devices/src/virtio/fs/caps.rs b/devices/src/virtio/fs/caps.rs
+index ac7e26b..b794bf8 100644
+--- a/devices/src/virtio/fs/caps.rs
++++ b/devices/src/virtio/fs/caps.rs
+@@ -32,6 +32,7 @@ extern "C" {
+ 
+     fn cap_get_proc() -> cap_t;
+     fn cap_set_proc(cap: cap_t) -> c_int;
++    fn cap_get_flag(c: cap_t, cap: cap_value_t, set: cap_flag_t, value: *mut cap_flag_value_t) -> c_int;
+ }
+ 
+ #[repr(u32)]
+@@ -111,6 +112,17 @@ impl From<Value> for cap_flag_value_t {
+ pub struct Caps(cap_t);
+ 
+ impl Caps {
++    /// Query a capability in this snapshot without changing the current thread.
++    pub fn is_set(&self, capability: Capability, set: Set) -> io::Result<bool> {
++        let mut value = 0;
++        // SAFETY: self owns a valid cap_t; value points to writable local storage.
++        if unsafe { cap_get_flag(self.0, capability.into(), set.into(), &mut value) } == 0 {
++            Ok(value == Value::Set as cap_flag_value_t)
++        } else {
++            Err(io::Error::last_os_error())
++        }
++    }
++
+     /// Get the capabilities for the current thread.
+     pub fn for_current_thread() -> io::Result<Caps> {
+         // SAFETY:
+diff --git a/devices/src/virtio/fs/passthrough.rs b/devices/src/virtio/fs/passthrough.rs
+index 2553c80..67f0e7f 100644
+--- a/devices/src/virtio/fs/passthrough.rs
++++ b/devices/src/virtio/fs/passthrough.rs
+@@ -550,10 +550,11 @@ impl Drop for ScopedUmask {
+     }
+ }
+ 
+-struct ScopedFsetid(Caps);
++struct ScopedFsetid(Option<Caps>);
+ impl Drop for ScopedFsetid {
+     fn drop(&mut self) {
+-        if let Err(e) = raise_cap_fsetid(&mut self.0) {
++        let Some(caps) = self.0.as_mut() else { return; };
++        if let Err(e) = raise_cap_fsetid(caps) {
+             error!(
+                 "Failed to restore CAP_FSETID: {}.  Some operations may be broken.",
+                 e
+@@ -568,12 +569,15 @@ fn raise_cap_fsetid(c: &mut Caps) -> io::Result<()> {
+ }
+ 
+ // Drops CAP_FSETID from the effective set for the current thread and returns an RAII guard that
+-// adds the capability back when it is dropped.
++// restores it only if this scope actually removed it.
+ fn drop_cap_fsetid() -> io::Result<ScopedFsetid> {
+     let mut caps = Caps::for_current_thread()?;
++    if !caps.is_set(Capability::Fsetid, CapSet::Effective)? {
++        return Ok(ScopedFsetid(None));
++    }
+     caps.update(&[Capability::Fsetid], CapSet::Effective, CapValue::Clear)?;
+     caps.apply()?;
+-    Ok(ScopedFsetid(caps))
++    Ok(ScopedFsetid(Some(caps)))
+ }
+ 
+ fn ebadf() -> io::Error {
+diff --git a/devices/src/virtio/vhost_user_backend/fs.rs b/devices/src/virtio/vhost_user_backend/fs.rs
+index b5ca083..12a685a 100644
+--- a/devices/src/virtio/vhost_user_backend/fs.rs
++++ b/devices/src/virtio/vhost_user_backend/fs.rs
+@@ -203,6 +203,14 @@ pub struct Options {
+     /// If this flag is set, --socket-path cannot be specified.
+     fd: Option<RawDescriptor>,
+ 
++    #[argh(option, arg_name = "PID")]
++    /// bind the fixed application storage backend and its worker to their parent lifetime.
++    app_storage_owner_pid: Option<i32>,
++
++    #[argh(option, arg_name = "FD")]
++    /// original application pidfd; the owned backend parent watches descriptor 5.
++    app_storage_client_fd: Option<RawDescriptor>,
++
+     #[argh(option, arg_name = "TAG")]
+     /// the virtio-fs tag
+     tag: String,
+diff --git a/devices/src/virtio/vhost_user_backend/fs/sys/linux.rs b/devices/src/virtio/vhost_user_backend/fs/sys/linux.rs
+index c1aabf2..f3e5a98 100644
+--- a/devices/src/virtio/vhost_user_backend/fs/sys/linux.rs
++++ b/devices/src/virtio/vhost_user_backend/fs/sys/linux.rs
+@@ -9,6 +9,9 @@ use std::path::PathBuf;
+ use anyhow::bail;
+ use anyhow::Context;
+ use base::error;
++use base::safe_descriptor_from_cmdline_fd;
++use base::FromRawDescriptor;
++use base::SafeDescriptor;
+ use base::linux::max_open_files;
+ use base::sys::wait_for_pid;
+ use base::AsRawDescriptor;
+@@ -23,6 +26,56 @@ use crate::virtio::vhost_user_backend::fs::FsBackend;
+ use crate::virtio::vhost_user_backend::fs::Options;
+ use crate::virtio::vhost_user_backend::BackendConnection;
+ 
++#[allow(dead_code)]
++#[path = "../storage_fd_policy.rs"]
++mod storage_fd_policy;
++
++fn bind_parent_lifetime(parent: i32) -> anyhow::Result<()> {
++    // SAFETY: getppid has no preconditions and PR_SET_PDEATHSIG consumes a signal number.
++    if unsafe { libc::getppid() } != parent {
++        bail!("application storage parent exited before lifetime binding");
++    }
++    if unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) } != 0 {
++        return Err(std::io::Error::last_os_error()).context("bind application storage lifetime");
++    }
++    // Close the race where the parent died between checking and installing the signal.
++    if unsafe { libc::getppid() } != parent {
++        bail!("application storage parent exited during lifetime binding");
++    }
++    Ok(())
++}
++
++fn wait_for_client_or_worker(worker: i32, client: RawDescriptor) -> anyhow::Result<()> {
++    // The worker is our unreaped direct child, so its PID cannot be reused before pidfd_open.
++    let descriptor = unsafe { libc::syscall(libc::SYS_pidfd_open, worker, 0) } as i32;
++    if descriptor < 0 {
++        return Err(std::io::Error::last_os_error()).context("open storage worker pidfd");
++    }
++    let descriptor = unsafe { SafeDescriptor::from_raw_descriptor(descriptor) };
++    let mut watched = [
++        libc::pollfd { fd: client, events: libc::POLLIN, revents: 0 },
++        libc::pollfd { fd: descriptor.as_raw_descriptor(), events: libc::POLLIN, revents: 0 },
++    ];
++    loop {
++        if unsafe { libc::poll(watched.as_mut_ptr(), watched.len() as libc::nfds_t, -1) } < 0 {
++            let error = std::io::Error::last_os_error();
++            if error.kind() == std::io::ErrorKind::Interrupted { continue; }
++            return Err(error).context("watch application storage owner");
++        }
++        if watched[0].revents != 0 {
++            // Client exit wins a simultaneous worker exit; ESRCH merely means it already exited.
++            let result = unsafe { libc::syscall(libc::SYS_pidfd_send_signal,
++                descriptor.as_raw_descriptor(), libc::SIGKILL, std::ptr::null::<libc::siginfo_t>(), 0) };
++            if result < 0 && std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH) {
++                return Err(std::io::Error::last_os_error()).context("stop orphaned storage worker");
++            }
++            eprintln!("VIRUAISOR_STORAGE_CLIENT_EXIT worker={worker}");
++            return Ok(());
++        }
++        if watched[1].revents != 0 { return Ok(()); }
++    }
++}
++
+ fn default_uidmap() -> String {
+     // SAFETY: trivially safe
+     let euid = unsafe { libc::geteuid() };
+@@ -45,6 +98,7 @@ fn jail_and_fork(
+     gid_map: Option<String>,
+     disable_sandbox: bool,
+     pivot_root: bool,
++    app_owned: bool,
+ ) -> anyhow::Result<i32> {
+     let limit = max_open_files()
+         .context("failed to get max open files")?
+@@ -101,7 +155,7 @@ fn jail_and_fork(
+     // SAFETY: trivially safe
+     let pid = unsafe { jail.fork(Some(&keep_rds))? };
+ 
+-    if pid > 0 {
++    if pid > 0 && !app_owned {
+         // Current FS driver jail does not use seccomp and jail_and_fork() does not have other
+         // users, so we do nothing here for seccomp_trace
+         // SAFETY: trivially safe
+@@ -119,6 +173,29 @@ fn jail_and_fork(
+ /// Returns an error if the given `args` is invalid or the device fails to run.
+ #[allow(unused_mut)]
+ pub fn start_device(mut opts: Options) -> anyhow::Result<()> {
++    // The app spawns this executable directly in its own domain, not through virtmgr.
++    // Neither path lookup nor a new domain transition is required for the passed socket.
++    let app_owned = storage_fd_policy::owned_backend(
++        opts.app_storage_owner_pid, &opts.tag, opts.fd, opts.app_storage_client_fd,
++        opts.socket.is_some() || opts.socket_path.is_some(),
++        opts.disable_sandbox, opts.skip_pivot_root,
++        unsafe { libc::getppid() },
++    ).map_err(anyhow::Error::msg)?;
++    if app_owned {
++        bind_parent_lifetime(opts.app_storage_owner_pid.unwrap())?;
++    }
++    // Keep the original application's pidfd in this parent only. Minijail does not preserve
++    // either descriptor 5 or its duplicate in the worker; the parent's death signal handles it.
++    let client_pidfd = opts.app_storage_client_fd
++        .map(|fd| safe_descriptor_from_cmdline_fd(&fd)).transpose()?;
++    if let Some(client) = &client_pidfd {
++        if unsafe { libc::syscall(libc::SYS_pidfd_send_signal, client.as_raw_descriptor(), 0,
++            std::ptr::null::<libc::siginfo_t>(), 0) } < 0 {
++            return Err(std::io::Error::last_os_error()).context("validate live storage client pidfd");
++        }
++    }
++    // PR_SET_PDEATHSIG is cleared by fork, so the minijail child binds separately below.
++    let backend_pid = unsafe { libc::getpid() };
+     #[allow(unused_mut)]
+     let mut is_pivot_root_required = true;
+     #[cfg(feature = "fs_runtime_ugid_map")]
+@@ -164,13 +241,18 @@ pub fn start_device(mut opts: Options) -> anyhow::Result<()> {
+         opts.gid_map,
+         opts.disable_sandbox,
+         is_pivot_root_required,
++        app_owned,
+     )?;
+ 
+     match pid {
+         0 => {
++            if app_owned {
++                bind_parent_lifetime(backend_pid)?;
++            }
+             // Child process runs the device and exits, not returns.
+-            if let Err(e) = ex.run_until(conn.run_backend(fs_device, &ex)) {
+-                error!("Error in vhost-user-fs device: {:#}", e);
++            if let Err(e) = storage_fd_policy::backend_outcome(ex.run_until(conn.run_backend(fs_device, &ex))) {
++                eprintln!("VIRUAISOR_STORAGE_BACKEND_FAILED {e}");
++                error!("VIRUAISOR_STORAGE_BACKEND_FAILED {e}");
+                 std::process::exit(1);
+             }
+             std::process::exit(0);
+@@ -182,6 +264,9 @@ pub fn start_device(mut opts: Options) -> anyhow::Result<()> {
+             // fs_device is not needed in the parent process.
+             drop(fs_device);
+ 
++            if let Some(client) = &client_pidfd {
++                wait_for_client_or_worker(pid, client.as_raw_descriptor())?;
++            }
+             let (_child_pid, status) =
+                 wait_for_pid(pid, 0).context("failed to wait for child process")?;
+             if let Some(signal) = status.signal() {
+diff --git a/src/crosvm/cmdline.rs b/src/crosvm/cmdline.rs
+index e954387..a7bc0bb 100644
+--- a/src/crosvm/cmdline.rs
++++ b/src/crosvm/cmdline.rs
+@@ -98,6 +98,10 @@ use crate::crosvm::config::MemOptions;
+ use crate::crosvm::config::TouchDeviceOption;
+ use crate::crosvm::config::VhostUserFrontendOption;
+ 
++#[allow(dead_code)]
++#[path = "storage_fd_policy.rs"]
++mod storage_fd_policy;
++
+ #[derive(FromArgs)]
+ /// crosvm
+ pub struct CrosvmCmdlineArgs {
+@@ -3187,6 +3191,24 @@ impl TryFrom<RunCommand> for super::config::Config {
+ 
+         cfg.name = cmd.name;
+ 
++        // The old AVF framework can pass an app-created switches socket but cannot
++        // describe app-domain FS backends. Reuse only this explicitly opted-in FD.
++        let switches: Vec<_> = cfg.virtio_input.iter().filter_map(|input| match input {
++            InputDeviceOption::Switches { path } => Some(path.as_path()),
++            _ => None,
++        }).collect();
++        let has_fs = cfg.vhost_user.iter().any(|item| item.type_ == devices::virtio::DeviceType::Fs);
++        if let Some(socket) = storage_fd_policy::frontend_plan(&cfg.params, &switches, has_fs)? {
++            cfg.virtio_input.retain(|input| !matches!(input, InputDeviceOption::Switches { .. }));
++            cfg.vhost_user.push(VhostUserFrontendOption {
++                type_: devices::virtio::DeviceType::Fs,
++                socket,
++                max_queue_size: None,
++                pci_address: None,
++            });
++            log::info!("VIRUAISOR_STORAGE_FD_FRONTEND ready");
++        }
++
+         // Now do validation of constructed config
+         super::config::validate_config(&mut cfg)?;
+ 

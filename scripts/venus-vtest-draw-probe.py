@@ -1,16 +1,26 @@
 #!/usr/bin/env python3
 """Rootless, app-private Vtest diagnosis. Never an AVF/Surface acceptance result."""
 import importlib.util
+import argparse
 import os
 import pathlib
+import re
 import stat
 import sys
 
-BASE = pathlib.Path('/data/user/0/pro.darc.viruaisor/files/venus-linux-diag')
+def diagnostic_base(package, uid):
+    # Android execution has no host APK metadata: require a caller-supplied package.
+    if not isinstance(package, str) or len(package) > 255 or not re.fullmatch(
+            r'[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+', package):
+        raise ValueError('explicit valid PACKAGE/--package is required')
+    if not 10000 <= uid % 100000 <= 19999:
+        raise RuntimeError('diagnostic must run as an ordinary app UID')
+    return pathlib.Path(f'/data/user/{uid // 100000}/{package}/files/venus-linux-diag')
 
 
-def run():
+def run(package):
     uid = os.geteuid()
+    BASE = diagnostic_base(package, uid)
     if uid < 10000 or BASE.stat().st_uid != uid:
         raise RuntimeError('diagnostic must run as the owning ordinary app UID')
     socket = BASE / 'venus.sock'
@@ -39,7 +49,9 @@ def run():
 
 if __name__ == '__main__':
     try:
-        run()
+        parser = argparse.ArgumentParser(description=__doc__)
+        parser.add_argument('--package', default=os.environ.get('PACKAGE'))
+        run(parser.parse_args().package)
     except Exception as error:
         print('VTEST_DIAGNOSTIC_DRAW_FAIL: ' + str(error), file=sys.stderr, flush=True)
         sys.exit(1)

@@ -2,6 +2,7 @@ package pro.darc.viruaisor.vm
 
 import android.content.Context
 import android.os.ParcelFileDescriptor
+import android.system.Os
 import android.util.Log
 import android.view.MotionEvent
 import pro.darc.viruaisor.display.VmInputBackend
@@ -36,7 +37,9 @@ class AvfVmEngine(
     private var consoleInput: OutputStream? = null
     private var guestAgent: Any? = null
     private var callbackProxy: Any? = null
-    private var stopRequested = false
+    @Volatile private var stopRequested = false
+    private var sharedStorageViaFd = false
+    private var sharedBackend: VmSharedStorageBackend? = null
 
     fun start(bundle: VmBundle) = synchronized(lock) {
         Log.d(TAG, "start engine=${System.identityHashCode(this)}")
@@ -74,12 +77,23 @@ class AvfVmEngine(
                 onEvent(VmEngineEvent.Running)
             } else {
                 invoke(target, "run")
+                if (sharedStorageViaFd) {
+                    val field = target.javaClass.getDeclaredField("mSwitchesSock").apply { isAccessible=true }
+                    val socket = field.get(target) as? ParcelFileDescriptor
+                        ?: error("AVF did not supply the shared storage FD channel.")
+                    val backend = VmSharedStorageBackend(appContext) {
+                        if (!stopRequested) onEvent(VmEngineEvent.Error("Shared storage backend exited unexpectedly."))
+                    }
+                    sharedBackend = backend
+                    backend.start(socket)
+                }
                 if (invoke(target, "getStatus") as Int == STATUS_RUNNING) {
                     onEvent(VmEngineEvent.Running)
                 }
             }
             true
         } catch (error: Throwable) {
+            Log.e(TAG, "AVF startup failed", error)
             onEvent(VmEngineEvent.Error(error.avfMessage()))
             false
         }
@@ -130,8 +144,8 @@ class AvfVmEngine(
         } ?: false
 
     fun requestGuestAgentShutdown(): Boolean = synchronized(lock) {
-        val agent = guestAgent ?: return@synchronized false
         stopRequested = true
+        val agent = guestAgent ?: return@synchronized false
         try {
             invoke(agent, "shutdownAsync")
             true
@@ -176,11 +190,24 @@ class AvfVmEngine(
     }
 
     fun closeStopped() = synchronized(lock) {
-        val target=vm ?: return@synchronized
-        check(invoke(target,"getStatus") != STATUS_RUNNING) { "Cannot close an active VM" }
+        val target=vm
+        check(target == null || invoke(target,"getStatus") != STATUS_RUNNING) { "Cannot close an active VM" }
+        try { sharedBackend?.close() } finally { sharedBackend=null }
+        if (target == null) return@synchronized
         clearCallback()
         invoke(target,"close")
         vm=null; consoleInput?.close(); consoleInput=null; guestAgent=null; callbackProxy=null
+    }
+
+    fun requireStopped() = synchronized(lock) {
+        val target = vm
+        check(target == null || invoke(target, "getStatus") != STATUS_RUNNING) { "Active VM still owns the rootfs." }
+        VmProcessQuiescence(java.io.File("/proc"), appContext.applicationInfo.uid,
+            { process -> Os.stat(process.path).st_uid },
+            { command -> VmSharedStorage.isBackendCommand(command,appContext.applicationInfo.uid,
+                VmSharedStorage.directory(appContext).path,VmSharedStorage.socket(appContext).path,
+                VmSharedStorage.privateExecutable(appContext)) })
+            .requireStopped()
     }
 
     private fun manager(): Any = appContext.getSystemService(AvfCapability.SERVICE)
@@ -195,7 +222,24 @@ class AvfVmEngine(
         bundle.initrd?.let { invoke(customBuilder, "setInitrdPath", it.absolutePath) }
         invoke(customBuilder, "useNetwork", bundle.network)
         invoke(customBuilder, "useAutoMemoryBalloon", bundle.autoMemoryBalloon)
-        bundle.kernelArgs.forEach { invoke(customBuilder, "addParam", it) }
+        bundle.kernelArgs.filterNot { it.startsWith("systemd.mount-extra=${VmSharedStorage.TAG}:") || it.startsWith("viruaisor.storage_fd=") }
+            .forEach { invoke(customBuilder, "addParam", it) }
+        invoke(customBuilder, "addParam", VmSharedStorage.MOUNT_ARGUMENT)
+        VmSharedStorage.prepare(appContext)
+        val sharedClass = loadClass("$CUSTOM_CONFIG\$SharedPath")
+        sharedStorageViaFd = !SharedPathApi.supportsApplicationDomain(sharedClass)
+        if (sharedStorageViaFd) {
+            check(bundle.gpuProfile == VmGpuProfile.VENUS && venusRuntimeReady()) {
+                "This AVF firmware needs the paired desktop runtime for shared storage."
+            }
+            invoke(customBuilder, "addParam", VmSharedStorage.FD_MARKER)
+            invoke(customBuilder, "useSwitches", true)
+        } else {
+            val sharedPath = SharedPathApi.create(sharedClass, VmSharedStorage.directory(appContext).path,
+                appContext.applicationInfo.uid, VmSharedStorage.GUEST_UID, VmSharedStorage.GUEST_GID,
+                VmSharedStorage.MASK, VmSharedStorage.TAG, "0.sock", VmSharedStorage.socket(appContext).path)
+            invoke(customBuilder, "addSharedPath", sharedPath)
+        }
 
         val displayBuilder = loadClass("$CUSTOM_CONFIG\$DisplayConfig\$Builder")
             .getConstructor()
@@ -239,13 +283,13 @@ class AvfVmEngine(
                 true,
                 bundle.rootfsPartitionGuid,
             )
-            invoke(disk, "addPartition", partition)
+            invoke(requireNotNull(disk), "addPartition", partition)
             disk
         } else {
             diskClass.getMethod("RWDisk", String::class.java)
                 .invoke(null, bundle.rootfs.absolutePath)
         }
-        invoke(customBuilder, "addDisk", rootDisk)
+        invoke(customBuilder, "addDisk", requireNotNull(rootDisk))
         bundle.extraDisks.forEach { extra ->
             val factory = if (extra.writable) "RWDisk" else "RODisk"
             val disk = diskClass.getMethod(factory, String::class.java)
@@ -312,6 +356,8 @@ class AvfVmEngine(
                 "onStopped" -> {
                     val reason = args?.getOrNull(1) as? Int ?: STOP_REASON_UNKNOWN
                     val expected = stopRequested || reason == STOP_REASON_SHUTDOWN
+                    // Once AVF has stopped, its FS connection closing is normal teardown.
+                    stopRequested = true
                     synchronized(lock) {
                         // Unregister before closing: ending the lease's cached
                         // virtmgr must not enqueue another stop for this run.

@@ -2,20 +2,38 @@
 #include "overlay_policy.h"
 
 int main(void) {
+    assert(overlay_identity_valid(10278, 10278, "org.example.renamed:venus_vm", 0, "org.example.renamed"));
+    assert(!overlay_identity_valid(10278, 10278, "pro.darc.viruaisor:venus_vm", 0, "org.example.renamed"));
+    assert(!overlay_identity_valid(10278, 10278, "org.example.renamed:venus_vm_extra", 0, "org.example.renamed"));
+    assert(!overlay_identity_valid(10278, 10278, "org.example.renamed:venus_vm", 1, "org.example.renamed"));
+    assert(overlay_files_dir_valid(10278, "org.example.renamed", "/data/user/0/org.example.renamed/files"));
+    assert(overlay_files_dir_valid(10278, "org.example.renamed", "/data/data/org.example.renamed/files"));
+    assert(overlay_files_dir_valid(1010278, "org.example.renamed", "/data/user/10/org.example.renamed/files"));
+    assert(overlay_files_dir_valid(1010278, "org.example.renamed", "/data/user_de/10/org.example.renamed/files"));
+    assert(!overlay_files_dir_valid(1010278, "org.example.renamed", "/data/data/org.example.renamed/files"));
+    assert(!overlay_files_dir_valid(10278, "org.example.renamed", "/data/user/0/pro.darc.viruaisor/files"));
+    assert(!overlay_files_dir_valid(10278, "org.example.renamed", "/data/user/0/org.example.renamed/files/../files"));
+    assert(!overlay_files_dir_valid(10278, "org.example.renamed", "/data/user/1/org.example.renamed/files"));
+    assert(!overlay_files_dir_valid(0, "org.example.renamed", "/data/user/0/org.example.renamed/files"));
+    assert(!overlay_package_valid("org.example.renamed/../../other"));
+    assert(!overlay_package_valid("org.example.renamed:venus_vm"));
+    assert(!overlay_package_valid("org..example"));
+    assert(!overlay_package_valid("org.1invalid"));
+    assert(!overlay_package_valid(NULL));
     assert(overlay_token_valid("0123456789abcdef0123456789abcdef"));
     assert(!overlay_token_valid("../0123456789abcdef0123456789abc"));
     assert(!overlay_token_valid("0123456789abcdef0123456789abcdef00"));
     assert(!overlay_token_valid("0123456789abcdef0123456789abcdeF"));
     assert(!overlay_token_valid(NULL));
     assert(!overlay_token_valid(""));
-    assert(overlay_identity_valid(10278, 10278, "pro.darc.viruaisor:venus_vm", 0));
-    assert(!overlay_identity_valid(10278, 1010278, "pro.darc.viruaisor:venus_vm", 0));
-    assert(!overlay_identity_valid(0, 0, "pro.darc.viruaisor:venus_vm", 0));
-    assert(!overlay_identity_valid(10278, 10278, "pro.darc.viruaisor", 0));
-    assert(!overlay_identity_valid(10278, 10278, "pro.darc.viruaisor:venus_vm", 1));
-    assert(!overlay_identity_valid(10278, 10278, NULL, 0));
-    assert(!overlay_identity_valid(20000, 20000, "pro.darc.viruaisor:venus_vm", 0));
-    assert(overlay_identity_valid(1010278, 1010278, "pro.darc.viruaisor:venus_vm", 0));
+    assert(overlay_identity_valid(10278, 10278, "pro.darc.viruaisor:venus_vm", 0, "pro.darc.viruaisor"));
+    assert(!overlay_identity_valid(10278, 1010278, "pro.darc.viruaisor:venus_vm", 0, "pro.darc.viruaisor"));
+    assert(!overlay_identity_valid(0, 0, "pro.darc.viruaisor:venus_vm", 0, "pro.darc.viruaisor"));
+    assert(!overlay_identity_valid(10278, 10278, "pro.darc.viruaisor", 0, "pro.darc.viruaisor"));
+    assert(!overlay_identity_valid(10278, 10278, "pro.darc.viruaisor:venus_vm", 1, "pro.darc.viruaisor"));
+    assert(!overlay_identity_valid(10278, 10278, NULL, 0, "pro.darc.viruaisor"));
+    assert(!overlay_identity_valid(20000, 20000, "pro.darc.viruaisor:venus_vm", 0, "pro.darc.viruaisor"));
+    assert(overlay_identity_valid(1010278, 1010278, "pro.darc.viruaisor:venus_vm", 0, "pro.darc.viruaisor"));
     assert(overlay_namespace_valid(33, 11, 22, 44, 1));
     assert(!overlay_namespace_valid(11, 11, 22, 44, 1));
     assert(!overlay_namespace_valid(22, 11, 22, 44, 1));

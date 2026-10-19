@@ -64,6 +64,8 @@ else if (args.startsWith('logcat ') && process.env.TEST_FAILURE) {
       timeout: 15000,
       env: {
         ...process.env,
+        PACKAGE: 'pro.darc.viruaisor',
+        NODE: process.execPath.replace(/\\/g, '/'),
         ADB: adb.replace(/\\/g, '/'),
         TEST_NODE: process.execPath.replace(/\\/g, '/'),
         TEST_MOCK: mock.replace(/\\/g, '/'),

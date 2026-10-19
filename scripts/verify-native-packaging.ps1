@@ -7,7 +7,7 @@ $expected=[regex]::Match($policy,'DESKTOP_SHA256 = "([a-f0-9]{64})"').Groups[1].
 $expectedBytes=[long][regex]::Match($policy,'DESKTOP_BYTES = ([0-9]+)L').Groups[1].Value
 $zip=[IO.Compression.ZipFile]::OpenRead((Resolve-Path -LiteralPath $Apk))
 try {
-    foreach ($name in @('libviruaisor_native.so','libvenus_host_probe.so','libvenus_overlay_probe.so','libvenus_crosvm.so','libvenus_desktop_crosvm.so')) {
+    foreach ($name in @('libviruaisor_native.so','libviruaisor_storage.so','libviruaisor_storage_launcher.so','libvenus_host_probe.so','libvenus_overlay_probe.so','libvenus_crosvm.so','libvenus_desktop_crosvm.so','librootfs_e2fsck.so','librootfs_resize2fs.so')) {
         $entry=$zip.GetEntry("lib/arm64-v8a/$name")
         if ($null -eq $entry) { throw "Missing arm64 native artifact: $name" }
         $stream=$entry.Open()
@@ -24,6 +24,16 @@ try {
             finally { $stream.Dispose(); $sha.Dispose() }
             if ($actual -ne $expected -or $entry.Length -ne $expectedBytes) { throw 'APK desktop runtime does not match its source pin' }
         }
+        if ($name -like 'librootfs_*') {
+            $source=Join-Path $repo "app/src/main/jniLibs/arm64-v8a/$name"
+            $stream=$entry.Open(); $sha=[Security.Cryptography.SHA256]::Create()
+            try { $actual=([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-','').ToLowerInvariant() }
+            finally { $stream.Dispose(); $sha.Dispose() }
+            if ($actual -ne (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash.ToLowerInvariant()) {
+                throw "APK ext4 tool differs from its built artifact: $name"
+            }
+        }
     }
+    if ($null -eq $zip.GetEntry('assets/third_party/rootfs-tools-notices.txt')) { throw 'Missing e2fsprogs notices' }
 } finally { $zip.Dispose() }
-Write-Output 'PASS: five arm64 ELF artifacts present; desktop runtime bytes match the source pin.'
+Write-Output 'PASS: nine arm64 ELF artifacts present; desktop pin and ext4 tool bytes verified; e2fsprogs notices included.'

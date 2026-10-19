@@ -4,11 +4,13 @@ const fs = require('node:fs');
 const path = require('node:path');
 const cp = require('node:child_process');
 const {inspectVenusBackend} = require('./assert-venus-backend.cjs');
+const {resolveApplicationId,parsePackageArgs}=require('./application-id.cjs');
 const adb = process.env.ADB || 'adb';
-const args = process.argv.slice(2);
+const {args,packageName}=parsePackageArgs(process.argv.slice(2));
 if (args.some(arg => !['--venus-backend', '--guest-inventory'].includes(arg))) {
-    throw new Error('Usage: node scripts/probe-gpu-alternatives.cjs [--venus-backend] [--guest-inventory]');
+    throw new Error('Usage: node scripts/probe-gpu-alternatives.cjs [--venus-backend] [--guest-inventory] [--package application.id]');
 }
+const applicationId=resolveApplicationId({packageName});
 const out = path.resolve('.pi/device-debug/gpu-alternatives-' + new Date().toISOString().replace(/[:.]/g, '-'));
 fs.mkdirSync(out, {recursive: true});
 function run(args, timeout = 15_000) {
@@ -43,16 +45,17 @@ save('crosvm-help.txt', ['shell', 'su -c ' + quote('/apex/com.android.virt/bin/c
 if (args.includes('--guest-inventory')) {
     const push = save('guest-inventory-upload.txt', ['push', 'scripts/inspect-gpu-guest-offline.sh', '/data/local/tmp/viruaisor-inspect-gpu-guest-offline.sh']);
     if (push.exit !== 0) throw new Error('Guest inventory helper upload failed');
-    const inventory = save('guest-offline-inventory.txt', ['shell', 'su -c ' + quote('sh /data/local/tmp/viruaisor-inspect-gpu-guest-offline.sh')], 30_000);
+    const inventory = save('guest-offline-inventory.txt', ['shell', 'su -c ' + quote(`PACKAGE=${quote(applicationId)} sh /data/local/tmp/viruaisor-inspect-gpu-guest-offline.sh`)], 30_000);
     if (inventory.exit !== 0 || !inventory.stdout.includes('GUEST_OFFLINE_READ_ONLY_END')) throw new Error('Guest read-only inventory failed');
 }
 if (args.includes('--venus-backend')) {
     const processes = shell('ps -A').stdout;
-    if (/crosvm|pro\.darc\.viruaisor:root:/.test(processes)) throw new Error('Stop the VM/display helper first');
-    const installed = shell('pm path pro.darc.viruaisor.test').stdout;
+    if (/crosvm/.test(processes)||processes.includes(`${applicationId}:root:`)) throw new Error('Stop the VM/display helper first');
+    const testApplicationId=`${applicationId}.test`;
+    const installed = shell(`pm path ${testApplicationId}`).stdout;
     if (!/^package:/m.test(installed)) throw new Error('Install the built androidTest APK and approve the device installer first');
     const start = shell("date '+%m-%d %H:%M:%S.000'").stdout.trim();
-    const instrument = save('venus-instrumentation.txt', ['shell', 'am', 'instrument', '-w', '-r', '-e', 'gpuBackendProbe', 'venus', '-e', 'class', 'pro.darc.viruaisor.VenusBackendProbeTest', 'pro.darc.viruaisor.test/androidx.test.runner.AndroidJUnitRunner'], 60_000);
+    const instrument = save('venus-instrumentation.txt', ['shell', 'am', 'instrument', '-w', '-r', '-e', 'gpuBackendProbe', 'venus', '-e', 'class', 'pro.darc.viruaisor.VenusBackendProbeTest', `${testApplicationId}/androidx.test.runner.AndroidJUnitRunner`], 60_000);
     const capture = save('venus-logcat.txt', ['logcat', '-d', '-T', start, '-b', 'all']);
     const verdict = inspectVenusBackend(capture.stdout);
     fs.writeFileSync(path.join(out, 'venus-verdict.json'), JSON.stringify(verdict, null, 2) + '\n');
