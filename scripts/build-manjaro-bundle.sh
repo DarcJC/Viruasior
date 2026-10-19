@@ -11,6 +11,7 @@ zink="$work/zink25-build/staged/opt/viruaisor/zink25"
 [[ -f "$icd" && -x "$root/usr/bin/startplasma-x11" ]]
 [[ -x "$root/usr/bin/sed" ]]
 [[ -x "$root/usr/bin/xrandr" ]]
+bash "$repo/scripts/install-cjk-fonts.sh" "$root"
 [[ -f "$zink/lib/libgallium-25.0.7.so" && -f "$zink/lib/libEGL_mesa.so.0" && -f "$zink/lib/libGLX_mesa.so.0" && -f "$zink/lib/dri/zink_dri.so" ]]
 [[ -L "$zink/lib/dri/swrast_dri.so" && -L "$zink/lib/dri/kms_swrast_dri.so" ]]
 [[ -f /proc/sys/fs/binfmt_misc/register ]] || mount -t binfmt_misc binfmt_misc /proc/sys/fs/binfmt_misc
@@ -29,6 +30,7 @@ cp -a "$work/kernel-modules/lib/modules/." "$root/usr/lib/modules/"
 make -C "$repo/guest/avf-agent" arm64-static
 make -C "$repo/guest/avf-agent" test
 install -Dm0755 "$repo/guest/avf-agent/avf-agent" "$root/usr/local/sbin/avf-agent"
+install -Dm0644 "$repo/guest/avf-agent/guest-check.py" "$root/opt/viruaisor/guest-check.py"
 install -Dm0644 "$repo/docs/guest/avf-agent.service" "$root/usr/lib/systemd/system/avf-agent.service"
 install -Dm0644 "$repo/guest/plasma/avf-plasma.service" "$root/usr/lib/systemd/system/avf-plasma.service"
 install -m0644 "$repo/guest/plasma/venus.env" "$root/etc/viruaisor/venus.env"

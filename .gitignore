@@ -25,6 +25,8 @@ local.properties
 /app/src/main/jniLibs/**/libvenus_desktop_crosvm.so
 /app/src/main/jniLibs/**/librootfs_e2fsck.so
 /app/src/main/jniLibs/**/librootfs_resize2fs.so
+/app/src/main/jniLibs/**/librootfs_debugfs.so
+/app/src/main/jniLibs/**/librootfs_copy.so
 /app/src/main/assets/third_party/rootfs-tools-notices.txt
 /guest/avf-agent/desktop-protocol-test
 /guest/avf-agent/password-control-test

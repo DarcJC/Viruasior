@@ -142,6 +142,10 @@ check pass. Do not reimport the default image over the user's imported image.
 
 ## Approval point
 
+Approved by the user on 2026-10-20: implement the design, pause external networking
+when the VPN is unavailable, update both image types, verify and commit. The user
+also requested headless testing and closing Virtuaisor/its VM after completion.
+
 Review the scoped kernel forwarding design and the proposed behavior of pausing
 guest external networking when Android VPN is unavailable. Implementation and
 device/image mutations follow design approval.

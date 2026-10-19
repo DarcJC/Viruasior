@@ -108,6 +108,7 @@ class MainActivity : ComponentActivity() {
         useRootDisplay = savedInstanceState?.getBoolean("rootDisplay", false) ?: false
         enableEdgeToEdge()
         lifecycleScope.launch { VmRuntime.initialize(this@MainActivity) }
+        pro.darc.viruaisor.network.VmNetworkRuntime.initialize(this)
         RootRuntime.request(onlyIfIdle = true)
         handleDebugIntent(intent)
         setContent {
@@ -262,6 +263,9 @@ class MainActivity : ComponentActivity() {
             ACTION_DEBUG_STOP -> ContextCompat.startForegroundService(this, VmService.stopIntent(this))
             ACTION_DEBUG_GRANT_AVF -> AvfPermissionRuntime.grantMissing(this)
             ACTION_DEBUG_ROOT_DISPLAY -> useRootDisplay = true
+            (pro.darc.viruaisor.AppIdentity.ACTION_PREFIX + "DEBUG_VPN_MODE") -> {
+                if (!VmRuntime.state.value.isActive) pro.darc.viruaisor.network.VmNetworkRuntime.setEnabled(this, intent.getBooleanExtra("enabled", true))
+            }
             (pro.darc.viruaisor.AppIdentity.ACTION_PREFIX + "DEBUG_ROOTFS_RESIZE") -> ContextCompat.startForegroundService(
                 this,VmService.resizeRootfsIntent(this,intent.getLongExtra("bytes",0)))
             (pro.darc.viruaisor.AppIdentity.ACTION_PREFIX + "DEBUG_ROOTFS_RESTORE") -> ContextCompat.startForegroundService(
@@ -381,6 +385,7 @@ private fun VmScreen(
             if (!fullscreen) {
                 StatusCard(state)
                 StorageCard(state,onResizeRootfs,onRestoreRootfs)
+                VmNetworkCard(state)
                 if (state.display.modes.isNotEmpty()) ResolutionControl(state,onResize)
                 DroidPasswordControl(state.status is VmStatus.GuestAgentReady)
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -417,6 +422,23 @@ private fun VmScreen(
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun VmNetworkCard(state: VmUiState) {
+    val context = LocalContext.current
+    val network by pro.darc.viruaisor.network.VmNetworkRuntime.state.collectAsState()
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("虚拟机网络", style = MaterialTheme.typography.titleMedium)
+            Text(network.message, style = MaterialTheme.typography.bodySmall)
+            OutlinedButton(onClick = { pro.darc.viruaisor.network.VmNetworkRuntime.setEnabled(context, !network.vpn) },
+                enabled = !state.isActive && !state.storage.busy) {
+                Text(if (network.vpn) "切换到普通 AVF 网络" else "启用 Android VPN 共享")
+            }
+            if (network.vpn) Text("VPN 不可用时暂停虚拟机外网；更改模式前先停止 VM。", style = MaterialTheme.typography.bodySmall)
         }
     }
 }

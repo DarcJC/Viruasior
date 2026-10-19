@@ -27,11 +27,14 @@ fi
 make -j"${JOBS:-8}" libs
 make -C e2fsck -j"${JOBS:-8}" e2fsck
 make -C resize -j"${JOBS:-8}" resize2fs
+make -C debugfs -j"${JOBS:-8}" debugfs
 out="$repo/app/src/main/jniLibs/arm64-v8a"
 mkdir -p "$out"
 cp e2fsck/e2fsck "$out/librootfs_e2fsck.so"
 cp resize/resize2fs "$out/librootfs_resize2fs.so"
-"$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" "$out/librootfs_e2fsck.so" "$out/librootfs_resize2fs.so"
+cp debugfs/debugfs "$out/librootfs_debugfs.so"
+"$CC" -O2 -fPIE -pie -Wl,-z,max-page-size=16384 "$repo/native/storage/copy_image.c" "$work/lifetime.o" -o "$out/librootfs_copy.so"
+"$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" "$out/librootfs_e2fsck.so" "$out/librootfs_resize2fs.so" "$out/librootfs_debugfs.so" "$out/librootfs_copy.so"
 mkdir -p "$repo/app/src/main/assets/third_party"
 {
     printf 'e2fsprogs v1.47.2, revision %s\nSource: https://github.com/tytso/e2fsprogs/tree/%s\n\n' "$revision" "$revision"

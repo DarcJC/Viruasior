@@ -40,6 +40,8 @@ android {
         jniLibs.keepDebugSymbols += "**/libvenus_desktop_crosvm.so"
         jniLibs.keepDebugSymbols += "**/librootfs_e2fsck.so"
         jniLibs.keepDebugSymbols += "**/librootfs_resize2fs.so"
+        jniLibs.keepDebugSymbols += "**/librootfs_debugfs.so"
+        jniLibs.keepDebugSymbols += "**/librootfs_copy.so"
     }
 }
 

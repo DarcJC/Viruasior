@@ -6,6 +6,7 @@ if [[ ${1:-} != --isolated ]]; then
     exec unshare --mount --pid --fork --mount-proc --propagation private bash "$0" --isolated
 fi
 work=${MANJARO_WORK_DIR:-/tmp/viruaisor-manjaro}
+repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 root="$work/root"
 [[ "$work" == /tmp/viruaisor-manjaro && -d "$root/usr" && ! -L "$root" ]]
 echo '1ae540a80e21e1ca55e0576df9618fd2865cf4596b8204d20780f225aca5164a  rootfs.tar.gz' | (cd "$work" && sha256sum -c -)
@@ -29,5 +30,6 @@ chroot "$root" /usr/bin/pacman -Syu --noconfirm
 chroot "$root" /usr/bin/pacman -S --needed --noconfirm plasma-desktop plasma-workspace kwin \
     konsole dolphin xorg-server xorg-xinit xorg-xrandr mesa vulkan-virtio vulkan-tools mesa-utils \
     dbus systemd systemd-sysvcompat sudo sed networkmanager pipewire wireplumber qt6-wayland xorg-xwayland
+bash "$repo/scripts/install-cjk-fonts.sh" "$root"
 chroot "$root" /usr/bin/pacman -Q > "$work/packages.txt"
 chroot "$root" /usr/bin/pacman -Qkk plasma-workspace kwin mesa vulkan-virtio > "$work/package-integrity.txt"

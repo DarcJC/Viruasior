@@ -131,6 +131,36 @@ static void handle_client(int fd) {
         int result=valid ? change_droid_password(password,length) : -1;
         explicit_bzero(password,sizeof(password));
         reply(fd,result==0 ? "OK PASSWORD\n" : "ERROR password-update\n");
+    } else if (strcmp(command,"FONT_STATUS")==0 || strcmp(command,"NETWORK_STATUS")==0 ||
+               strcmp(command,"NETWORK_BENCH")==0 || strcmp(command,"CHROMIUM_RENDER")==0) {
+        struct sockaddr_vm peer={0};socklen_t peer_size=sizeof(peer);
+        if(getpeername(fd,(struct sockaddr *)&peer,&peer_size) || peer.svm_family!=AF_VSOCK || peer.svm_cid!=VMADDR_CID_HOST) {
+            reply(fd,"ERROR host-only\n");
+        } else {
+            int output[2];
+            if(pipe2(output,O_CLOEXEC)) { reply(fd,"ERROR guest-check\n");return; }
+            pid_t child=fork();
+            if(child==0) {
+                dup2(output[1],STDOUT_FILENO);close(output[0]);close(output[1]);close(fd);
+                  execl("/usr/bin/timeout","timeout","65","/usr/sbin/runuser","-u","droid","--",
+                      "/usr/bin/python3","/opt/viruaisor/guest-check.py",command,(char *)NULL);
+                _exit(127);
+            }
+            close(output[1]);
+            if(child<0) { close(output[0]);reply(fd,"ERROR guest-check\n");return; }
+            char response[1800]={0};size_t used=0;
+            while(used<sizeof(response)-1) {
+                ssize_t count=read(output[0],response+used,sizeof(response)-1-used);
+                if(count<0 && errno==EINTR) continue;
+                if(count<=0) break;
+                used+=(size_t)count;
+            }
+            close(output[0]);int status=0;
+            while(waitpid(child,&status,0)<0) { if(errno!=EINTR) { status=-1;break; } }
+            if(status==0 && used>0 && response[used-1]=='\n' && strncmp(response,"OK ",3)==0 && strchr(response,'\n')==response+used-1)
+                reply(fd,response);
+            else reply(fd,"ERROR guest-check\n");
+        }
     } else if (strcmp(command, "STORAGE_STATUS") == 0) {
         char status[128];
         reply(fd, storage_status(status, sizeof(status)) == 0 ? status : "ERROR storage-status\n");

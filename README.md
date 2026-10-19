@@ -184,6 +184,9 @@ Binder calls, and attaching a Surface alone does not prove the desktop is render
 
 ## Device diagnostics
 
+Android VPN sharing, Chinese fonts, offline image recovery and screen-off checks
+are documented in [VM VPN and CJK support](docs/vm-vpn-cjk.md).
+
 The Bash helpers accept an `ADB` environment override. Their current default is
 `/c/Tools/Android/platform-tools/adb.exe` for Git Bash on Windows.
 

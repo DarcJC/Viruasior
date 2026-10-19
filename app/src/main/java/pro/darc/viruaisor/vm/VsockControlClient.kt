@@ -24,6 +24,13 @@ class VsockControlClient(private val engine: AvfVmEngine) {
 
     internal fun storageStatus(port: Long) = GuestStorageProtocol.parse(exchange(port, "STORAGE_STATUS", 15_000))
 
+    internal fun guestCheck(port: Long, command: String): String {
+        require(command in setOf("FONT_STATUS", "NETWORK_STATUS", "NETWORK_BENCH", "CHROMIUM_RENDER"))
+        val response = exchange(port, command, 70_000)
+        check(response?.startsWith("OK {") == true) { "Guest check failed: $response" }
+        return response.substring(3)
+    }
+
     fun startDesktop(port: Long, profile: VmGpuProfile) =
         request(port, GuestDesktopProtocol.start(profile), if (profile == VmGpuProfile.VENUS) 95_000 else COMMAND_TIMEOUT_MS)
 

@@ -58,6 +58,8 @@ class VmService : Service() {
     private val desktopStartGate = DesktopStartGate()
     private var foreground = false
     private var venusLease: VenusDesktopLease? = null
+    private var vpnLease: pro.darc.viruaisor.network.VmVpnLease? = null
+    private var runtimeWakeLock: PowerManager.WakeLock? = null
     private val lifecycleMutex=Mutex()
     private val pendingLifecycleCommands = PendingLifecycleCommands()
     private val displayMutex = Mutex()
@@ -77,6 +79,7 @@ class VmService : Service() {
         Log.d(TAG, "onCreate service=${System.identityHashCode(this)}")
         createNotificationChannel()
         storageManager = VmStorageManager(this)
+        pro.darc.viruaisor.network.VmNetworkRuntime.initialize(this)
         val executor = Executor { command ->
             scope.launch { command.run() }
             Unit
@@ -147,6 +150,11 @@ class VmService : Service() {
                 else fail("Prepared Manjaro bundle is missing.")
             }
             ACTION_START -> launchLifecycle { startVm() }
+            (pro.darc.viruaisor.AppIdentity.ACTION_PREFIX + "DEBUG_VPN_MODE") -> {
+                if (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0 &&
+                    !VmRuntime.state.value.isActive) pro.darc.viruaisor.network.VmNetworkRuntime.setEnabled(this, intent.getBooleanExtra("enabled", true))
+                finishForegroundIfIdle()
+            }
             ACTION_STOP -> launchLifecycle { stopVm() }
             ACTION_ROOTFS_RESIZE -> launchLifecycle { resizeRootfs(intent.getLongExtra("bytes", 0)) }
             ACTION_ROOTFS_RESTORE -> launchLifecycle { restoreRootfs() }
@@ -174,6 +182,18 @@ class VmService : Service() {
                 runCatching { engine.sendConsoleInput(intent.getStringExtra(EXTRA_TEXT).orEmpty()) }
                     .onFailure { fail("Console input failed: ${it.rootMessage()}") }
             }
+            (pro.darc.viruaisor.AppIdentity.ACTION_PREFIX + "DEBUG_GUEST_CHECK") -> {
+                val command = intent.getStringExtra("command")
+                if (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0 &&
+                    command in setOf("FONT_STATUS", "NETWORK_STATUS", "NETWORK_BENCH", "CHROMIUM_RENDER")) scope.launch {
+                    val selected = bundle ?: return@launch
+                    val result = runCatching { controlClient.guestCheck(selected.vsockPort, requireNotNull(command)) }
+                    java.io.File(filesDir, "guest-check-$command.json").writeText(result.getOrElse {
+                        org.json.JSONObject().put("ok", false).put("error", it.rootMessage()).toString()
+                    })
+                    Log.i(TAG, "GUEST_CHECK_COMPLETE command=$command success=${result.isSuccess}")
+                }
+            }
             else -> finishForegroundIfIdle()
         }
         return START_NOT_STICKY
@@ -192,9 +212,18 @@ class VmService : Service() {
         displayGeneration++
         InputBackendRegistry.unbind(engine)
         engine.clearCallback()
-        venusLease?.let { lease ->
-            venusLease=null
-            Thread({ engine.requestHardStop(); runCatching { engine.closeStopped() }; lease.close() },"venus-session-dispose").start()
+        val displayLease = venusLease
+        val networkLease = vpnLease
+        venusLease=null; vpnLease=null
+        if (displayLease != null || networkLease != null || runtimeWakeLock != null) {
+            Thread({
+                engine.requestHardStop()
+                runCatching { engine.closeStopped() }
+                try { displayLease?.close() } finally {
+                    runCatching { networkLease?.close() }
+                    releaseRuntimeWakeLock()
+                }
+            },"venus-session-dispose").start()
         }
         scope.cancel()
         super.onDestroy()
@@ -269,6 +298,10 @@ class VmService : Service() {
             return
         }
         if (state.isActive) return
+        if (java.io.File(importedBundle.directory, ".guest-maintenance").exists()) {
+            fail("Guest 镜像维护未完成；请完成更新或从保留副本恢复。")
+            return
+        }
 
         try {
             engine.requireStopped()
@@ -301,6 +334,25 @@ class VmService : Service() {
         VmRuntime.setStatus(VmStatus.Starting, "VM starting")
         updateNotification("VM starting")
         try {
+            // Keep VM CPU work awake for this session without waking the display.
+            // Vendor freezing can still suspend it; no power policy is changed.
+            runtimeWakeLock = getSystemService(PowerManager::class.java).newWakeLock(
+                PowerManager.PARTIAL_WAKE_LOCK, "$packageName:vm-runtime").apply { acquire(24 * 60 * 60 * 1000L) }
+            if (selectedBundle.network && pro.darc.viruaisor.network.VmNetworkRuntime.state.value.vpn) {
+                val generation = displayGeneration
+                val network = pro.darc.viruaisor.network.VmVpnLease(this, scope) { error ->
+                    scope.launch { lifecycleMutex.withLock {
+                        if (generation != displayGeneration) return@withLock
+                        engine.requestHardStop()
+                        runCatching { engine.closeStopped() }
+                        closeVenusLease()
+                        closeVpnLease()
+                        fail("VPN sharing failed: ${error.rootMessage()}")
+                    } }
+                }
+                vpnLease = network
+                network.open()
+            }
             if (selectedBundle.gpuProfile == VmGpuProfile.VENUS) {
                 val leaseGeneration = displayGeneration
                 val lease=VenusDesktopLease(this) { error ->
@@ -310,6 +362,7 @@ class VmService : Service() {
                             engine.requestHardStop()
                             runCatching { engine.closeStopped() }
                             closeVenusLease()
+                            closeVpnLease()
                             if (pendingRootfsBoot) rollbackBoot("Venus runtime lost: ${error.rootMessage()}")
                             else fail("Venus runtime lost: ${error.rootMessage()}")
                         }
@@ -337,6 +390,7 @@ class VmService : Service() {
             engine.requestHardStop()
             runCatching { engine.closeStopped() }
             closeVenusLease()
+            closeVpnLease()
             fail("VM startup failed: ${error.rootMessage()}")
             if (pendingRootfsBoot) rollbackBoot("新根盘启动失败，已尝试恢复原盘。")
         }
@@ -349,6 +403,7 @@ class VmService : Service() {
         engine.requireStopped()
         engine.closeStopped()
         closeVenusLease()
+        closeVpnLease()
         withTimeout(8_000) {
             while (VmSharedStorage.backends(this@VmService).isNotEmpty()) delay(100)
         }
@@ -533,6 +588,7 @@ class VmService : Service() {
                         engine.requestHardStop()
                         runCatching { engine.closeStopped() }
                         closeVenusLease()
+                        closeVpnLease()
                         if (pendingRootfsBoot) rollbackBoot("VM error: ${event.message}")
                         else fail("VM error: ${event.message}")
                     }
@@ -555,6 +611,7 @@ class VmService : Service() {
                     if (stoppedGeneration != displayGeneration) return@withLock
                     engine.closeStopped()
                     if (venusLease === stoppedLease) closeVenusLease()
+                    closeVpnLease()
                     if (unverifiedAtStop && pendingRootfsBoot && !storageOperation)
                         rollbackBoot("新根盘在完成验证前停止，已尝试恢复原盘。")
                     finishForegroundIfIdle()
@@ -641,6 +698,18 @@ class VmService : Service() {
         val lease=venusLease ?: return
         venusLease=null
         lease.close()
+    }
+
+    private fun closeVpnLease() {
+        val lease = vpnLease
+        vpnLease = null
+        try { runCatching { lease?.close() }.onFailure { Log.e(TAG, "VPN cleanup incomplete; scoped guard retained", it) } }
+        finally { releaseRuntimeWakeLock() }
+    }
+
+    @Synchronized private fun releaseRuntimeWakeLock() {
+        runtimeWakeLock?.let { if (it.isHeld) it.release() }
+        runtimeWakeLock = null
     }
 
     private fun fail(message: String) {
