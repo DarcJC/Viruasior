@@ -1770,3 +1770,101 @@ shows one guest cursor. These baseline repeats are not evidence of an
 optimization gain. The stable-120/native-60 goal remains open; GPU completion
 handoff and the remaining time outside proxy waiting require further work.
 The VM and bounded guest screen inhibitor remain active for that investigation.
+
+## Producer acquire-fence experiment rejected (2026-10-19)
+
+The next experiment exports producer GPU completion as a sync-fd, carries it
+through the display Binder transaction, and supplies it to the Android Surface
+instead of completing the wait inside each renderer proxy. This tests the
+GPU-wait contribution identified above. It does not change Android settings,
+SELinux policy, grants, or CPU affinity, and does not bind work to prime cores.
+All prototype source changes and binaries are now removed from the production
+checkout and runtime. Private evidence is under
+`.pi/device-debug/touch-perf-20261018/producer-acquire/`.
+
+An ordinary Android shell process first verifies the native Vulkan operation
+on the actual Mali GPU. Sixteen iterations each check 1,024 GPU-written words,
+a pending exported fence before a delayed timeline signal, and completion
+afterward. The probe submits the work without a fence and attaches an
+exportable fence with a subsequent empty queue submission, matching the
+prototype. Merged fences remain pending until both inputs complete, including
+inputs from two independent Vulkan devices; closing the original descriptors
+does not break that dependency. Mean export time is 0.374 microseconds in this
+probe. These checks establish capability, not integrated-renderer correctness.
+The bounded eight-entry queue pool also passes its standalone lifetime/error
+tests with address and undefined-behavior sanitizers. Existing display-batch
+tests pass all five cases.
+
+The first integrated prototype exposes a separate Binder framing issue: on
+this device, Java HardwareBuffer decoding advances twelve bytes beyond the
+NDK-written payload when another object follows it. A minimal JNI/Java parcel
+probe reproduces the failure. Placing the nullable fence descriptor before
+the HardwareBuffer, leaving the buffer last, passes valid/null descriptor
+cases with and without a buffer and leaves no unread parcel data. That repair
+allows the prototype to display correct RGB colors and moving guest frames.
+It remains archived with the rejected prototype and is not shipped.
+
+Direct SurfaceControl acquire-fence submission makes SurfaceFlinger's
+reported actual-present timestamp stay fixed at `12868050659424`, while its
+desired and frame-ready timestamps continue advancing. Its frame count is
+therefore unusable for an fps comparison. The Android screenshot animation
+continues to move. A diagnostic trace records continued composition and
+present calls, but its frame timeline reports `Unspecified Present` and the
+trace has 925 `slice_max_depth_exceeded` errors. Neither those calls nor that
+trace establish physical 120 fps; the underlying timestamp failure is not
+isolated further.
+
+A second variant waits for the exported fence after the existing App cadence
+delay, then submits the buffer with no SurfaceControl acquire fence. This
+restores advancing presentation timestamps. Untraced motion-probe results are:
+
+| Capture | Runtime / mode | Seconds | Actual fps | p95 / p99 / max ms | >20 ms |
+| --- | --- | ---: | ---: | ---: | ---: |
+| `acquire-before-wide` | Baseline, 1920×1200 | 60.050 | 117.585 | 8.377 / 16.666 / 25.019 | 1 |
+| `acquire-late-wait-wide` | Exported fence, late CPU wait, 1920×1200 | 60.033 | 117.268 | 8.372 / 16.667 / 16.792 | 0 |
+| `acquire-restored-wide` | Restored baseline, 1920×1200 | 59.900 | 115.476 | 8.386 / 16.673 / 25.006 | 3 |
+| `acquire-restored-native` | Restored baseline, 3408×2272 | 59.383 | 60.000 | 16.687 / 16.705 / 33.387 | 2 |
+
+All four captures pass RGB, motion and corner checks and have overlapping
+timestamp snapshots throughout: 115, 115, 112 and 65 snapshots respectively.
+The late-wait result falls within baseline variation and does not improve
+p99. The native mean of 60 fps still includes two intervals longer than 20 ms;
+it is not proof of uniformly smooth 60 fps. The direct acquire-fence capture
+is deliberately excluded from this table.
+
+More decisively, the existing guest GPU dependency regression fails on the
+late-wait candidate: its baseline mode first times out, then a line-buffered
+retry reaches export and separate-instance consumer submission before
+aborting with a Venus ring fatal error. After restoration, the same four
+modes (baseline, async, foreign, nonzink) all pass, including the DMA-BUF
+dependency and all 1,024 GPU-written words. The candidate's exact failure
+mechanism remains unresolved, but this confirms a compatibility regression
+and is sufficient to reject it. Native-resolution candidate measurements are
+not continued after that failure.
+
+Restoration verifies the installed APK as SHA-256
+`e1f20f862f3315d2e0f8d027bff053eedc7ee80749bf89acc0fa27edfca763bc`
+and the running VM executable as
+`d8f16c579ead776979eacfed8eab138aef776780bcc95bef155f0d61547bb9c7`.
+A normal native rebuild produces that identical 14,118,808-byte executable.
+Restoring source files with their old modification times initially left stale
+candidate objects in the local build cache; touching the restored sources
+before rebuilding resolves this. Android unit tests and debug assembly pass.
+
+The existing root bridge is available (PID 17482); the App retains its existing
+MANAGE_VIRTUAL_MACHINE and USE_CUSTOM_VIRTUAL_MACHINE grants. AVF boots VM
+17529, the fullscreen Surface is attached, and real Android screenshots show
+the complete animated guest desktop and one cursor. SELinux is Enforcing.
+Xorg 382 and KWin 475 remain uid 1000 on cores 4–7 with their own-PID sync-fd
+scope, original Xorg/launcher/effect hashes, and no experimental overrides.
+droid remains locked. Root frame logs show 23–31 Binder proxies and no frame
+submission/release errors across 22,140 reported frames.
+
+Escape down/up reaches the guest while Android focus stays in the App. Five
+touch targets at native resolution and again after switching to 1920×1200
+are within one guest pixel, with the VM PID unchanged. The first touch-check
+attempt finds no serial records because the restarted motion probe writes to
+a temporary file; a fresh direct XQueryPointer check provides the successful
+current-session coordinate evidence. The App is left fullscreen at 1920×1200
+with the VM available for continued investigation. No performance code from
+this experiment is retained. The stable-120/native-60 goal remains open.
