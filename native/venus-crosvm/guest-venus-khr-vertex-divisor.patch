@@ -1,0 +1,324 @@
+--- a/src/virtio/vulkan/vn_physical_device.c
++++ b/src/virtio/vulkan/vn_physical_device.c
+@@ -298,7 +298,7 @@
+    VN_ADD_PNEXT_EXT(feats2, RASTERIZATION_ORDER_ATTACHMENT_ACCESS_FEATURES_EXT, local_feats.rasterization_order_attachment_access, exts->EXT_rasterization_order_attachment_access);
+    VN_ADD_PNEXT_EXT(feats2, ROBUSTNESS_2_FEATURES_EXT, local_feats.robustness_2, exts->EXT_robustness2);
+    VN_ADD_PNEXT_EXT(feats2, TRANSFORM_FEEDBACK_FEATURES_EXT, local_feats.transform_feedback, exts->EXT_transform_feedback);
+-   VN_ADD_PNEXT_EXT(feats2, VERTEX_ATTRIBUTE_DIVISOR_FEATURES_EXT, local_feats.vertex_attribute_divisor, exts->EXT_vertex_attribute_divisor);
++   VN_ADD_PNEXT_EXT(feats2, VERTEX_ATTRIBUTE_DIVISOR_FEATURES_EXT, local_feats.vertex_attribute_divisor, exts->EXT_vertex_attribute_divisor || exts->KHR_vertex_attribute_divisor);
+    VN_ADD_PNEXT_EXT(feats2, VERTEX_INPUT_DYNAMIC_STATE_FEATURES_EXT, local_feats.vertex_input_dynamic_state, exts->EXT_vertex_input_dynamic_state);
+
+    /* clang-format on */
+@@ -496,6 +496,7 @@
+       VkPhysicalDeviceMaintenance5PropertiesKHR maintenance_5;
+       VkPhysicalDevicePushDescriptorPropertiesKHR push_descriptor;
+       VkPhysicalDeviceFragmentShadingRatePropertiesKHR fragment_shading_rate;
++      VkPhysicalDeviceVertexAttributeDivisorPropertiesKHR vertex_attribute_divisor_khr;
+
+       /* EXT */
+       VkPhysicalDeviceConservativeRasterizationPropertiesEXT
+@@ -570,6 +571,7 @@
+    VN_ADD_PNEXT_EXT(props2, ROBUSTNESS_2_PROPERTIES_EXT, local_props.robustness_2, exts->EXT_robustness2);
+    VN_ADD_PNEXT_EXT(props2, TRANSFORM_FEEDBACK_PROPERTIES_EXT, local_props.transform_feedback, exts->EXT_transform_feedback);
+    VN_ADD_PNEXT_EXT(props2, VERTEX_ATTRIBUTE_DIVISOR_PROPERTIES_EXT, local_props.vertex_attribute_divisor, exts->EXT_vertex_attribute_divisor);
++   VN_ADD_PNEXT_EXT(props2, VERTEX_ATTRIBUTE_DIVISOR_PROPERTIES_KHR, local_props.vertex_attribute_divisor_khr, exts->KHR_vertex_attribute_divisor);
+
+    /* clang-format on */
+
+@@ -632,6 +634,7 @@
+    VN_SET_VK_PROPS_EXT(props, &local_props.robustness_2, exts->EXT_robustness2);
+    VN_SET_VK_PROPS_EXT(props, &local_props.transform_feedback, exts->EXT_transform_feedback);
+    VN_SET_VK_PROPS_EXT(props, &local_props.vertex_attribute_divisor, exts->EXT_vertex_attribute_divisor);
++   VN_SET_VK_PROPS_EXT(props, &local_props.vertex_attribute_divisor_khr, exts->KHR_vertex_attribute_divisor);
+
+    /* clang-format on */
+
+@@ -1088,6 +1091,7 @@
+       .EXT_shader_subgroup_ballot = true,
+       .EXT_transform_feedback = true,
+       .EXT_vertex_attribute_divisor = true,
++      .KHR_vertex_attribute_divisor = true,
+       .EXT_vertex_input_dynamic_state = true,
+
+       /* vendor */
+--- a/src/virtio/venus-protocol/vn_protocol_driver_info.h
++++ b/src/virtio/venus-protocol/vn_protocol_driver_info.h
+@@ -10,7 +10,7 @@
+
+ #include "vn_protocol_driver_defines.h"
+
+-#define VN_INFO_EXTENSION_MAX_NUMBER (500)
++#define VN_INFO_EXTENSION_MAX_NUMBER (526)
+
+ struct vn_info_extension {
+    const char *name;
+@@ -19,8 +19,8 @@
+ };
+
+ /* sorted by extension names for bsearch */
+-static const uint32_t _vn_info_extension_count = 118;
+-static const struct vn_info_extension _vn_info_extensions[118] = {
++static const uint32_t _vn_info_extension_count = 119;
++static const struct vn_info_extension _vn_info_extensions[119] = {
+    { "VK_EXT_4444_formats", 341, 1 },
+    { "VK_EXT_attachment_feedback_loop_layout", 340, 2 },
+    { "VK_EXT_border_color_swizzle", 412, 1 },
+@@ -135,6 +135,7 @@
+    { "VK_KHR_timeline_semaphore", 208, 2 },
+    { "VK_KHR_uniform_buffer_standard_layout", 254, 1 },
+    { "VK_KHR_variable_pointers", 121, 1 },
++   { "VK_KHR_vertex_attribute_divisor", 526, 1 },
+    { "VK_KHR_vulkan_memory_model", 212, 3 },
+    { "VK_KHR_zero_initialize_workgroup_memory", 326, 1 },
+    { "VK_MESA_venus_protocol", 385, 2 },
+--- a/src/virtio/venus-protocol/vn_protocol_driver_device.h
++++ b/src/virtio/venus-protocol/vn_protocol_driver_device.h
+@@ -11288,7 +11288,7 @@
+             size += vn_sizeof_VkPhysicalDeviceShaderAtomicInt64Features_self((const VkPhysicalDeviceShaderAtomicInt64Features *)pnext);
+             return size;
+         case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_FEATURES_EXT:
+-            if (!vn_cs_renderer_protocol_has_extension(191 /* VK_EXT_vertex_attribute_divisor */))
++            if (!vn_cs_renderer_protocol_has_extension(191 /* VK_EXT_vertex_attribute_divisor */) && !vn_cs_renderer_protocol_has_extension(526 /* VK_KHR_vertex_attribute_divisor */))
+                 break;
+             size += vn_sizeof_simple_pointer(pnext);
+             size += vn_sizeof_VkStructureType(&pnext->sType);
+@@ -11836,7 +11836,7 @@
+             vn_encode_VkPhysicalDeviceShaderAtomicInt64Features_self(enc, (const VkPhysicalDeviceShaderAtomicInt64Features *)pnext);
+             return;
+         case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_FEATURES_EXT:
+-            if (!vn_cs_renderer_protocol_has_extension(191 /* VK_EXT_vertex_attribute_divisor */))
++            if (!vn_cs_renderer_protocol_has_extension(191 /* VK_EXT_vertex_attribute_divisor */) && !vn_cs_renderer_protocol_has_extension(526 /* VK_KHR_vertex_attribute_divisor */))
+                 break;
+             vn_encode_simple_pointer(enc, pnext);
+             vn_encode_VkStructureType(enc, &pnext->sType);
+@@ -12700,7 +12700,7 @@
+             size += vn_sizeof_VkPhysicalDeviceShaderAtomicInt64Features_self_partial((const VkPhysicalDeviceShaderAtomicInt64Features *)pnext);
+             return size;
+         case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_FEATURES_EXT:
+-            if (!vn_cs_renderer_protocol_has_extension(191 /* VK_EXT_vertex_attribute_divisor */))
++            if (!vn_cs_renderer_protocol_has_extension(191 /* VK_EXT_vertex_attribute_divisor */) && !vn_cs_renderer_protocol_has_extension(526 /* VK_KHR_vertex_attribute_divisor */))
+                 break;
+             size += vn_sizeof_simple_pointer(pnext);
+             size += vn_sizeof_VkStructureType(&pnext->sType);
+@@ -13248,7 +13248,7 @@
+             vn_encode_VkPhysicalDeviceShaderAtomicInt64Features_self_partial(enc, (const VkPhysicalDeviceShaderAtomicInt64Features *)pnext);
+             return;
+         case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_FEATURES_EXT:
+-            if (!vn_cs_renderer_protocol_has_extension(191 /* VK_EXT_vertex_attribute_divisor */))
++            if (!vn_cs_renderer_protocol_has_extension(191 /* VK_EXT_vertex_attribute_divisor */) && !vn_cs_renderer_protocol_has_extension(526 /* VK_KHR_vertex_attribute_divisor */))
+                 break;
+             vn_encode_simple_pointer(enc, pnext);
+             vn_encode_VkStructureType(enc, &pnext->sType);
+@@ -13881,7 +13881,7 @@
+             size += vn_sizeof_VkPhysicalDeviceShaderAtomicInt64Features_self((const VkPhysicalDeviceShaderAtomicInt64Features *)pnext);
+             return size;
+         case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_FEATURES_EXT:
+-            if (!vn_cs_renderer_protocol_has_extension(191 /* VK_EXT_vertex_attribute_divisor */))
++            if (!vn_cs_renderer_protocol_has_extension(191 /* VK_EXT_vertex_attribute_divisor */) && !vn_cs_renderer_protocol_has_extension(526 /* VK_KHR_vertex_attribute_divisor */))
+                 break;
+             size += vn_sizeof_simple_pointer(pnext);
+             size += vn_sizeof_VkStructureType(&pnext->sType);
+@@ -14482,7 +14482,7 @@
+             vn_encode_VkPhysicalDeviceShaderAtomicInt64Features_self(enc, (const VkPhysicalDeviceShaderAtomicInt64Features *)pnext);
+             return;
+         case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_FEATURES_EXT:
+-            if (!vn_cs_renderer_protocol_has_extension(191 /* VK_EXT_vertex_attribute_divisor */))
++            if (!vn_cs_renderer_protocol_has_extension(191 /* VK_EXT_vertex_attribute_divisor */) && !vn_cs_renderer_protocol_has_extension(526 /* VK_KHR_vertex_attribute_divisor */))
+                 break;
+             vn_encode_simple_pointer(enc, pnext);
+             vn_encode_VkStructureType(enc, &pnext->sType);
+@@ -19655,6 +19655,118 @@
+     vn_encode_VkPhysicalDeviceGraphicsPipelineLibraryPropertiesEXT_self_partial(enc, val);
+ }
+
++/* struct VkPhysicalDeviceVertexAttributeDivisorPropertiesKHR chain */
++
++static inline size_t
++vn_sizeof_VkPhysicalDeviceVertexAttributeDivisorPropertiesKHR_pnext(const void *val)
++{
++    /* no known/supported struct */
++    return vn_sizeof_simple_pointer(NULL);
++}
++
++static inline size_t
++vn_sizeof_VkPhysicalDeviceVertexAttributeDivisorPropertiesKHR_self(const VkPhysicalDeviceVertexAttributeDivisorPropertiesKHR *val)
++{
++    size_t size = 0;
++    /* skip val->{sType,pNext} */
++    size += vn_sizeof_uint32_t(&val->maxVertexAttribDivisor);
++    size += vn_sizeof_VkBool32(&val->supportsNonZeroFirstInstance);
++    return size;
++}
++
++static inline size_t
++vn_sizeof_VkPhysicalDeviceVertexAttributeDivisorPropertiesKHR(const VkPhysicalDeviceVertexAttributeDivisorPropertiesKHR *val)
++{
++    size_t size = 0;
++
++    size += vn_sizeof_VkStructureType(&val->sType);
++    size += vn_sizeof_VkPhysicalDeviceVertexAttributeDivisorPropertiesKHR_pnext(val->pNext);
++    size += vn_sizeof_VkPhysicalDeviceVertexAttributeDivisorPropertiesKHR_self(val);
++
++    return size;
++}
++
++static inline void
++vn_decode_VkPhysicalDeviceVertexAttributeDivisorPropertiesKHR_pnext(struct vn_cs_decoder *dec, const void *val)
++{
++    /* no known/supported struct */
++    if (vn_decode_simple_pointer(dec))
++        assert(false);
++}
++
++static inline void
++vn_decode_VkPhysicalDeviceVertexAttributeDivisorPropertiesKHR_self(struct vn_cs_decoder *dec, VkPhysicalDeviceVertexAttributeDivisorPropertiesKHR *val)
++{
++    /* skip val->{sType,pNext} */
++    vn_decode_uint32_t(dec, &val->maxVertexAttribDivisor);
++    vn_decode_VkBool32(dec, &val->supportsNonZeroFirstInstance);
++}
++
++static inline void
++vn_decode_VkPhysicalDeviceVertexAttributeDivisorPropertiesKHR(struct vn_cs_decoder *dec, VkPhysicalDeviceVertexAttributeDivisorPropertiesKHR *val)
++{
++    VkStructureType stype;
++    vn_decode_VkStructureType(dec, &stype);
++    assert(stype == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_PROPERTIES_KHR);
++
++    assert(val->sType == stype);
++    vn_decode_VkPhysicalDeviceVertexAttributeDivisorPropertiesKHR_pnext(dec, val->pNext);
++    vn_decode_VkPhysicalDeviceVertexAttributeDivisorPropertiesKHR_self(dec, val);
++}
++
++static inline size_t
++vn_sizeof_VkPhysicalDeviceVertexAttributeDivisorPropertiesKHR_pnext_partial(const void *val)
++{
++    /* no known/supported struct */
++    return vn_sizeof_simple_pointer(NULL);
++}
++
++static inline size_t
++vn_sizeof_VkPhysicalDeviceVertexAttributeDivisorPropertiesKHR_self_partial(const VkPhysicalDeviceVertexAttributeDivisorPropertiesKHR *val)
++{
++    size_t size = 0;
++    /* skip val->{sType,pNext} */
++    /* skip val->maxVertexAttribDivisor */
++    /* skip val->supportsNonZeroFirstInstance */
++    return size;
++}
++
++static inline size_t
++vn_sizeof_VkPhysicalDeviceVertexAttributeDivisorPropertiesKHR_partial(const VkPhysicalDeviceVertexAttributeDivisorPropertiesKHR *val)
++{
++    size_t size = 0;
++
++    size += vn_sizeof_VkStructureType(&val->sType);
++    size += vn_sizeof_VkPhysicalDeviceVertexAttributeDivisorPropertiesKHR_pnext_partial(val->pNext);
++    size += vn_sizeof_VkPhysicalDeviceVertexAttributeDivisorPropertiesKHR_self_partial(val);
++
++    return size;
++}
++
++static inline void
++vn_encode_VkPhysicalDeviceVertexAttributeDivisorPropertiesKHR_pnext_partial(struct vn_cs_encoder *enc, const void *val)
++{
++    /* no known/supported struct */
++    vn_encode_simple_pointer(enc, NULL);
++}
++
++static inline void
++vn_encode_VkPhysicalDeviceVertexAttributeDivisorPropertiesKHR_self_partial(struct vn_cs_encoder *enc, const VkPhysicalDeviceVertexAttributeDivisorPropertiesKHR *val)
++{
++    /* skip val->{sType,pNext} */
++    /* skip val->maxVertexAttribDivisor */
++    /* skip val->supportsNonZeroFirstInstance */
++}
++
++static inline void
++vn_encode_VkPhysicalDeviceVertexAttributeDivisorPropertiesKHR_partial(struct vn_cs_encoder *enc, const VkPhysicalDeviceVertexAttributeDivisorPropertiesKHR *val)
++{
++    assert(val->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_PROPERTIES_KHR);
++    vn_encode_VkStructureType(enc, &(VkStructureType){ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_PROPERTIES_KHR });
++    vn_encode_VkPhysicalDeviceVertexAttributeDivisorPropertiesKHR_pnext_partial(enc, val->pNext);
++    vn_encode_VkPhysicalDeviceVertexAttributeDivisorPropertiesKHR_self_partial(enc, val);
++}
++
+ /* struct VkPhysicalDeviceProperties2 chain */
+
+ static inline size_t
+@@ -19909,6 +20021,14 @@
+             size += vn_sizeof_VkPhysicalDeviceProperties2_pnext(pnext->pNext);
+             size += vn_sizeof_VkPhysicalDeviceGraphicsPipelineLibraryPropertiesEXT_self((const VkPhysicalDeviceGraphicsPipelineLibraryPropertiesEXT *)pnext);
+             return size;
++        case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_PROPERTIES_KHR:
++            if (!vn_cs_renderer_protocol_has_extension(526 /* VK_KHR_vertex_attribute_divisor */))
++                break;
++            size += vn_sizeof_simple_pointer(pnext);
++            size += vn_sizeof_VkStructureType(&pnext->sType);
++            size += vn_sizeof_VkPhysicalDeviceProperties2_pnext(pnext->pNext);
++            size += vn_sizeof_VkPhysicalDeviceVertexAttributeDivisorPropertiesKHR_self((const VkPhysicalDeviceVertexAttributeDivisorPropertiesKHR *)pnext);
++            return size;
+         default:
+             /* ignore unknown/unsupported struct */
+             break;
+@@ -20095,6 +20215,10 @@
+         vn_decode_VkPhysicalDeviceProperties2_pnext(dec, pnext->pNext);
+         vn_decode_VkPhysicalDeviceGraphicsPipelineLibraryPropertiesEXT_self(dec, (VkPhysicalDeviceGraphicsPipelineLibraryPropertiesEXT *)pnext);
+         break;
++    case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_PROPERTIES_KHR:
++        vn_decode_VkPhysicalDeviceProperties2_pnext(dec, pnext->pNext);
++        vn_decode_VkPhysicalDeviceVertexAttributeDivisorPropertiesKHR_self(dec, (VkPhysicalDeviceVertexAttributeDivisorPropertiesKHR *)pnext);
++        break;
+     default:
+         assert(false);
+         break;
+@@ -20372,6 +20496,14 @@
+             size += vn_sizeof_VkPhysicalDeviceProperties2_pnext_partial(pnext->pNext);
+             size += vn_sizeof_VkPhysicalDeviceGraphicsPipelineLibraryPropertiesEXT_self_partial((const VkPhysicalDeviceGraphicsPipelineLibraryPropertiesEXT *)pnext);
+             return size;
++        case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_PROPERTIES_KHR:
++            if (!vn_cs_renderer_protocol_has_extension(526 /* VK_KHR_vertex_attribute_divisor */))
++                break;
++            size += vn_sizeof_simple_pointer(pnext);
++            size += vn_sizeof_VkStructureType(&pnext->sType);
++            size += vn_sizeof_VkPhysicalDeviceProperties2_pnext_partial(pnext->pNext);
++            size += vn_sizeof_VkPhysicalDeviceVertexAttributeDivisorPropertiesKHR_self_partial((const VkPhysicalDeviceVertexAttributeDivisorPropertiesKHR *)pnext);
++            return size;
+         default:
+             /* ignore unknown/unsupported struct */
+             break;
+@@ -20654,6 +20786,14 @@
+             vn_encode_VkPhysicalDeviceProperties2_pnext_partial(enc, pnext->pNext);
+             vn_encode_VkPhysicalDeviceGraphicsPipelineLibraryPropertiesEXT_self_partial(enc, (const VkPhysicalDeviceGraphicsPipelineLibraryPropertiesEXT *)pnext);
+             return;
++        case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_PROPERTIES_KHR:
++            if (!vn_cs_renderer_protocol_has_extension(526 /* VK_KHR_vertex_attribute_divisor */))
++                break;
++            vn_encode_simple_pointer(enc, pnext);
++            vn_encode_VkStructureType(enc, &pnext->sType);
++            vn_encode_VkPhysicalDeviceProperties2_pnext_partial(enc, pnext->pNext);
++            vn_encode_VkPhysicalDeviceVertexAttributeDivisorPropertiesKHR_self_partial(enc, (const VkPhysicalDeviceVertexAttributeDivisorPropertiesKHR *)pnext);
++            return;
+         default:
+             /* ignore unknown/unsupported struct */
+             break;
+--- a/src/virtio/venus-protocol/vn_protocol_driver_pipeline.h
++++ b/src/virtio/venus-protocol/vn_protocol_driver_pipeline.h
+@@ -391,7 +391,7 @@
+     while (pnext) {
+         switch ((int32_t)pnext->sType) {
+         case VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_DIVISOR_STATE_CREATE_INFO_EXT:
+-            if (!vn_cs_renderer_protocol_has_extension(191 /* VK_EXT_vertex_attribute_divisor */))
++            if (!vn_cs_renderer_protocol_has_extension(191 /* VK_EXT_vertex_attribute_divisor */) && !vn_cs_renderer_protocol_has_extension(526 /* VK_KHR_vertex_attribute_divisor */))
+                 break;
+             size += vn_sizeof_simple_pointer(pnext);
+             size += vn_sizeof_VkStructureType(&pnext->sType);
+@@ -453,7 +453,7 @@
+     while (pnext) {
+         switch ((int32_t)pnext->sType) {
+         case VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_DIVISOR_STATE_CREATE_INFO_EXT:
+-            if (!vn_cs_renderer_protocol_has_extension(191 /* VK_EXT_vertex_attribute_divisor */))
++            if (!vn_cs_renderer_protocol_has_extension(191 /* VK_EXT_vertex_attribute_divisor */) && !vn_cs_renderer_protocol_has_extension(526 /* VK_KHR_vertex_attribute_divisor */))
+                 break;
+             vn_encode_simple_pointer(enc, pnext);
+             vn_encode_VkStructureType(enc, &pnext->sType);

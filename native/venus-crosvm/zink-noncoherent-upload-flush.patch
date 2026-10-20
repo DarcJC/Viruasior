@@ -1,0 +1,115 @@
+--- a/src/gallium/drivers/zink/zink_context.c
++++ b/src/gallium/drivers/zink/zink_context.c
+@@ -1526,6 +1526,9 @@
+          u_upload_data(ctx->base.const_uploader, 0, cb->buffer_size,
+                        screen->info.props.limits.minUniformBufferOffsetAlignment,
+                        cb->user_buffer, &offset, &buffer);
++         /* Non-coherent uploaders must publish CPU writes before GPU use.
++          * This is a no-op for persistent coherent mappings. */
++         u_upload_unmap(ctx->base.const_uploader);
+       }
+       struct zink_resource *new_res = zink_resource(buffer);
+       if (new_res) {
+--- a/src/gallium/auxiliary/util/u_threaded_context.c
++++ b/src/gallium/auxiliary/util/u_threaded_context.c
+@@ -2764,6 +2764,10 @@
+                (box->x - ttrans->b.box.x),
+                box->width, &src_box);
+
++      /* Queue the non-coherent uploader flush before the GPU staging copy.
++       * Persistent coherent uploaders need no explicit unmap. */
++      u_upload_unmap(tc->base.stream_uploader);
++
+       /* Copy the staging buffer into the original one. */
+       tc_resource_copy_region(&tc->base, ttrans->b.resource, 0, box->x, 0, 0,
+                               ttrans->staging, 0, &src_box);
+@@ -3868,6 +3872,7 @@
+                  &offset, &buffer);
+    if (unlikely(!buffer))
+       return;
++   u_upload_unmap(tc->base.stream_uploader);
+
+    struct tc_draw_single *p =
+       tc_add_call(tc, TC_CALL_draw_single, tc_draw_single);
+@@ -3907,6 +3912,7 @@
+                  &offset, &buffer);
+    if (unlikely(!buffer))
+       return;
++   u_upload_unmap(tc->base.stream_uploader);
+
+    struct tc_draw_single *p =
+       &tc_add_call(tc, TC_CALL_draw_single_drawid, tc_draw_single_drawid)->base;
+@@ -4005,6 +4011,20 @@
+    if (unlikely(!buffer))
+       return;
+
++   const bool coherent = _pipe->screen->caps.buffer_map_persistent_coherent;
++   if (!coherent) {
++      unsigned upload_offset = 0;
++      for (unsigned i = 0; i < num_draws; i++) {
++         unsigned size = draws[i].count << index_size_shift;
++         if (size)
++            memcpy(ptr + upload_offset, (uint8_t*)info->index.user +
++                   (draws[i].start << index_size_shift), size);
++         upload_offset += size;
++      }
++      /* Publish every index before a full command batch can run on the GPU. */
++      u_upload_unmap(tc->base.stream_uploader);
++   }
++
+    int total_offset = 0;
+    unsigned offset = 0;
+    while (num_draws) {
+@@ -4046,9 +4066,10 @@
+          }
+
+          unsigned size = count << index_size_shift;
+-         memcpy(ptr + offset,
+-                (uint8_t*)info->index.user +
+-                (draws[i + total_offset].start << index_size_shift), size);
++         if (coherent)
++            memcpy(ptr + offset,
++                   (uint8_t*)info->index.user +
++                   (draws[i + total_offset].start << index_size_shift), size);
+          p->slot[i].start = (buffer_offset + offset) >> index_size_shift;
+          p->slot[i].count = count;
+          p->slot[i].index_bias = draws[i + total_offset].index_bias;
+--- a/src/gallium/drivers/zink/zink_resource.c
++++ b/src/gallium/drivers/zink/zink_resource.c
+@@ -2642,6 +2642,15 @@
+       }
+
+       ptr = map_resource(screen, staging_res);
++      if (ptr && (usage & PIPE_MAP_READ) && !staging_res->obj->coherent) {
++         VkMappedMemoryRange range = zink_resource_init_mem_range(screen, staging_res->obj,
++                                                                 staging_res->obj->offset,
++                                                                 staging_res->obj->size);
++         if (VKSCR(InvalidateMappedMemoryRanges)(screen->dev, 1, &range) != VK_SUCCESS) {
++            mesa_loge("ZINK: vkInvalidateMappedMemoryRanges failed");
++            goto fail;
++         }
++      }
+    } else {
+       assert(res->linear);
+       ptr = map_resource(screen, res);
+@@ -2673,11 +2682,15 @@
+                         box->z * srl.depthPitch +
+                         (box->y / desc->block.height) * srl.rowPitch +
+                         (box->x / desc->block.width) * (desc->block.bits / 8);
+-      if (!res->obj->coherent) {
+-         VkDeviceSize size = (VkDeviceSize)box->width * box->height * desc->block.bits / 8;
+-         VkMappedMemoryRange range = zink_resource_init_mem_range(screen, res->obj, res->obj->offset + offset, size);
+-         if (VKSCR(FlushMappedMemoryRanges)(screen->dev, 1, &range) != VK_SUCCESS) {
+-            mesa_loge("ZINK: vkFlushMappedMemoryRanges failed");
++      if ((usage & PIPE_MAP_READ) && !res->obj->coherent) {
++         VkMappedMemoryRange range = zink_resource_init_mem_range(screen, res->obj,
++                                                                 res->obj->offset,
++                                                                 res->obj->size);
++         /* GPU writes become visible to the CPU through invalidation. A flush
++          * here can write stale CPU cache lines over the completed GPU copy. */
++         if (VKSCR(InvalidateMappedMemoryRanges)(screen->dev, 1, &range) != VK_SUCCESS) {
++            mesa_loge("ZINK: vkInvalidateMappedMemoryRanges failed");
++            goto fail;
+          }
+       }
+       ptr = ((uint8_t *)ptr) + offset;

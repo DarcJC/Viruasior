@@ -1,0 +1,57 @@
+--- a/src/gallium/drivers/zink/zink_device_info.py
++++ b/src/gallium/drivers/zink/zink_device_info.py
+@@ -191,6 +191,11 @@
+               properties=True,
+               features=True,
+               conditions=["$feats.vertexAttributeInstanceRateDivisor"]),
++    Extension("VK_KHR_vertex_attribute_divisor",
++              alias="vdiv_khr",
++              properties=True,
++              features=True,
++              conditions=["$feats.vertexAttributeInstanceRateDivisor"]),
+     Extension("VK_EXT_calibrated_timestamps"),
+     Extension("VK_NV_linear_color_attachment",
+               alias="linear_color",
+--- a/src/gallium/drivers/zink/zink_screen.c
++++ b/src/gallium/drivers/zink/zink_screen.c
+@@ -937,7 +937,15 @@
+       screen->info.have_KHR_shader_draw_parameters;
+
+    caps->vertex_element_instance_divisor =
+-      screen->info.have_EXT_vertex_attribute_divisor;
++      screen->info.have_EXT_vertex_attribute_divisor ||
++      screen->info.have_KHR_vertex_attribute_divisor;
++
++   /* KHR permits implementations that cannot combine a non-unit divisor with
++    * a non-zero firstInstance. Gallium's start_instance cap covers that case. */
++   if (!screen->info.have_EXT_vertex_attribute_divisor &&
++       screen->info.have_KHR_vertex_attribute_divisor &&
++       !screen->info.vdiv_khr_props.supportsNonZeroFirstInstance)
++      caps->start_instance = false;
+
+    caps->max_vertex_streams = screen->info.tf_props.maxTransformFeedbackStreams;
+
+@@ -2849,6 +2857,11 @@
+ static void
+ init_driver_workarounds(struct zink_screen *screen)
+ {
++   if (!screen->info.have_EXT_vertex_attribute_divisor &&
++       screen->info.have_KHR_vertex_attribute_divisor)
++      screen->info.vdiv_props.maxVertexAttribDivisor =
++         screen->info.vdiv_khr_props.maxVertexAttribDivisor;
++
+    /* enable implicit sync for all non-mesa drivers */
+    screen->driver_workarounds.implicit_sync = screen->info.driver_props.driverID != VK_DRIVER_ID_MESA_VENUS;
+    switch (zink_driverid(screen)) {
+--- a/src/gallium/drivers/zink/zink_state.c
++++ b/src/gallium/drivers/zink/zink_state.c
+@@ -71,7 +71,8 @@
+       ves->bindings[binding].binding = binding;
+       ves->bindings[binding].inputRate = elem->instance_divisor ? VK_VERTEX_INPUT_RATE_INSTANCE : VK_VERTEX_INPUT_RATE_VERTEX;
+
+-      assert(!elem->instance_divisor || zink_screen(pctx->screen)->info.have_EXT_vertex_attribute_divisor);
++      assert(!elem->instance_divisor || screen->info.have_EXT_vertex_attribute_divisor ||
++             screen->info.have_KHR_vertex_attribute_divisor);
+       if (elem->instance_divisor > screen->info.vdiv_props.maxVertexAttribDivisor)
+          debug_printf("zink: clamping instance divisor %u to %u\n", elem->instance_divisor, screen->info.vdiv_props.maxVertexAttribDivisor);
+       ves->divisor[binding] = MIN2(elem->instance_divisor, screen->info.vdiv_props.maxVertexAttribDivisor);

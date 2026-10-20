@@ -1,0 +1,11 @@
+<!doctype html><meta charset=utf-8><title>Viruaisor color regression</title>
+<style>html,body{margin:0;background:white}canvas{display:block}#overlay{position:absolute;left:0;top:0;width:10px;height:700px;background:rgba(0,0,255,.25)}</style>
+<canvas id=c width=1000 height=1000></canvas><div id=overlay></div>
+<script>
+const x=c.getContext('2d'), colors=['#ff0000','#00ff00','#0000ff','#ffffff','#000000','#00ffff','#ff00ff','#ffff00'];
+x.fillStyle='white';x.fillRect(0,0,1000,1000);
+for(let row=0;row<8;row++)for(let col=0;col<8;col++){x.fillStyle=colors[(row+col)%8];x.fillRect(20+col*100,20+row*100,80,80)}
+// Exercise compositing separate from plain opaque clears.
+for(let col=0;col<8;col++){x.fillStyle=colors[col];x.globalAlpha=.5;x.fillRect(20+col*100,840,80,80)}x.globalAlpha=1;
+window.expected=colors;
+</script>

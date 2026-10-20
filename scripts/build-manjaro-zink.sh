@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build-only comparison against the distro's Mesa 24 Zink. No guest/device deployment.
+# Build patched Mesa 25 Zink for the Manjaro guest. No guest/device deployment.
 set -euo pipefail
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 source="$repo/.pi/device-debug/venus-crosvm-build/mesa-guest-reference"
@@ -26,6 +26,14 @@ fi
 if ! grep -Fq VIRUAISOR_ZINK_SHARED_PIXMAP_EXPORT "$source/src/gallium/drivers/zink/zink_resource.c"; then
     git -C "$source" apply "$repo/native/venus-crosvm/zink-venus-shared-pixmap.patch"
 fi
+for patch_name in zink-khr-vertex-divisor zink-noncoherent-upload-flush; do
+    patch="$repo/native/venus-crosvm/$patch_name.patch"
+    if ! git -C "$source" apply --reverse --check "$patch" 2>/dev/null; then
+        git -C "$source" apply --check "$patch"
+        git -C "$source" apply "$patch"
+    fi
+done
+python3 "$repo/scripts/test-zink-noncoherent-upload.py" "$source"
 gcc -Wall -Wextra -Werror "$repo/native/venus-crosvm/zink_venus_dmabuf_policy_test.c" -o /tmp/viruaisor-zink-dmabuf-test
 /tmp/viruaisor-zink-dmabuf-test
 gcc -Wall -Wextra -Werror "$repo/native/venus-crosvm/zink_venus_upload_policy_test.c" -o /tmp/viruaisor-zink-upload-test

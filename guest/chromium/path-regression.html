@@ -1,0 +1,15 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>GPU instanced path regression</title>
+<style>body { margin: 0; background: white; }</style>
+<!-- Skia uses instanced attributes for these stroked paths. Missing Vulkan
+     divisor support previously dropped the diagonal paths and corrupted QQ. -->
+<svg width="1000" height="1000" viewBox="0 0 1000 1000">
+  <g fill="none" stroke-width="20" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M200 100L120 180L40 100" stroke="red"/>
+    <path d="M440 100L360 180L280 100" stroke="green"/>
+    <path d="M680 100L600 180L520 100" stroke="blue"/>
+    <path d="M40 300L200 400" stroke="black"/>
+    <path d="M300 300L300 400" stroke="purple"/>
+  </g>
+</svg>

@@ -11,6 +11,11 @@ if ! git -C "$source" apply --reverse --check "$sync_patch" 2>/dev/null; then
     git -C "$source" apply --check "$sync_patch"
     git -C "$source" apply "$sync_patch"
 fi
+divisor_patch="$repo/native/venus-crosvm/guest-venus-khr-vertex-divisor.patch"
+if ! git -C "$source" apply --reverse --check "$divisor_patch" 2>/dev/null; then
+    git -C "$source" apply --check "$divisor_patch"
+    git -C "$source" apply "$divisor_patch"
+fi
 mkdir -p "$work"
 gcc_include=$(aarch64-linux-gnu-gcc -print-file-name=include)
 cxx_include="/usr/aarch64-linux-gnu/include/c++/$(aarch64-linux-gnu-g++ -dumpversion)"
