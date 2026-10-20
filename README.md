@@ -44,6 +44,26 @@ keeps VM lifecycle ownership in `VmService`, and controls guest services over vs
   prevent its early DRM probing; strict deferred probing requires a modular kernel or host-side
   GPU hotplug.
 
+## Application UI
+
+The application opens to a two-pane workbench: a Linux desktop preview alongside
+Control, Storage and Display panels. Compact windows stack these areas vertically
+and use bottom navigation. Click the preview or Fullscreen to interact with Linux;
+the floating fullscreen controls and `Ctrl+Shift+Alt+Q` return to the workbench.
+Fullscreen controls hide after 2.5 seconds; tap the small top handle to reopen them. Android
+Back/Home keeps the existing background-session behavior. Only the explicit,
+confirmed shutdown action ends the VM session.
+
+Settings contains the necessary Root/AVF setup and persistent system/light/dark
+appearance selection. Its **开发与排障** entry opens a separate diagnostic center
+for technical details, the experimental display bridge, Venus checks and scoped
+permission rollback. These tools do not appear among everyday workbench controls.
+The Control panel also retains Android VPN sharing and the Linux `droid` password
+action; Storage retains offline resize and recovery.
+
+See the [approved design](docs/superpowers/specs/2026-10-20-dual-pane-workbench-design.md)
+and [workbench validation](docs/ui-workbench-validation.md).
+
 ## Repository layout
 
 | Path | Purpose |
