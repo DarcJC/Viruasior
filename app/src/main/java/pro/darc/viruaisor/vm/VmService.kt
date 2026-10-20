@@ -156,6 +156,7 @@ class VmService : Service() {
                 finishForegroundIfIdle()
             }
             ACTION_STOP -> launchLifecycle { stopVm() }
+            ACTION_MEMORY -> launchLifecycle { configureMemory(intent.getIntExtra("memoryMiB", 0)) }
             ACTION_ROOTFS_RESIZE -> launchLifecycle { resizeRootfs(intent.getLongExtra("bytes", 0)) }
             ACTION_ROOTFS_RESTORE -> launchLifecycle { restoreRootfs() }
             ACTION_SURFACE_READY -> scope.launch {
@@ -393,6 +394,30 @@ class VmService : Service() {
             closeVpnLease()
             fail("VM startup failed: ${error.rootMessage()}")
             if (pendingRootfsBoot) rollbackBoot("新根盘启动失败，已尝试恢复原盘。")
+        }
+    }
+
+    private suspend fun configureMemory(memoryMiB: Int) {
+        VmRuntime.initialize(this)
+        val state = VmRuntime.state.value
+        val externalBusy = pro.darc.viruaisor.gpu.VenusHostRuntime.state.value.running ||
+            pro.darc.viruaisor.gpu.VenusHostRuntime.avfState.value.running ||
+            pro.darc.viruaisor.root.AvfPermissionRuntime.state.value is pro.darc.viruaisor.root.AvfPermissionSetup.Working ||
+            pro.darc.viruaisor.root.RootRuntime.state.value is pro.darc.viruaisor.root.RootAccess.Requesting
+        if (!state.canConfigureMemory || externalBusy) {
+            VmRuntime.setMemoryState(VmMemoryState(error = "请先停止虚拟机并等待当前任务完成，再调整内存。"))
+            return
+        }
+        VmRuntime.setMemoryState(VmMemoryState(busy = true))
+        try {
+            engine.requireStopped()
+            val saved = VmBundleStore(this).updateMemory(memoryMiB, hostMemoryBytes(this))
+            bundle = requireNotNull(state.bundle).copy(memoryMiB = saved.memoryMiB)
+            VmRuntime.memorySaved(saved.memoryMiB)
+            Log.i(TAG, "MEMORY_CONFIG_SAVED memoryMiB=${saved.memoryMiB}")
+        } catch (error: Exception) {
+            Log.e(TAG, "Memory configuration failed", error)
+            VmRuntime.setMemoryState(VmMemoryState(error = "内存保存失败：${error.rootMessage()}"))
         }
     }
 
@@ -797,6 +822,7 @@ class VmService : Service() {
         const val PREPARED_BUNDLE_NAME = "manjaro-plasma-venus.zip"
         private const val ACTION_START = (pro.darc.viruaisor.AppIdentity.ACTION_PREFIX + "START_VM")
         private const val ACTION_STOP = (pro.darc.viruaisor.AppIdentity.ACTION_PREFIX + "STOP_VM")
+        private const val ACTION_MEMORY = (pro.darc.viruaisor.AppIdentity.ACTION_PREFIX + "CONFIGURE_MEMORY")
         private const val ACTION_SURFACE_READY = (pro.darc.viruaisor.AppIdentity.ACTION_PREFIX + "SURFACE_READY")
         private const val ACTION_SURFACE_GONE = (pro.darc.viruaisor.AppIdentity.ACTION_PREFIX + "SURFACE_GONE")
         private const val ACTION_DEBUG_CONSOLE = (pro.darc.viruaisor.AppIdentity.ACTION_PREFIX + "DEBUG_CONSOLE")
@@ -822,6 +848,9 @@ class VmService : Service() {
 
         fun stopIntent(context: Context) =
             Intent(context, VmService::class.java).setAction(ACTION_STOP)
+
+        fun memoryIntent(context: Context, memoryMiB: Int) =
+            Intent(context, VmService::class.java).setAction(ACTION_MEMORY).putExtra("memoryMiB", memoryMiB)
 
         fun resizeRootfsIntent(context: Context, bytes: Long) =
             Intent(context, VmService::class.java).setAction(ACTION_ROOTFS_RESIZE).putExtra("bytes", bytes)

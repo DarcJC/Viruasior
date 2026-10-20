@@ -12,9 +12,10 @@ internal class WorkbenchPolicy(
     val canStart = state.canStart && !externalBusy
     val canImport = state.canImport && !externalBusy
     val canStop = state.canStop && !externalBusy
-    val canConfigure = !state.isActive && state.status !is VmStatus.Importing && !state.storage.busy && !externalBusy
+    val canConfigure = !state.isActive && state.status !is VmStatus.Importing && !state.storage.busy && !state.memory.busy && !externalBusy
+    val canConfigureMemory = state.canConfigureMemory && !externalBusy
     val canResizeDisk = state.bundle != null && state.support is AvfSupport.Available &&
-        !state.storage.busy && !state.storage.recoveryPending && !externalBusy &&
+        !state.storage.busy && !state.storage.recoveryPending && !state.memory.busy && !externalBusy &&
         state.status !is VmStatus.Importing && state.status !is VmStatus.Stopping
     val canRestoreDisk = state.storage.recoveryPending && canConfigure
 }

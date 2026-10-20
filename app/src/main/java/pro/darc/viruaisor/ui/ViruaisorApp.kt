@@ -22,6 +22,7 @@ internal fun VmScreen(
     onToggleRootDisplay: () -> Unit, onRequestRoot: () -> Unit, onGrantAvf: () -> Unit, onRevokeAvf: () -> Unit,
     onChooseBundle: () -> Unit, onPreparedBundle: (() -> Unit)?, onStart: () -> Unit, onStop: () -> Unit,
     onResizeRootfs: (Long) -> Unit, onRestoreRootfs: () -> Unit, onResize: (DisplayMode) -> Unit,
+    onMemory: (Int) -> Unit,
     onSurfaceReady: () -> Unit, onSurfaceGone: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -82,6 +83,7 @@ internal fun VmScreen(
                 onGrantAvf = onGrantAvf, onRevokeAvf = onRevokeAvf, onToggleRootDisplay = onToggleRootDisplay,
                 onHostProbe = { VenusHostRuntime.start(context) }, onAvfProbe = { VenusHostRuntime.startAvfProbe(context) },
                 onResizeRootfs = onResizeRootfs, onRestoreRootfs = onRestoreRootfs, onResize = onResize,
+                onMemory = onMemory,
                 onPassword = GuestPasswordRuntime::request, onNetwork = { VmNetworkRuntime.setEnabled(context, it) }),
             fullscreen, appearance, {
                 appearance = it

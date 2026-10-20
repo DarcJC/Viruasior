@@ -42,4 +42,5 @@ internal data class VmUiActions(
     val onResize: (DisplayMode) -> Unit = {},
     val onPassword: (String) -> Boolean = { false },
     val onNetwork: (Boolean) -> Unit = {},
+    val onMemory: (Int) -> Unit = {},
 )

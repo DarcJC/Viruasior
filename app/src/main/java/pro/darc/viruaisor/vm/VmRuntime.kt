@@ -47,7 +47,14 @@ object VmRuntime {
     }
 
     internal fun setBundle(bundle: VmBundle) = update {
-        it.copy(status = VmStatus.Stopped, bundle = bundle, detail = "VM bundle imported.")
+        it.copy(status = VmStatus.Stopped, bundle = bundle, memory = VmMemoryState(), detail = "VM bundle imported.")
+    }
+
+    internal fun setMemoryState(memory: VmMemoryState) = update { it.copy(memory = memory) }
+
+    internal fun memorySaved(memoryMiB: Int) = update {
+        it.copy(bundle = it.bundle?.copy(memoryMiB = memoryMiB),
+            memory = VmMemoryState(message = "内存已保存为 $memoryMiB MiB，下次启动生效。"))
     }
 
     internal fun setStorage(storage: VmStorageState) {

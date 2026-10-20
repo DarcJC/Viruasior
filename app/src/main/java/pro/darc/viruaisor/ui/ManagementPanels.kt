@@ -16,6 +16,7 @@ internal fun ControlPanel(state: VmUiState, environment: VmEnvironment, actions:
     val policy = WorkbenchPolicy(state, environment.probesRunning, environment.permissionBusy)
     var confirmation by remember { mutableStateOf<String?>(null) }
     var password by remember { mutableStateOf(false) }
+    var memory by remember { mutableStateOf(false) }
     Column(verticalArrangement = Arrangement.spacedBy(18.dp)) {
         Text("会话控制", style = MaterialTheme.typography.titleMedium)
         StatusBadge(statusLabel(state.status), state.status is VmStatus.GuestAgentReady, state.status is VmStatus.Crashed)
@@ -41,7 +42,20 @@ internal fun ControlPanel(state: VmUiState, environment: VmEnvironment, actions:
         state.bundle?.let { bundle ->
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             DetailRow("操作系统", bundle.osName)
-            DetailRow("分配内存", "${bundle.memoryMiB} MiB")
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Muted("分配内存")
+                    Text("${bundle.memoryMiB} MiB", style = MaterialTheme.typography.titleMedium)
+                }
+                OutlinedButton(onClick = { memory = true }, enabled = policy.canConfigureMemory,
+                    modifier = Modifier.heightIn(min = 48.dp).testTag("adjust_memory")) {
+                    Text(if (state.memory.busy) "正在保存…" else "调整")
+                }
+            }
+            if (!policy.canConfigureMemory && !state.memory.busy) Muted("停止虚拟机并等待当前任务完成后可调整内存。")
+            if (state.memory.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
+            state.memory.message?.let { Notice(it) }
+            state.memory.error?.let { Notice(it, true) }
         }
         OutlinedButton(onClick = { if(state.bundle == null) actions.onChooseBundle() else confirmation = "replace" },
             enabled = policy.canImport, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("choose_bundle")) {
@@ -81,6 +95,7 @@ internal fun ControlPanel(state: VmUiState, environment: VmEnvironment, actions:
     }
     if(password) PasswordDialog(state.status is VmStatus.GuestAgentReady && environment.passwordStatus != GuestPasswordRuntime.Status.Updating,
         { password = false }, actions.onPassword)
+    if (memory) state.bundle?.let { MemoryDialog(it.memoryMiB, policy.canConfigureMemory, { memory = false }, actions.onMemory) }
 }
 
 @Composable

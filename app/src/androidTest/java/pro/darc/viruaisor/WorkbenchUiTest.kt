@@ -97,6 +97,34 @@ class WorkbenchUiTest {
         }
     }
 
+    @Test fun memoryDialogValidatesAndSubmitsPresetInCompactLayout() {
+        val selected = AtomicInteger()
+        show(state = ready.copy(status = VmStatus.Stopped), narrow = true,
+            actions = VmUiActions(onMemory = { selected.set(it) })).use {
+            scrollTo("adjust_memory")
+            click("adjust_memory")
+            val arguments = Bundle().apply {
+                putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, "0")
+            }
+            assertTrue(waitTag("memory_input").performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments))
+            instrumentation.waitForIdleSync()
+            click("confirm_memory")
+            await { nodes().any { it.text?.toString() == "请输入 256–32768 MiB 之间的整数" } }
+            assertEquals(0, selected.get())
+            click("memory_preset_2048")
+            click("confirm_memory")
+            await { selected.get() == 2048 }
+            assertNull(findTag("memory_input"))
+        }
+    }
+
+    @Test fun activeVmCannotAdjustMemory() {
+        show().use {
+            scrollTo("adjust_memory")
+            assertFalse(waitTag("adjust_memory").isEnabled)
+        }
+    }
+
     @Test fun fullscreenPreservesNativeSurfaceAttachment() {
         val fullscreen = mutableStateOf(false)
         val attachments = AtomicInteger()

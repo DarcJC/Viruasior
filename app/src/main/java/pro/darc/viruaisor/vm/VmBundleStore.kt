@@ -2,9 +2,11 @@ package pro.darc.viruaisor.vm
 
 import android.content.Context
 import android.net.Uri
+import android.util.AtomicFile
 import org.json.JSONObject
 import java.io.BufferedInputStream
 import java.io.File
+import java.io.IOException
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
 
@@ -15,7 +17,28 @@ class VmBundleStore(private val context: Context) {
         get() = File(vmsDirectory, "default")
 
     fun currentBundle(): VmBundle? =
-        if (File(defaultDirectory, MANIFEST_NAME).isFile) load(defaultDirectory) else null
+        if (manifestExists(defaultDirectory)) load(defaultDirectory) else null
+
+    /** Called under VmService's lifecycle mutex after verifying that the VM is stopped. */
+    fun updateMemory(memoryMiB: Int, hostMemoryBytes: Long): VmBundle {
+        VmMemoryPolicy.error(memoryMiB, hostMemoryBytes)?.let { throw IllegalArgumentException(it) }
+        val selected = requireNotNull(currentBundle()) { "请先导入系统包" }
+        val manifest = AtomicFile(File(defaultDirectory, MANIFEST_NAME))
+        val json = manifest.openRead().bufferedReader(Charsets.UTF_8).use { JSONObject(it.readText()) }
+        val bytes = json.put("memoryMiB", memoryMiB).toString(2).toByteArray(Charsets.UTF_8)
+        val output = manifest.startWrite()
+        try {
+            output.write(bytes)
+            output.fd.sync()
+            manifest.finishWrite(output)
+        } catch (error: Throwable) {
+            manifest.failWrite(output)
+            throw error
+        }
+        // AtomicFile logs some replacement failures instead of throwing them.
+        if (!manifest.readFully().contentEquals(bytes)) throw IOException("内存设置未能写入，请重试")
+        return selected.copy(memoryMiB = memoryMiB)
+    }
 
     fun import(uri: Uri): VmBundle {
         vmsDirectory.mkdirs()
@@ -74,9 +97,9 @@ class VmBundleStore(private val context: Context) {
     }
 
     private fun load(directory: File): VmBundle {
-        val manifestFile = File(directory, MANIFEST_NAME)
-        require(manifestFile.isFile) { "The bundle must contain $MANIFEST_NAME at its root." }
-        val json = JSONObject(manifestFile.readText())
+        val manifestFile = AtomicFile(File(directory, MANIFEST_NAME))
+        require(manifestExists(directory)) { "The bundle must contain $MANIFEST_NAME at its root." }
+        val json = manifestFile.openRead().bufferedReader(Charsets.UTF_8).use { JSONObject(it.readText()) }
         require(json.optInt("version", -1) == BUNDLE_VERSION) {
             "Unsupported bundle manifest version: ${json.opt("version")}."
         }
@@ -189,6 +212,9 @@ class VmBundleStore(private val context: Context) {
         )
     }
 
+    private fun manifestExists(directory: File): Boolean =
+        File(directory, MANIFEST_NAME).isFile || File(directory, "$MANIFEST_NAME.bak").isFile
+
     private fun resolveFile(directory: File, relativePath: String, label: String): File {
         require(relativePath.isNotBlank()) { "$label path must not be empty." }
         require(!File(relativePath).isAbsolute && '\\' !in relativePath) {
@@ -207,8 +233,8 @@ class VmBundleStore(private val context: Context) {
         const val BUNDLE_VERSION = 1
         const val MAX_ENTRIES = 256
         const val DEFAULT_MEMORY_MIB = 2048
-        const val MIN_MEMORY_MIB = 256
-        const val MAX_MEMORY_MIB = 32768
+        const val MIN_MEMORY_MIB = VmMemoryPolicy.MIN_MIB
+        const val MAX_MEMORY_MIB = VmMemoryPolicy.MAX_MIB
         const val DEFAULT_VSOCK_PORT = 4050L
         const val DEFAULT_DISPLAY_WIDTH = 1280
         const val DEFAULT_DISPLAY_HEIGHT = 720

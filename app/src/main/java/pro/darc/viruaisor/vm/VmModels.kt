@@ -67,23 +67,34 @@ data class VmUiState(
     val detail: String? = null,
     val display: VmDisplayState = VmDisplayState(),
     val storage: VmStorageState = VmStorageState(),
+    val memory: VmMemoryState = VmMemoryState(),
 ) {
+    val canConfigureMemory: Boolean
+        get() = bundle != null && !storage.busy && !memory.busy &&
+            (status is VmStatus.Stopped || status is VmStatus.Crashed)
+
     val canImport: Boolean
         get() = support is AvfSupport.Available && status !is VmStatus.Importing && !isActive &&
-            !storage.busy && !storage.recoveryPending
+            !storage.busy && !storage.recoveryPending && !memory.busy
 
     val canStart: Boolean
-        get() = support is AvfSupport.Available && bundle != null && !storage.busy &&
+        get() = support is AvfSupport.Available && bundle != null && !storage.busy && !memory.busy &&
             (status is VmStatus.Stopped || status is VmStatus.Crashed)
 
     val canStop: Boolean
-        get() = !storage.busy && (status is VmStatus.Starting || status is VmStatus.Running ||
+        get() = !storage.busy && !memory.busy && (status is VmStatus.Starting || status is VmStatus.Running ||
             status is VmStatus.GuestAgentReady)
 
     val isActive: Boolean
         get() = status is VmStatus.Starting || status is VmStatus.Running ||
             status is VmStatus.GuestAgentReady || status is VmStatus.Stopping
 }
+
+data class VmMemoryState(
+    val busy: Boolean = false,
+    val message: String? = null,
+    val error: String? = null,
+)
 
 data class VmStorageState(
     val busy: Boolean = false,

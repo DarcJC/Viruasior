@@ -88,6 +88,7 @@ class MainActivity : ComponentActivity() {
                     )
                 },
                 onResizeRootfs = { bytes -> ContextCompat.startForegroundService(this, VmService.resizeRootfsIntent(this,bytes)); Unit },
+                onMemory = { memoryMiB -> ContextCompat.startForegroundService(this, VmService.memoryIntent(this, memoryMiB)); Unit },
                 onRestoreRootfs = { ContextCompat.startForegroundService(this, VmService.restoreRootfsIntent(this)); Unit },
                 onResize = { size -> ContextCompat.startForegroundService(this,VmService.resizeIntent(this,size)); Unit },
                 onSurfaceReady = {

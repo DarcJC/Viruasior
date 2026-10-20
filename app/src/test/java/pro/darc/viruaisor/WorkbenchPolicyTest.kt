@@ -18,6 +18,7 @@ class WorkbenchPolicyTest {
         assertFalse(policy.canImport)
         assertFalse(policy.canConfigure)
         assertFalse(policy.canResizeDisk)
+        assertFalse(policy.canConfigureMemory)
     }
 
     @Test fun permissionSetupBlocksVmAndDiskOperations() {
@@ -25,6 +26,7 @@ class WorkbenchPolicyTest {
         assertFalse(policy.canStart)
         assertFalse(policy.canImport)
         assertFalse(policy.canResizeDisk)
+        assertFalse(policy.canConfigureMemory)
     }
 
     @Test fun importingBlocksEnvironmentConfigurationAndProbes() {

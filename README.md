@@ -61,6 +61,12 @@ permission rollback. These tools do not appear among everyday workbench controls
 The Control panel also retains Android VPN sharing and the Linux `droid` password
 action; Storage retains offline resize and recovery.
 
+The Control panel's allocated-memory row has an **调整** action. With the VM stopped,
+enter an integer MiB value or choose a 2/4/8 GiB preset. Values must be within
+256–32768 MiB and no larger than the device's total physical memory. Saving updates
+the current bundle atomically and takes effect on the next start; replacing the bundle
+uses the new bundle's memory setting.
+
 See the [approved design](docs/superpowers/specs/2026-10-20-dual-pane-workbench-design.md)
 and [workbench validation](docs/ui-workbench-validation.md).
 
