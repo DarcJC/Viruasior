@@ -1,0 +1,77 @@
+#!/bin/sh
+# The desktop runs X11.  A requested Wayland vkmark run needs a compositor,
+# so start a nested Weston only for that run and clean it up afterwards.
+export VIRUAISOR_AHB_UNORM_WSI=1
+vkmark_bin=/opt/viruaisor/vkmark/bin/vkmark
+
+previous=
+wayland_requested=0
+for argument do
+    if [ "$previous" = --winsys ] && [ "$argument" = wayland ]; then
+        wayland_requested=1
+    fi
+    if [ "$argument" = --winsys=wayland ]; then
+        wayland_requested=1
+    fi
+    previous=$argument
+done
+
+if [ "$wayland_requested" -eq 0 ]; then
+    exec "$vkmark_bin" "$@"
+fi
+
+runtime_dir=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
+if [ -n "${WAYLAND_DISPLAY:-}" ]; then
+    case "$WAYLAND_DISPLAY" in
+        /*) existing_socket=$WAYLAND_DISPLAY ;;
+        *) existing_socket=$runtime_dir/$WAYLAND_DISPLAY ;;
+    esac
+    if [ -S "$existing_socket" ]; then
+        exec "$vkmark_bin" "$@"
+    fi
+fi
+
+socket_name=viruaisor-vkmark-$$
+socket_path=$runtime_dir/$socket_name
+log_file=$(mktemp "${TMPDIR:-/tmp}/viruaisor-vkmark-weston.XXXXXX") || exit 1
+weston --backend=x11 --renderer=gl --socket="$socket_name" \
+    --width=1200 --height=800 --idle-time=0 >"$log_file" 2>&1 &
+weston_pid=$!
+cleanup() {
+    kill "$weston_pid" 2>/dev/null || true
+    wait "$weston_pid" 2>/dev/null || true
+    rm -f "$socket_path" "$socket_path.lock"
+    if [ "${keep_log:-0}" -eq 0 ]; then
+        rm -f "$log_file"
+    fi
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+ready=0
+attempt=0
+while [ "$attempt" -lt 100 ]; do
+    if [ -S "$socket_path" ]; then
+        ready=1
+        break
+    fi
+    if ! kill -0 "$weston_pid" 2>/dev/null; then
+        break
+    fi
+    attempt=$((attempt + 1))
+    sleep 0.1
+done
+if [ "$ready" -eq 0 ]; then
+    keep_log=1
+    printf 'Could not start nested Weston; see %s\n' "$log_file" >&2
+    exit 1
+fi
+
+WAYLAND_DISPLAY=$socket_name "$vkmark_bin" "$@"
+result=$?
+if [ "$result" -ne 0 ]; then
+    keep_log=1
+    printf 'Nested Weston log: %s\n' "$log_file" >&2
+fi
+exit "$result"

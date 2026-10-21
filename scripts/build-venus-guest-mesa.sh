@@ -9,6 +9,15 @@ bash "$repo/scripts/prepare-venus-guest-sysroot.sh"
 patch="$repo/native/venus-crosvm/guest-mesa-cache-sync.patch"
 if git -C "$source" apply --check "$patch" 2>/dev/null; then git -C "$source" apply "$patch";
 else git -C "$source" apply --reverse --check "$patch"; fi
+patch="$repo/native/venus-crosvm/guest-mesa-glibc-c23-threads.patch"
+if git -C "$source" apply --check "$patch" 2>/dev/null; then git -C "$source" apply "$patch";
+else git -C "$source" apply --reverse --check "$patch"; fi
+patch="$repo/native/venus-crosvm/guest-wsi-drm-node-match.patch"
+if git -C "$source" apply --check "$patch" 2>/dev/null; then git -C "$source" apply "$patch";
+else git -C "$source" apply --reverse --check "$patch"; fi
+patch="$repo/native/venus-crosvm/guest-wsi-ahb-surface-formats.patch"
+if git -C "$source" apply --check "$patch" 2>/dev/null; then git -C "$source" apply "$patch";
+else git -C "$source" apply --reverse --check "$patch"; fi
 cp "$repo/guest/venus-probe/cache_policy.h" "$source/src/virtio/vulkan/viruaisor_cache_policy.h"
 gcc -Wall -Wextra -Werror "$repo/guest/venus-probe/cache_policy_test.c" -o /tmp/viruaisor-venus-guest-cache-test
 /tmp/viruaisor-venus-guest-cache-test

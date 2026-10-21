@@ -29,7 +29,8 @@ chroot "$root" /usr/bin/pacman-key --populate archlinuxarm manjaro manjaro-arm
 chroot "$root" /usr/bin/pacman -Syu --noconfirm
 chroot "$root" /usr/bin/pacman -S --needed --noconfirm plasma-desktop plasma-workspace kwin \
     konsole dolphin xorg-server xorg-xinit xorg-xrandr mesa vulkan-virtio vulkan-tools mesa-utils \
-    dbus systemd systemd-sysvcompat sudo sed networkmanager pipewire wireplumber qt6-wayland xorg-xwayland
+    dbus systemd systemd-sysvcompat sudo sed networkmanager pipewire wireplumber qt6-wayland xorg-xwayland \
+    vkmark weston
 bash "$repo/scripts/install-cjk-fonts.sh" "$root"
 chroot "$root" /usr/bin/pacman -Q > "$work/packages.txt"
 chroot "$root" /usr/bin/pacman -Qkk plasma-workspace kwin mesa vulkan-virtio > "$work/package-integrity.txt"

@@ -1,0 +1,33 @@
+diff --git a/src/vulkan/wsi/wsi_common_drm.c b/src/vulkan/wsi/wsi_common_drm.c
+index 9835f8f..dfe611b 100644
+--- a/src/vulkan/wsi/wsi_common_drm.c
++++ b/src/vulkan/wsi/wsi_common_drm.c
+@@ -40,6 +40,8 @@
+ #include <unistd.h>
+ #include <stdlib.h>
+ #include <stdio.h>
++#include <sys/stat.h>
++#include <sys/sysmacros.h>
+ #include <xf86drm.h>
+ 
+ static VkResult
+@@ -445,6 +447,19 @@ wsi_device_matches_drm_fd(VkPhysicalDevice physicalDevice, int drm_fd)
+    VK_FROM_HANDLE(vk_physical_device, pdevice, physicalDevice);
+    const struct wsi_device *wsi = pdevice->wsi_device;
+ 
++   /* Virtio GPUs need not have a PCI bus address.  Venus reports the DRM
++    * nodes it opened through VK_EXT_physical_device_drm, so compare those
++    * first before falling back to the PCI bus identity. */
++   struct stat st;
++   if (fstat(drm_fd, &st) == 0 && S_ISCHR(st.st_mode) &&
++       ((wsi->drm_info.hasRender &&
++         major(st.st_rdev) == wsi->drm_info.renderMajor &&
++         minor(st.st_rdev) == wsi->drm_info.renderMinor) ||
++        (wsi->drm_info.hasPrimary &&
++         major(st.st_rdev) == wsi->drm_info.primaryMajor &&
++         minor(st.st_rdev) == wsi->drm_info.primaryMinor)))
++      return true;
++
+    drmDevicePtr fd_device;
+    int ret = drmGetDevice2(drm_fd, 0, &fd_device);
+    if (ret)

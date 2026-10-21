@@ -34,6 +34,8 @@ install -Dm0644 "$repo/guest/avf-agent/guest-check.py" "$root/opt/viruaisor/gues
 install -Dm0644 "$repo/docs/guest/avf-agent.service" "$root/usr/lib/systemd/system/avf-agent.service"
 install -Dm0644 "$repo/guest/plasma/avf-plasma.service" "$root/usr/lib/systemd/system/avf-plasma.service"
 install -m0644 "$repo/guest/plasma/venus.env" "$root/etc/viruaisor/venus.env"
+bash "$repo/scripts/build-manjaro-vkmark.sh"
+install -Dm0755 "$repo/guest/plasma/vkmark" "$root/usr/local/bin/vkmark"
 bash "$repo/scripts/build-qt-software-refresh.sh"
 install -Dm0755 "$workspace_out/libviruaisor_software_refresh.so" "$root/opt/viruaisor/qt/plugins/generic/libviruaisor_software_refresh.so"
 bash "$repo/scripts/build-compositor-policy.sh"

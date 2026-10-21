@@ -1,0 +1,82 @@
+diff --git a/src/virtio/vulkan/vn_wsi.c b/src/virtio/vulkan/vn_wsi.c
+index ca8e2a0..11e97a5 100644
+--- a/src/virtio/vulkan/vn_wsi.c
++++ b/src/virtio/vulkan/vn_wsi.c
+@@ -19,6 +19,8 @@
+ #include "vn_physical_device.h"
+ #include "vn_queue.h"
+ 
++#include <stdlib.h>
++
+ /* The common WSI support makes some assumptions about the driver.
+  *
+  * In wsi_device_init, it assumes VK_EXT_pci_bus_info is available.  In
+@@ -88,6 +90,10 @@ vn_wsi_init(struct vn_physical_device *physical_dev)
+       return result;
+ 
+    physical_dev->wsi_device.supports_modifiers = true;
++   /* The paired Android renderer only imports BGRA8 UNORM scanout images.
++    * Other advertised formats fall back to BLOB allocations on this device. */
++   physical_dev->wsi_device.viruaisor_ahb_unorm_wsi =
++      getenv("VIRUAISOR_AHB_UNORM_WSI") != NULL;
+    physical_dev->base.base.wsi_device = &physical_dev->wsi_device;
+ 
+    return VK_SUCCESS;
+diff --git a/src/vulkan/wsi/wsi_common.h b/src/vulkan/wsi/wsi_common.h
+index fee7090..7be58e2 100644
+--- a/src/vulkan/wsi/wsi_common.h
++++ b/src/vulkan/wsi/wsi_common.h
+@@ -127,6 +127,7 @@ struct wsi_device {
+    uint32_t optimalBufferCopyRowPitchAlignment;
+    VkPresentModeKHR override_present_mode;
+    bool force_bgra8_unorm_first;
++   bool viruaisor_ahb_unorm_wsi;
+ 
+    /* Whether to enable adaptive sync for a swapchain if implemented and
+     * available. Not all window systems might support this. */
+diff --git a/src/vulkan/wsi/wsi_common_wayland.c b/src/vulkan/wsi/wsi_common_wayland.c
+index d6c1b86..c4d4d9f 100644
+--- a/src/vulkan/wsi/wsi_common_wayland.c
++++ b/src/vulkan/wsi/wsi_common_wayland.c
+@@ -1371,6 +1371,9 @@ wsi_wl_surface_get_formats(VkIcdSurfaceBase *icd_surface,
+ 
+    struct wsi_wl_format *disp_fmt;
+    u_vector_foreach(disp_fmt, &display.formats) {
++      if (wsi_device->viruaisor_ahb_unorm_wsi &&
++          disp_fmt->vk_format != VK_FORMAT_B8G8R8A8_UNORM)
++         continue;
+       /* Skip formats for which we can't support both alpha & opaque
+        * formats.
+        */
+@@ -1410,6 +1413,9 @@ wsi_wl_surface_get_formats2(VkIcdSurfaceBase *icd_surface,
+ 
+    struct wsi_wl_format *disp_fmt;
+    u_vector_foreach(disp_fmt, &display.formats) {
++      if (wsi_device->viruaisor_ahb_unorm_wsi &&
++          disp_fmt->vk_format != VK_FORMAT_B8G8R8A8_UNORM)
++         continue;
+       /* Skip formats for which we can't support both alpha & opaque
+        * formats.
+        */
+diff --git a/src/vulkan/wsi/wsi_common_x11.c b/src/vulkan/wsi/wsi_common_x11.c
+index b2204fb..e5461f1 100644
+--- a/src/vulkan/wsi/wsi_common_x11.c
++++ b/src/vulkan/wsi/wsi_common_x11.c
+@@ -865,11 +865,17 @@ get_sorted_vk_formats(VkIcdSurfaceBase *surface, struct wsi_device *wsi_device,
+    /* use the root window's visual to set the default */
+    *count = 0;
+    for (unsigned i = 0; i < ARRAY_SIZE(formats); i++) {
++      if (wsi_device->viruaisor_ahb_unorm_wsi &&
++          formats[i] != VK_FORMAT_B8G8R8A8_UNORM)
++         continue;
+       if (rgb_component_bits_are_equal(formats[i], rootvis))
+          sorted_formats[(*count)++] = formats[i];
+    }
+ 
+    for (unsigned i = 0; i < ARRAY_SIZE(formats); i++) {
++      if (wsi_device->viruaisor_ahb_unorm_wsi &&
++          formats[i] != VK_FORMAT_B8G8R8A8_UNORM)
++         continue;
+       for (unsigned j = 0; j < *count; j++)
+          if (formats[i] == sorted_formats[j])
+             goto next_format;

@@ -6,6 +6,18 @@ work=/tmp/viruaisor-manjaro/venus-build
 source="$repo/.pi/device-debug/venus-crosvm-build/mesa-guest-reference"
 [[ $(git -C "$source" rev-parse HEAD) == 742a20f48c59e8649533c84c4d49dd95b403f5da ]]
 git -C "$source" apply --reverse --check "$repo/native/venus-crosvm/guest-mesa-cache-sync.patch"
+node_patch="$repo/native/venus-crosvm/guest-wsi-drm-node-match.patch"
+if git -C "$source" apply --check "$node_patch" 2>/dev/null; then
+    git -C "$source" apply "$node_patch"
+else
+    git -C "$source" apply --reverse --check "$node_patch"
+fi
+format_patch="$repo/native/venus-crosvm/guest-wsi-ahb-surface-formats.patch"
+if git -C "$source" apply --check "$format_patch" 2>/dev/null; then
+    git -C "$source" apply "$format_patch"
+else
+    git -C "$source" apply --reverse --check "$format_patch"
+fi
 sync_patch="$repo/native/venus-crosvm/guest-venus-desktop-sync-fd.patch"
 if ! git -C "$source" apply --reverse --check "$sync_patch" 2>/dev/null; then
     git -C "$source" apply --check "$sync_patch"

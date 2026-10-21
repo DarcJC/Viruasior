@@ -1,0 +1,358 @@
+diff --git a/src/scenes/cube_scene.cpp b/src/scenes/cube_scene.cpp
+index 9fb7e95..526ae39 100644
+--- a/src/scenes/cube_scene.cpp
++++ b/src/scenes/cube_scene.cpp
+@@ -137,14 +137,14 @@ void CubeScene::setup_vertex_buffer()
+         .set_size(mesh->vertex_data_size())
+         .set_usage(vk::BufferUsageFlagBits::eVertexBuffer)
+         .set_memory_properties(
+-            vk::MemoryPropertyFlagBits::eHostVisible |
+-            vk::MemoryPropertyFlagBits::eHostCoherent)
++            vk::MemoryPropertyFlagBits::eHostVisible)
+         .set_memory_out(vertex_buffer_memory)
+         .build();
+ 
+     auto const vertex_buffer_map = vkutil::map_memory(
+         *vulkan, vertex_buffer_memory, 0, mesh->vertex_data_size());
+     mesh->copy_vertex_data_to(vertex_buffer_map);
++    vkutil::flush_mapped_memory(*vulkan, vertex_buffer_memory);
+ }
+ 
+ void CubeScene::setup_uniform_buffer()
+@@ -153,8 +153,7 @@ void CubeScene::setup_uniform_buffer()
+         .set_size(sizeof(Uniforms))
+         .set_usage(vk::BufferUsageFlagBits::eUniformBuffer)
+         .set_memory_properties(
+-            vk::MemoryPropertyFlagBits::eHostVisible |
+-            vk::MemoryPropertyFlagBits::eHostCoherent)
++            vk::MemoryPropertyFlagBits::eHostVisible)
+         .set_memory_out(uniform_buffer_memory)
+         .build();
+ 
+@@ -283,4 +282,5 @@ void CubeScene::update_uniforms()
+     ubo.normal = glm::inverseTranspose(ubo.modelview);
+ 
+     memcpy(uniform_buffer_map, &ubo, sizeof(ubo));
++        vkutil::flush_mapped_memory(*vulkan, uniform_buffer_memory);
+ }
+diff --git a/src/scenes/cube_scene.h b/src/scenes/cube_scene.h
+index 7924344..1a39179 100644
+--- a/src/scenes/cube_scene.h
++++ b/src/scenes/cube_scene.h
+@@ -24,6 +24,7 @@
+ 
+ #include "scene.h"
+ #include "managed_resource.h"
++#include <memory>
+ 
+ #define GLM_FORCE_DEPTH_ZERO_TO_ONE
+ #include <glm/glm.hpp>
+diff --git a/src/scenes/desktop_scene.cpp b/src/scenes/desktop_scene.cpp
+index 1e9ea30..fe3bc11 100644
+--- a/src/scenes/desktop_scene.cpp
++++ b/src/scenes/desktop_scene.cpp
+@@ -86,8 +86,7 @@ public:
+             .set_size(sizeof(Uniforms))
+             .set_usage(vk::BufferUsageFlagBits::eUniformBuffer)
+             .set_memory_properties(
+-                vk::MemoryPropertyFlagBits::eHostVisible |
+-                vk::MemoryPropertyFlagBits::eHostCoherent)
++                vk::MemoryPropertyFlagBits::eHostVisible)
+             .set_memory_out(uniform_buffer_memory)
+             .build();
+ 
+@@ -143,6 +142,7 @@ public:
+         ubo.transform = glm::scale(ubo.transform, glm::vec3{size.x, size.y, 1.0f});
+ 
+         memcpy(uniform_buffer_map, &ubo, sizeof(ubo));
++        vkutil::flush_mapped_memory(vulkan, uniform_buffer_memory);
+     }
+ 
+     glm::vec2 position{0.0f, 0.0f};
+@@ -277,8 +277,7 @@ void DesktopScene::setup_vertex_buffer()
+         .set_size(mesh->vertex_data_size())
+         .set_usage(staging_usage_flags)
+         .set_memory_properties(
+-            vk::MemoryPropertyFlagBits::eHostVisible |
+-            vk::MemoryPropertyFlagBits::eHostCoherent)
++            vk::MemoryPropertyFlagBits::eHostVisible)
+         .set_memory_out(staging_buffer_memory)
+         .build();
+ 
+@@ -286,6 +285,7 @@ void DesktopScene::setup_vertex_buffer()
+         auto const staging_buffer_map = vkutil::map_memory(
+             *vulkan, staging_buffer_memory, 0, mesh->vertex_data_size());
+         mesh->copy_vertex_data_to(staging_buffer_map);
++    vkutil::flush_mapped_memory(*vulkan, staging_buffer_memory);
+     }
+ 
+     vertex_buffer = vkutil::BufferBuilder{*vulkan}
+diff --git a/src/scenes/effect2d_scene.cpp b/src/scenes/effect2d_scene.cpp
+index 2fe2235..fa29a89 100644
+--- a/src/scenes/effect2d_scene.cpp
++++ b/src/scenes/effect2d_scene.cpp
+@@ -165,8 +165,7 @@ void Effect2DScene::setup_vertex_buffer()
+         .set_size(mesh->vertex_data_size())
+         .set_usage(staging_usage_flags)
+         .set_memory_properties(
+-            vk::MemoryPropertyFlagBits::eHostVisible |
+-            vk::MemoryPropertyFlagBits::eHostCoherent)
++            vk::MemoryPropertyFlagBits::eHostVisible)
+         .set_memory_out(staging_buffer_memory)
+         .build();
+ 
+@@ -174,6 +173,7 @@ void Effect2DScene::setup_vertex_buffer()
+         auto const staging_buffer_map = vkutil::map_memory(
+             *vulkan, staging_buffer_memory, 0, mesh->vertex_data_size());
+         mesh->copy_vertex_data_to(staging_buffer_map);
++    vkutil::flush_mapped_memory(*vulkan, staging_buffer_memory);
+     }
+ 
+     vertex_buffer = vkutil::BufferBuilder{*vulkan}
+@@ -193,8 +193,7 @@ void Effect2DScene::setup_uniform_buffer()
+         .set_size(sizeof(Uniforms))
+         .set_usage(vk::BufferUsageFlagBits::eUniformBuffer)
+         .set_memory_properties(
+-            vk::MemoryPropertyFlagBits::eHostVisible |
+-            vk::MemoryPropertyFlagBits::eHostCoherent)
++            vk::MemoryPropertyFlagBits::eHostVisible)
+         .set_memory_out(uniform_buffer_memory)
+         .build();
+ 
+@@ -332,4 +331,5 @@ void Effect2DScene::update_uniforms()
+     ubo.texture_step_y = 1.0 / extent.height;
+ 
+     memcpy(uniform_buffer_map, &ubo, sizeof(ubo));
++        vkutil::flush_mapped_memory(*vulkan, uniform_buffer_memory);
+ }
+diff --git a/src/scenes/shading_scene.cpp b/src/scenes/shading_scene.cpp
+index fa496ba..ca8596d 100644
+--- a/src/scenes/shading_scene.cpp
++++ b/src/scenes/shading_scene.cpp
+@@ -157,8 +157,7 @@ void ShadingScene::setup_vertex_buffer()
+         .set_size(mesh->vertex_data_size())
+         .set_usage(staging_usage_flags)
+         .set_memory_properties(
+-            vk::MemoryPropertyFlagBits::eHostVisible |
+-            vk::MemoryPropertyFlagBits::eHostCoherent)
++            vk::MemoryPropertyFlagBits::eHostVisible)
+         .set_memory_out(staging_buffer_memory)
+         .build();
+ 
+@@ -166,6 +165,7 @@ void ShadingScene::setup_vertex_buffer()
+         auto const staging_buffer_map = vkutil::map_memory(
+             *vulkan, staging_buffer_memory, 0, mesh->vertex_data_size());
+         mesh->copy_vertex_data_to(staging_buffer_map);
++    vkutil::flush_mapped_memory(*vulkan, staging_buffer_memory);
+     }
+ 
+     vertex_buffer = vkutil::BufferBuilder{*vulkan}
+@@ -185,8 +185,7 @@ void ShadingScene::setup_uniform_buffer()
+         .set_size(sizeof(Uniforms))
+         .set_usage(vk::BufferUsageFlagBits::eUniformBuffer)
+         .set_memory_properties(
+-            vk::MemoryPropertyFlagBits::eHostVisible |
+-            vk::MemoryPropertyFlagBits::eHostCoherent)
++            vk::MemoryPropertyFlagBits::eHostVisible)
+         .set_memory_out(uniform_buffer_memory)
+         .build();
+ 
+@@ -367,4 +366,5 @@ void ShadingScene::update_uniforms()
+     ubo.modelview = modelview;
+ 
+     memcpy(uniform_buffer_map, &ubo, sizeof(ubo));
++        vkutil::flush_mapped_memory(*vulkan, uniform_buffer_memory);
+ }
+diff --git a/src/scenes/shading_scene.h b/src/scenes/shading_scene.h
+index e391e7a..b940d3e 100644
+--- a/src/scenes/shading_scene.h
++++ b/src/scenes/shading_scene.h
+@@ -24,6 +24,7 @@
+ 
+ #include "scene.h"
+ #include "managed_resource.h"
++#include <memory>
+ 
+ #define GLM_FORCE_DEPTH_ZERO_TO_ONE
+ #include <glm/glm.hpp>
+diff --git a/src/scenes/texture_scene.cpp b/src/scenes/texture_scene.cpp
+index 04a8207..d39b47e 100644
+--- a/src/scenes/texture_scene.cpp
++++ b/src/scenes/texture_scene.cpp
+@@ -161,8 +161,7 @@ void TextureScene::setup_vertex_buffer()
+         .set_size(mesh->vertex_data_size())
+         .set_usage(staging_usage_flags)
+         .set_memory_properties(
+-            vk::MemoryPropertyFlagBits::eHostVisible |
+-            vk::MemoryPropertyFlagBits::eHostCoherent)
++            vk::MemoryPropertyFlagBits::eHostVisible)
+         .set_memory_out(staging_buffer_memory)
+         .build();
+ 
+@@ -170,6 +169,7 @@ void TextureScene::setup_vertex_buffer()
+         auto const staging_buffer_map = vkutil::map_memory(
+             *vulkan, staging_buffer_memory, 0, mesh->vertex_data_size());
+         mesh->copy_vertex_data_to(staging_buffer_map);
++    vkutil::flush_mapped_memory(*vulkan, staging_buffer_memory);
+     }
+ 
+     vertex_buffer = vkutil::BufferBuilder{*vulkan}
+@@ -189,8 +189,7 @@ void TextureScene::setup_uniform_buffer()
+         .set_size(sizeof(Uniforms))
+         .set_usage(vk::BufferUsageFlagBits::eUniformBuffer)
+         .set_memory_properties(
+-            vk::MemoryPropertyFlagBits::eHostVisible |
+-            vk::MemoryPropertyFlagBits::eHostCoherent)
++            vk::MemoryPropertyFlagBits::eHostVisible)
+         .set_memory_out(uniform_buffer_memory)
+         .build();
+ 
+@@ -368,4 +367,5 @@ void TextureScene::update_uniforms()
+     ubo.material_diffuse = glm::vec4{0.7f, 0.7f, 0.7f, 1.0f};
+ 
+     memcpy(uniform_buffer_map, &ubo, sizeof(ubo));
++        vkutil::flush_mapped_memory(*vulkan, uniform_buffer_memory);
+ }
+diff --git a/src/scenes/texture_scene.h b/src/scenes/texture_scene.h
+index 49ca276..e399ca1 100644
+--- a/src/scenes/texture_scene.h
++++ b/src/scenes/texture_scene.h
+@@ -24,6 +24,7 @@
+ 
+ #include "scene.h"
+ #include "managed_resource.h"
++#include <memory>
+ #include "vkutil/texture.h"
+ 
+ #define GLM_FORCE_DEPTH_ZERO_TO_ONE
+diff --git a/src/scenes/vertex_scene.cpp b/src/scenes/vertex_scene.cpp
+index 0fd7fe7..03cb656 100644
+--- a/src/scenes/vertex_scene.cpp
++++ b/src/scenes/vertex_scene.cpp
+@@ -162,8 +162,7 @@ void VertexScene::setup_vertex_buffer()
+         .set_size(mesh->vertex_data_size())
+         .set_usage(staging_usage_flags)
+         .set_memory_properties(
+-            vk::MemoryPropertyFlagBits::eHostVisible |
+-            vk::MemoryPropertyFlagBits::eHostCoherent)
++            vk::MemoryPropertyFlagBits::eHostVisible)
+         .set_memory_out(staging_buffer_memory)
+         .build();
+ 
+@@ -171,6 +170,7 @@ void VertexScene::setup_vertex_buffer()
+         auto const staging_buffer_map = vkutil::map_memory(
+             *vulkan, staging_buffer_memory, 0, mesh->vertex_data_size());
+         mesh->copy_vertex_data_to(staging_buffer_map);
++    vkutil::flush_mapped_memory(*vulkan, staging_buffer_memory);
+     }
+ 
+     if (use_staging_buffer)
+@@ -197,8 +197,7 @@ void VertexScene::setup_uniform_buffer()
+         .set_size(sizeof(Uniforms))
+         .set_usage(vk::BufferUsageFlagBits::eUniformBuffer)
+         .set_memory_properties(
+-            vk::MemoryPropertyFlagBits::eHostVisible |
+-            vk::MemoryPropertyFlagBits::eHostCoherent)
++            vk::MemoryPropertyFlagBits::eHostVisible)
+         .set_memory_out(uniform_buffer_memory)
+         .build();
+ 
+@@ -353,4 +352,5 @@ void VertexScene::update_uniforms()
+     ubo.material_diffuse = glm::vec4{0.7f, 0.7f, 0.7f, 1.0};
+ 
+     memcpy(uniform_buffer_map, &ubo, sizeof(ubo));
++        vkutil::flush_mapped_memory(*vulkan, uniform_buffer_memory);
+ }
+diff --git a/src/scenes/vertex_scene.h b/src/scenes/vertex_scene.h
+index 3ada415..d233451 100644
+--- a/src/scenes/vertex_scene.h
++++ b/src/scenes/vertex_scene.h
+@@ -24,6 +24,7 @@
+ 
+ #include "scene.h"
+ #include "managed_resource.h"
++#include <memory>
+ 
+ #define GLM_FORCE_DEPTH_ZERO_TO_ONE
+ #include <glm/glm.hpp>
+diff --git a/src/vkutil/find_matching_memory_type.cpp b/src/vkutil/find_matching_memory_type.cpp
+index 9e8c9ba..8ad2034 100644
+--- a/src/vkutil/find_matching_memory_type.cpp
++++ b/src/vkutil/find_matching_memory_type.cpp
+@@ -42,3 +42,12 @@ uint32_t vkutil::find_matching_memory_type(
+ 
+     throw std::runtime_error("Couldn't find matching memory type");
+ }
++
++void vkutil::flush_mapped_memory(VulkanState& vulkan, vk::DeviceMemory memory)
++{
++    auto const range = vk::MappedMemoryRange{}
++        .setMemory(memory)
++        .setOffset(0)
++        .setSize(VK_WHOLE_SIZE);
++    vulkan.device().flushMappedMemoryRanges(range);
++}
+diff --git a/src/vkutil/find_matching_memory_type.h b/src/vkutil/find_matching_memory_type.h
+index e786303..87407fa 100644
+--- a/src/vkutil/find_matching_memory_type.h
++++ b/src/vkutil/find_matching_memory_type.h
+@@ -34,4 +34,6 @@ uint32_t find_matching_memory_type(
+     vk::MemoryRequirements const& requirements,
+     vk::MemoryPropertyFlags const& memory_properties);
+ 
++void flush_mapped_memory(VulkanState& vulkan, vk::DeviceMemory memory);
++
+ }
+diff --git a/src/vkutil/pipeline_builder.cpp b/src/vkutil/pipeline_builder.cpp
+index a0f6a4d..76d1fc5 100644
+--- a/src/vkutil/pipeline_builder.cpp
++++ b/src/vkutil/pipeline_builder.cpp
+@@ -202,6 +202,6 @@ ManagedResource<vk::Pipeline> vkutil::PipelineBuilder::build()
+         .setSubpass(0);
+ 
+     return ManagedResource<vk::Pipeline>{
+-        vulkan.device().createGraphicsPipeline({}, pipeline_create_info),
++        vulkan.device().createGraphicsPipeline({}, pipeline_create_info).value,
+         [vptr=&vulkan] (auto const& p) { vptr->device().destroyPipeline(p); }};
+ }
+diff --git a/src/vkutil/texture_builder.cpp b/src/vkutil/texture_builder.cpp
+index 089b7bd..ce00c25 100644
+--- a/src/vkutil/texture_builder.cpp
++++ b/src/vkutil/texture_builder.cpp
+@@ -26,6 +26,7 @@
+ #include "vulkan_state.h"
+ 
+ #include "buffer_builder.h"
++#include "find_matching_memory_type.h"
+ #include "copy_buffer.h"
+ #include "image_builder.h"
+ #include "image_view_builder.h"
+@@ -49,14 +50,14 @@ void texture_setup_image(VulkanState& vulkan,
+         .set_size(image.size)
+         .set_usage(vk::BufferUsageFlagBits::eTransferSrc)
+         .set_memory_properties(
+-            vk::MemoryPropertyFlagBits::eHostVisible |
+-            vk::MemoryPropertyFlagBits::eHostCoherent)
++            vk::MemoryPropertyFlagBits::eHostVisible)
+         .set_memory_out(staging_buffer_memory)
+         .build();
+ 
+     auto const staging_buffer_map = vulkan.device().mapMemory(
+         staging_buffer_memory, 0, image.size);
+     memcpy(staging_buffer_map, image.data, image.size);
++    vkutil::flush_mapped_memory(vulkan, staging_buffer_memory);
+     vulkan.device().unmapMemory(staging_buffer_memory);
+ 
+     texture.image = vkutil::ImageBuilder{vulkan}
+diff --git a/src/ws/swapchain_window_system.h b/src/ws/swapchain_window_system.h
+index ccdcd87..df857a4 100644
+--- a/src/ws/swapchain_window_system.h
++++ b/src/ws/swapchain_window_system.h
+@@ -25,6 +25,7 @@
+ #include "window_system.h"
+ #include "vulkan_wsi.h"
+ #include "managed_resource.h"
++#include <memory>
+ 
+ #include <vulkan/vulkan.hpp>
+ 

@@ -1,0 +1,56 @@
+diff --git a/src/c11/impl/threads_posix.c b/src/c11/impl/threads_posix.c
+index 3b86924..5316401 100644
+--- a/src/c11/impl/threads_posix.c
++++ b/src/c11/impl/threads_posix.c
+@@ -46,11 +46,13 @@ impl_thrd_routine(void *p)
+ 
+ /*--------------- 7.25.2 Initialization functions ---------------*/
+ // 7.25.2.1
++#ifndef MESA_LIBC_CALL_ONCE
+ void
+ call_once(once_flag *flag, void (*func)(void))
+ {
+     pthread_once(flag, func);
+ }
++#endif
+ 
+ 
+ /*------------- 7.25.3 Condition variable functions -------------*/
+diff --git a/src/c11/threads.h b/src/c11/threads.h
+index dbcb345..c9f0bf1 100644
+--- a/src/c11/threads.h
++++ b/src/c11/threads.h
+@@ -37,6 +37,12 @@
+ #include <limits.h>
+ #include <stdlib.h>
+ 
++#ifdef __GLIBC__
++#if __GLIBC_USE(ISOC23)
++#define MESA_LIBC_CALL_ONCE 1
++#endif
++#endif
++
+ #if defined(_WIN32) && !defined(HAVE_PTHREAD)
+ #  include <io.h> /* close */
+ #  include <process.h> /* _exit */
+@@ -118,8 +124,10 @@ typedef pthread_cond_t  cnd_t;
+ typedef pthread_t       thrd_t;
+ typedef pthread_key_t   tss_t;
+ typedef pthread_mutex_t mtx_t;
++#ifndef MESA_LIBC_CALL_ONCE
+ typedef pthread_once_t  once_flag;
+ #  define ONCE_FLAG_INIT PTHREAD_ONCE_INIT
++#endif
+ #  ifdef PTHREAD_DESTRUCTOR_ITERATIONS
+ #    define TSS_DTOR_ITERATIONS PTHREAD_DESTRUCTOR_ITERATIONS
+ #  else
+@@ -148,7 +156,9 @@ enum
+ 
+ /*-------------------------- functions --------------------------*/
+ 
++#ifndef MESA_LIBC_CALL_ONCE
+ void call_once(once_flag *, void (*)(void));
++#endif
+ int cnd_broadcast(cnd_t *);
+ void cnd_destroy(cnd_t *);
+ int cnd_init(cnd_t *);
