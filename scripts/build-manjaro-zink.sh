@@ -26,7 +26,7 @@ fi
 if ! grep -Fq VIRUAISOR_ZINK_SHARED_PIXMAP_EXPORT "$source/src/gallium/drivers/zink/zink_resource.c"; then
     git -C "$source" apply "$repo/native/venus-crosvm/zink-venus-shared-pixmap.patch"
 fi
-for patch_name in zink-khr-vertex-divisor zink-noncoherent-upload-flush; do
+for patch_name in zink-khr-vertex-divisor zink-noncoherent-upload-flush zink-noncoherent-glthread; do
     patch="$repo/native/venus-crosvm/$patch_name.patch"
     if ! git -C "$source" apply --reverse --check "$patch" 2>/dev/null; then
         git -C "$source" apply --check "$patch"

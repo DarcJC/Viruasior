@@ -1,0 +1,17 @@
+--- a/src/gallium/drivers/zink/zink_screen.c
++++ b/src/gallium/drivers/zink/zink_screen.c
+@@ -858,7 +858,13 @@
+       screen->info.have_vulkan11 || screen->info.have_KHR_maintenance2;
+ 
+    caps->validate_all_dirty_states = true;
+-   caps->allow_mapped_buffers_during_execution = true;
++   /* GLthread uploads client arrays into a buffer that remains mapped while
++    * draws execute. It neither flushes nor unmaps each uploaded range. Only
++    * advertise this path when upload buffers can actually be coherent; the
++    * ordinary Gallium uploader handles non-coherent memory with explicit
++    * flushes. In particular, Android Venus can expose coherent memory types
++    * that are incompatible with buffers (see the requirements probe above). */
++   caps->allow_mapped_buffers_during_execution = caps->buffer_map_persistent_coherent;
+    caps->map_unsynchronized_thread_safe = true;
+    caps->shareable_shaders = true;
+    caps->device_reset_status_query = true;

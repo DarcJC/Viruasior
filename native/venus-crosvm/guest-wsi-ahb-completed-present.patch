@@ -1,0 +1,18 @@
+--- a/src/virtio/vulkan/vn_wsi.c
++++ b/src/virtio/vulkan/vn_wsi.c
+@@ -94,6 +94,15 @@ vn_wsi_init(struct vn_physical_device *physical_dev)
+     * Other advertised formats fall back to BLOB allocations on this device. */
+    physical_dev->wsi_device.viruaisor_ahb_unorm_wsi =
+       getenv("VIRUAISOR_AHB_UNORM_WSI") != NULL;
++   /* This transport already waits on the CPU before returning a WSI sync fd:
++    * virtio-gpu implicit fencing cannot carry the renderer completion fence.
++    * Use Venus' completed-present fallback instead of exporting a fence,
++    * submitting a guest sync object, and waiting for its round trip each frame.
++    * vn_queue_wsi_present still waits for the rendering queue to finish before
++    * handing the image to the window system. Keep external semaphore support
++    * available to applications and limit this policy to the paired AHB WSI. */
++   if (physical_dev->wsi_device.viruaisor_ahb_unorm_wsi)
++      physical_dev->wsi_device.semaphore_export_handle_types = 0;
+    physical_dev->base.base.wsi_device = &physical_dev->wsi_device;
+ 
+    return VK_SUCCESS;

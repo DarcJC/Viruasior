@@ -12,11 +12,20 @@ if git -C "$source" apply --check "$node_patch" 2>/dev/null; then
 else
     git -C "$source" apply --reverse --check "$node_patch"
 fi
+# Normalize the two overlapping WSI patches before checking the older patch.
+completed_patch="$repo/native/venus-crosvm/guest-wsi-ahb-completed-present.patch"
+if git -C "$source" apply --reverse --check "$completed_patch" 2>/dev/null; then
+    git -C "$source" apply --reverse "$completed_patch"
+fi
 format_patch="$repo/native/venus-crosvm/guest-wsi-ahb-surface-formats.patch"
 if git -C "$source" apply --check "$format_patch" 2>/dev/null; then
     git -C "$source" apply "$format_patch"
 else
     git -C "$source" apply --reverse --check "$format_patch"
+fi
+if ! git -C "$source" apply --reverse --check "$completed_patch" 2>/dev/null; then
+    git -C "$source" apply --check "$completed_patch"
+    git -C "$source" apply "$completed_patch"
 fi
 sync_patch="$repo/native/venus-crosvm/guest-venus-desktop-sync-fd.patch"
 if ! git -C "$source" apply --reverse --check "$sync_patch" 2>/dev/null; then
