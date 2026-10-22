@@ -141,7 +141,6 @@ if [[ ${VENUS_CROSVM_DISPLAY:-0} == 1 ]]; then
     apply_renderer_patch android-vulkan-loader-trace VIRUAISOR_VK_LOADER_LOAD_BEGIN src/venus/vkr_library.c
     apply_renderer_patch android-display-quiet-trace venus_log_is_verbose src/venus/vkr_common.c
     apply_renderer_patch android-shmem-trace VIRUAISOR_BLOB_EXPORT_READY src/venus/vkr_context.c
-    apply_renderer_patch android-memory-detach-free 'generated destroy helper resolves' src/venus/vkr_device_memory.c
     apply_renderer_patch android-ring-trace VIRUAISOR_CONTEXT_SUBMIT src/venus/vkr_context.c
     apply_renderer_patch android-display-sync VIRUAISOR_DISPLAY_SYNC_BOUNDED_RING_DRAIN src/venus/vkr_renderer.c
     apply_renderer_patch android-display-gpu-completion VIRUAISOR_DISPLAY_SYNC_GPU_FENCE src/venus/vkr_renderer.c
@@ -196,13 +195,12 @@ if [[ ${VENUS_CROSVM_IMPORT_FILTER:-0} == 1 ]]; then
     apply_renderer_patch android-ahb-display-registry viruaisor_ahb_acquire_from_fd src/venus/vkr_device_memory.c
     apply_renderer_patch android-ahb-export-size VIRUAISOR_DMA_BUF_AHB_SIZE_PADDING src/venus/vkr_device_memory.c
     apply_renderer_patch android-ahb-image-sharing VIRUAISOR_AHB_IMAGE_IMPORT src/venus/vkr_device_memory.c
-    apply_renderer_patch android-ahb-descriptor-trace VIRUAISOR_AHB_DESCRIPTOR src/venus/vkr_device_memory.c
     apply_renderer_patch android-ahb-import-diagnostics VIRUAISOR_AHB_IMAGE_IMPORT_COMPAT src/venus/vkr_device_memory.c
+    apply_renderer_patch android-ahb-descriptor-trace VIRUAISOR_AHB_DESCRIPTOR src/venus/vkr_device_memory.c
     apply_renderer_patch android-ahb-import-memory-type 'const uint32_t compatible = properties.memoryTypeBits' src/venus/vkr_device_memory.c
     apply_renderer_patch android-ahb-resource-import-type 'driver_mem_type_index = alloc_info->memoryTypeIndex' src/venus/vkr_device_memory.c
     apply_renderer_patch android-ahb-resource-pnext VIRUAISOR_AHB_RESOURCE_PNEXT src/venus/vkr_device_memory.c
     apply_renderer_patch android-ahb-resource-export-chain VIRUAISOR_AHB_RESOURCE_EXPORT_STRIPPED src/venus/vkr_device_memory.c
-    apply_renderer_patch android-memory-publish-order VIRUAISOR_MEMORY_PUBLISH_READY src/venus/vkr_device_memory.c
     apply_renderer_patch android-ahb-optimal-tiling VIRUAISOR_IMAGE_EXTERNAL_AHB_RESULT src/venus/vkr_image.c
     apply_renderer_patch android-ahb-image-candidate-trace VIRUAISOR_IMAGE_CANDIDATE src/venus/vkr_image.c
     apply_renderer_patch android-ahb-optimal-source-sharing VIRUAISOR_AHB_OPTIMAL_SOURCE src/venus/vkr_image.c
@@ -212,8 +210,9 @@ if [[ ${VENUS_CROSVM_IMPORT_FILTER:-0} == 1 ]]; then
     apply_renderer_patch android-ahb-memory-requirements-fix VIRUAISOR_AHB_IMAGE_REQUIREMENTS_SYNTHETIC src/venus/vkr_image.c
     apply_renderer_patch android-ahb-rgba-host-format VIRUAISOR_AHB_HOST_FORMAT src/venus/vkr_image.c
     apply_renderer_patch android-ahb-image-view-format VIRUAISOR_AHB_IMAGE_VIEW src/venus/vkr_image.c
-    apply_renderer_patch android-ahb-compatible-image-view VIRUAISOR_AHB_COMPATIBLE_IMAGE_VIEW src/venus/vkr_image.c
     apply_renderer_patch android-ahb-write-path-trace VIRUAISOR_AHB_WRITE_COMMAND src/venus/vkr_command_buffer.c
+    apply_renderer_patch android-ahb-compatible-image-view VIRUAISOR_AHB_COMPATIBLE_IMAGE_VIEW src/venus/vkr_image.c
+    apply_renderer_patch android-memory-publish-order VIRUAISOR_MEMORY_PUBLISH_READY src/venus/vkr_device_memory.c
     apply_renderer_patch android-venus-teardown VIRUAISOR_ANDROID_DEVICE_TEARDOWN_ORDER src/venus/vkr_device.c
     apply_renderer_patch android-renderer-fd-trace VIRUAISOR_PROXY_FD src/proxy/proxy_context.c
     apply_renderer_patch android-allocation-quiet-trace VIRUAISOR_ALLOCATION_QUIET_TRACE src/venus/vkr_device_memory.c
@@ -234,6 +233,11 @@ elif git -C "$renderer_work/virglrenderer" apply --reverse --check \
         "$repo/native/venus-crosvm/android-import-memory-properties.patch" 2>/dev/null; then
     echo 'Experimental import-filter source requires explicit VENUS_CROSVM_IMPORT_FILTER=1 and display=1.' >&2
     exit 1
+fi
+if [[ ${VENUS_CROSVM_DISPLAY:-0} == 1 ]]; then
+    # Apply after optional DMA-BUF tracing, whose hunk still names the original
+    # generated destroy helper. The fix also applies without import tracing.
+    apply_renderer_patch android-memory-detach-free 'generated destroy helper resolves' src/venus/vkr_device_memory.c
 fi
 gcc -Wall -Wextra -Werror "$repo/native/venus-crosvm/venus_cache_sync_test.c" -o /tmp/viruaisor-venus-cache-test
 /tmp/viruaisor-venus-cache-test

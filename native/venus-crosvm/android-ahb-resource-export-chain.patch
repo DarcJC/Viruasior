@@ -1,6 +1,6 @@
 --- a/src/venus/vkr_device_memory.c
 +++ b/src/venus/vkr_device_memory.c
-@@ -779,6 +779,24 @@ vkr_dispatch_vkAllocateMemory(struct vn_dispatch_context *dispatch,
+@@ -779,5 +779,23 @@ vkr_dispatch_vkAllocateMemory(struct vn_dispatch_context *dispatch,
     VkExportMemoryAllocateInfo *export_info =
        vkr_find_struct(alloc_info->pNext, VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO);
 

@@ -1,7 +1,7 @@
 diff --git a/src/venus/vkr_image.c b/src/venus/vkr_image.c
 --- a/src/venus/vkr_image.c
 +++ b/src/venus/vkr_image.c
-@@ -17,6 +17,12 @@ vkr_dispatch_vkCreateImage(struct vn_dispatch_context *dispatch,
+@@ -17,6 +17,11 @@ vkr_dispatch_vkCreateImage(struct vn_dispatch_context *dispatch,
     VkExternalMemoryImageCreateInfo *external = vkr_find_struct(
        args->pCreateInfo->pNext,
        VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO);

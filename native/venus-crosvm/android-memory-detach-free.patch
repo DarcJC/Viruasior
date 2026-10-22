@@ -1,8 +1,7 @@
 diff --git a/src/venus/vkr_device_memory.c b/src/venus/vkr_device_memory.c
 --- a/src/venus/vkr_device_memory.c
 +++ b/src/venus/vkr_device_memory.c
-@@ -1017,6 +1017,11 @@ vkr_dispatch_vkFreeMemory(struct vn_dispatch_context *dispatch,
- #endif
+@@ -1018,5 +1018,10 @@ vkr_dispatch_vkFreeMemory(struct vn_dispatch_context *dispatch,
     vkr_device_memory_release(mem);
 -   vkr_device_memory_destroy_driver_handle(ctx, args);
 +   /* The generated destroy helper resolves args->memory through object_table.
