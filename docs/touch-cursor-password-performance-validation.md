@@ -1181,7 +1181,7 @@ own comparison.
 
 Wireless ADB disconnected after the complete baseline native capture and log
 collection, before its wide-mode resize. The discovered endpoint
-`192.168.1.107:40507` became unreachable and a reconnect timed out. No baseline
+The device's LAN endpoint on port `40507` became unreachable and a reconnect timed out. No baseline
 wide result was accepted. At that interruption the tablet had the baseline
 APK installed and the candidate was uncommitted. Evidence is under
 `.pi/device-debug/touch-perf-20261018/post-upload/`; raw frame timestamps are

@@ -1,0 +1,9 @@
+self-hosted-runner:
+  labels:
+    - viruaisor-release
+config-variables:
+  - VIRUAISOR_INPUTS_DIR
+  - VIRUAISOR_CROSVM_BIN_DIR
+  - VIRUAISOR_VENUS_WORK_DIR
+  - VIRUAISOR_ANDROID_NDK_HOME
+  - VIRUAISOR_ANDROID_SDK_HOME

@@ -13,8 +13,8 @@ android {
         applicationId = providers.gradleProperty("viruaisor.applicationId").orElse("pro.darc.viruaisor").get()
         minSdk = 37
         targetSdk = 37
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = providers.gradleProperty("viruaisor.versionCode").map(String::toInt).orElse(1).get()
+        versionName = providers.gradleProperty("viruaisor.versionName").orElse("1.0").get()
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

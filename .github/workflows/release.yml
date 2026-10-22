@@ -1,0 +1,106 @@
+name: Build and publish release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    # See docs/releasing.md for the pinned workspaces and signing setup.
+    runs-on: [self-hosted, linux, x64, viruaisor-release]
+    timeout-minutes: 360
+    permissions:
+      contents: write
+    env:
+      VIRUAISOR_INPUTS_DIR: ${{ vars.VIRUAISOR_INPUTS_DIR }}
+      VIRUAISOR_CROSVM_BIN_DIR: ${{ vars.VIRUAISOR_CROSVM_BIN_DIR }}
+      VENUS_WORK_DIR: ${{ vars.VIRUAISOR_VENUS_WORK_DIR }}
+      ANDROID_NDK_HOME: ${{ vars.VIRUAISOR_ANDROID_NDK_HOME }}
+      ANDROID_HOME: ${{ vars.VIRUAISOR_ANDROID_SDK_HOME }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Validate version tag
+        id: version
+        shell: bash
+        run: python3 scripts/release_tools.py version "$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Build native helpers and VM image
+        shell: bash
+        run: bash scripts/build-release-inputs.sh
+
+      - name: Test and assemble unsigned release APK
+        shell: bash
+        env:
+          RELEASE_VERSION_NAME: ${{ steps.version.outputs.versionName }}
+          RELEASE_VERSION_CODE: ${{ steps.version.outputs.versionCode }}
+        run: |
+          ./gradlew :app:testDebugUnitTest :app:assembleRelease \
+            "-Pviruaisor.versionName=$RELEASE_VERSION_NAME" \
+            "-Pviruaisor.versionCode=$RELEASE_VERSION_CODE"
+
+      - name: Sign and verify release APK
+        shell: bash
+        env:
+          ANDROID_SIGNING_KEYSTORE_BASE64: ${{ secrets.ANDROID_SIGNING_KEYSTORE_BASE64 }}
+          ANDROID_SIGNING_KEY_ALIAS: ${{ secrets.ANDROID_SIGNING_KEY_ALIAS }}
+          ANDROID_SIGNING_STORE_PASSWORD: ${{ secrets.ANDROID_SIGNING_STORE_PASSWORD }}
+          ANDROID_SIGNING_KEY_PASSWORD: ${{ secrets.ANDROID_SIGNING_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          : "${ANDROID_SIGNING_KEYSTORE_BASE64:?Missing release keystore secret}"
+          : "${ANDROID_SIGNING_KEY_ALIAS:?Missing signing alias secret}"
+          : "${ANDROID_SIGNING_STORE_PASSWORD:?Missing keystore password secret}"
+          : "${ANDROID_SIGNING_KEY_PASSWORD:?Missing key password secret}"
+          build_tools=$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -1)
+          test -x "$build_tools/zipalign"
+          test -x "$build_tools/apksigner"
+          keystore="$RUNNER_TEMP/viruaisor-release.jks"
+          trap 'rm -f "$keystore" "$RUNNER_TEMP/viruaisor-aligned.apk"' EXIT
+          umask 077
+          printf '%s' "$ANDROID_SIGNING_KEYSTORE_BASE64" | base64 --decode > "$keystore"
+          "$build_tools/zipalign" -f -p 4 \
+            app/build/outputs/apk/release/app-release-unsigned.apk \
+            "$RUNNER_TEMP/viruaisor-aligned.apk"
+          "$build_tools/apksigner" sign \
+            --ks "$keystore" \
+            --ks-key-alias "$ANDROID_SIGNING_KEY_ALIAS" \
+            --ks-pass env:ANDROID_SIGNING_STORE_PASSWORD \
+            --key-pass env:ANDROID_SIGNING_KEY_PASSWORD \
+            --out "$RUNNER_TEMP/viruaisor-signed.apk" \
+            "$RUNNER_TEMP/viruaisor-aligned.apk"
+          "$build_tools/apksigner" verify --verbose "$RUNNER_TEMP/viruaisor-signed.apk"
+
+      - name: Validate and stage release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/release_tools.py stage "$GITHUB_REF_NAME" \
+            "$RUNNER_TEMP/viruaisor-signed.apk" \
+            .pi/device-debug/manjaro-plasma/manjaro-plasma-venus.zip \
+            app/src/main/jniLibs/arm64-v8a \
+            app/src/main/java/pro/darc/viruaisor/root/RootOverlayArtifactPolicy.kt \
+            dist
+          (cd dist && sha256sum --check SHA256SUMS)
+
+      - name: Publish GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sed "s/vX.Y.Z/$GITHUB_REF_NAME/g" docs/release-notes.md > "$RUNNER_TEMP/viruaisor-release-notes.md"
+          gh release create "$GITHUB_REF_NAME" \
+            dist/*.apk dist/*.zip dist/SHA256SUMS \
+            --verify-tag --title "Viruaisor $GITHUB_REF_NAME" \
+            --notes-file "$RUNNER_TEMP/viruaisor-release-notes.md"
