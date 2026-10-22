@@ -140,3 +140,80 @@ Original installed libraries were retained beside them with the suffix
 `.before-vkmark-20261022`. To roll back, install a backup to a new temporary
 filename and rename it over the current library; never overwrite a library
 that an active desktop process has mapped.
+
+## Windowed X11 MAILBOX performance (2026-10-22)
+
+The remaining default-mode slowdown came from a missing Present clock in the
+non-composited windowed copy path. At 1920x1280, 120 Hz, KWin composition is
+suspended by the desktop policy. Such a window shares the screen pixmap but
+cannot page flip. The earlier Xorg clock patch excluded every screen pixmap,
+so the failed virtio CRTC query produced zero UST/MSC. Xorg executed each
+MAILBOX copy immediately instead of replacing pending frames at the next MSC.
+
+Evidence from the unchanged installed Venus/Zink libraries:
+
+- Two X11 clear/cube runs scored 194 and 202, versus 1637 for Wayland.
+- The default X11 Present probe reported only COPY completions with
+  `ust=0 msc=0`. Temporarily enabling KWin composition produced advancing
+  timestamps and SKIP completions, and raised the short score to 657.
+- Xorg stack samples caught its main thread in `present_execute_copy` /
+  `glFlush`, waiting for the Zink submit thread, which was polling an imported
+  sync FD in Venus. Another sample caught a synchronous buffer invalidation.
+  These operations were repeated for frames that MAILBOX could have superseded.
+
+`guest/xorg/present-copy-clock.patch` extends the existing opt-in fallback to
+non-fullscreen copies into the screen pixmap. Fullscreen screen pixmaps,
+current flips, and pending flips retain their CRTC. The single-output,
+valid-mode and failed-hardware-clock checks still apply. No GPU fence is
+removed or signaled early, and no library, default present mode, compositor
+policy or Wayland selection changes.
+
+The actual patched CRTC-selection harness first failed on the new windowed
+screen-pixmap case, then passed with the fix. The runtime checker
+`node guest/xorg/check-vkmark-clock.cjs LOG` rejects the captured old zero-clock
+log and accepts the new advancing clock with superseded MAILBOX completions.
+
+| Profiled clear/cube pair | Before | After |
+| --- | ---: | ---: |
+| Score | 194 / 202 | 1109 |
+| Average AcquireNextImage | 1652–1900 us | 63 us |
+| Average QueuePresent | 2095–2166 us | 793 us |
+| Average application WaitForFences | 1284–1508 us | 61 us |
+
+These are CPU call durations, not isolated GPU execution times. Profiling was
+removed for the full suite below. MAILBOX FPS includes rendered frames that
+are superseded before display; it is not the tablet's physical refresh rate.
+
+### Device verification
+
+The VM stayed running throughout. The private Xorg executable was installed
+by atomic rename and only `avf-plasma.service` was restarted to load it. The
+display was restored to 1920x1280 at 120 Hz; KWin composition remained suspended
+during the measurements.
+
+| Check | Result |
+| --- | --- |
+| `vkmark`, all 13 default scenes | Exit 0, **1109** (previous full suite: **240**) |
+| `vkmark --winsys wayland`, all 13 scenes | Exit 0, **1654** (previous: **1645**) |
+| X11 fixed gray, 20 seconds | Exit 0; **1798** captured frames in the interior 15 seconds; **0** black/incorrect frames |
+| Wayland fixed gray, 20 seconds | Exit 0; **900** captured frames in the interior 15 seconds; **0** black/incorrect frames |
+| Final 4-second FIFO / MAILBOX clear checks | Exit 0 for both; **120 / 691 FPS**; desktop service and terminal remained responsive |
+
+The gray ROI stayed at 126.00 for X11 and 125.9988 for Wayland in 8-bit video.
+Full-suite recordings and per-scene samples show all scenes rendered. The
+remaining X11/Wayland score difference includes their different presentation
+and copy paths; this fix does not establish equal rendering throughput.
+The shorter runs also vary; 1109 is the measured complete-suite score, not a
+guaranteed frame rate for every scene or run.
+
+`scripts/build-guest-xorg.sh` passed its clock and scope tests and built the
+ARM64 server. A repeated build produced the same binary hash. Applying both
+patches to the clean pinned source with zero fuzz produced the same CRTC
+selection source as the incremental build. No Android code changed.
+
+Installed Xorg SHA-256:
+`f3695acc247dc55495bdfb1e64850558750b155fa61531d88dccc93aebdf0bdd`.
+Venus and Zink hashes remain the ones recorded above. The old server is retained
+at `/opt/viruaisor/xorg/Xorg.before-copy-clock-20261022`; rollback uses an atomic
+rename of a copy followed by a guest desktop restart. Logs, videos, pixel
+analysis and build outputs are in `.pi/device-debug/vkmark-x11/` locally.

@@ -7,19 +7,23 @@
 #define Success 0
 #define RR_DoubleScan 32
 #define RR_Interlace 16
+typedef int Bool;
 typedef void *PixmapPtr;
+typedef struct { int x1,y1,x2,y2; } RegionRec;
+static int RegionEqual(const RegionRec *a,const RegionRec *b) {return memcmp(a,b,sizeof(*a))==0;}
 typedef struct Screen *ScreenPtr;
 typedef struct Window *WindowPtr;
 typedef struct { uint64_t dotClock; uint32_t hTotal,vTotal,modeFlags; } xRRModeInfo;
 struct Mode { xRRModeInfo mode; };
 typedef struct Crtc { struct Mode *mode; ScreenPtr pScreen; } *RRCrtcPtr;
 typedef struct Randr { int numCrtcs; RRCrtcPtr *crtcs; } *rrScrPrivPtr;
-struct Window { struct { ScreenPtr pScreen; } drawable; PixmapPtr pixmap; };
+struct Window { struct { ScreenPtr pScreen; int x,y; } drawable; PixmapPtr pixmap; RegionRec clipList,winSize; };
 struct Screen {
     PixmapPtr (*GetWindowPixmap)(WindowPtr);
     PixmapPtr (*GetScreenPixmap)(ScreenPtr);
     rrScrPrivPtr rr;
     PixmapPtr pixmap,pending;
+    WindowPtr root;
 };
 struct Info {
     RRCrtcPtr (*get_crtc)(WindowPtr);
@@ -43,8 +47,11 @@ int main(void) {
     struct Crtc crtc={&mode,NULL},second={&mode,NULL};
     RRCrtcPtr crtcs[]={&crtc,&second};
     struct Randr rr={1,crtcs};
-    struct Screen screen={window_pixmap,screen_pixmap,&rr,&screen_storage,&pending_storage};
-    struct Window window={{&screen},&screen_storage};
+    RegionRec full={0,0,1920,1280},small={0,0,800,600};
+    struct Screen screen={window_pixmap,screen_pixmap,&rr,&screen_storage,&pending_storage,NULL};
+    struct Window root={{&screen,0,0},&screen_storage,full,full};
+    struct Window window={{&screen,0,0},&screen_storage,full,full};
+    screen.root=&root;
     struct Info info={get_crtc,get_ust_msc};
     struct Priv priv={&info,&flip_storage};
     current=&crtc;crtc.pScreen=&screen;second.pScreen=&screen;
@@ -63,6 +70,21 @@ int main(void) {
     window.pixmap=&redirected_storage;
     assert(present_scmd_get_crtc(&priv,&window)==NULL);
     assert(clock_calls==1&&last_period==16666667);
+    // The non-composited vkmark window shares the screen pixmap but cannot
+    // flip. It needs a clock too, so MAILBOX can retire superseded copies.
+    window.pixmap=&screen_storage;
+    window.clipList=small;
+    assert(present_scmd_get_crtc(&priv,&window)==NULL);
+    assert(clock_calls==2);
+    // Matching extents alone do not make an offset window flippable.
+    window.clipList=full;window.drawable.x=1;
+    assert(present_scmd_get_crtc(&priv,&window)==NULL);
+    window.drawable.x=0;window.drawable.y=1;
+    assert(present_scmd_get_crtc(&priv,&window)==NULL);
+    window.drawable.y=0;
+    assert(present_scmd_get_crtc(&priv,&window)==&crtc);
+    assert(clock_calls==4);
+    window.clipList=small;
     hardware_status=Success;
     assert(present_scmd_get_crtc(&priv,&window)==&crtc);
     hardware_status=1;rr.numCrtcs=2;
@@ -72,6 +94,6 @@ int main(void) {
     mode.mode.dotClock=150000000;
     assert(unsetenv("VIRUAISOR_X11_SOFTWARE_CLOCK")==0);
     assert(present_scmd_get_crtc(&priv,&window)==&crtc);
-    assert(clock_calls==1);
-    puts("PASS: screen/current/pending flip paths preserved; redirected-only fallback and original gates");
+    assert(clock_calls==4);
+    puts("PASS: fullscreen/current/pending flips preserved; redirected and windowed copy clocks; original gates");
 }

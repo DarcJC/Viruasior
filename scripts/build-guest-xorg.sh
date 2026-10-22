@@ -9,6 +9,7 @@ archive_sha=1d3dadbd57fb86b16a018e9f5f957aeeadf744f56c0553f55737628d06d326ef
 source_dir="$work/xorg-server-$version"
 archive="$work/xorg-server-$version.tar.xz"
 patch_file="$repo/guest/xorg/present-clock.patch"
+copy_patch="$repo/guest/xorg/present-copy-clock.patch"
 out="$repo/.pi/device-debug/manjaro-plasma/xorg"
 mkdir -p "$work" "$out"
 
@@ -28,11 +29,16 @@ if [[ ! -f "$archive" ]]; then
 fi
 printf '%s  %s\n' "$archive_sha" "$archive" | sha256sum -c -
 if [[ ! -d "$source_dir" ]]; then tar -xJf "$archive" -C "$work"; fi
+# Normalize the follow-up first: it changes context in the base clock patch.
+if patch --dry-run --force --reverse -p1 -d "$source_dir" < "$copy_patch" >/dev/null 2>&1; then
+    patch --force --reverse -p1 -d "$source_dir" < "$copy_patch"
+fi
 if patch --dry-run --batch --forward -p1 -d "$source_dir" < "$patch_file" >/dev/null; then
     patch --batch --forward -p1 -d "$source_dir" < "$patch_file"
 else
     patch --dry-run --batch --reverse -p1 -d "$source_dir" < "$patch_file" >/dev/null
 fi
+patch --batch --forward -p1 -d "$source_dir" < "$copy_patch"
 cp "$repo/guest/xorg/present_clock.h" "$source_dir/present/present_clock.h"
 gcc -Wall -Wextra -Werror -fsanitize=undefined \
     "$repo/guest/xorg/present_clock_test.c" -o "$work/present-clock-test"
@@ -76,5 +82,5 @@ aarch64-linux-gnu-gcc --sysroot="$root" -B"$root/usr/lib/" -nostdinc \
     -O2 -fPIC -shared "$repo/guest/xorg/present_clock_probe.c" \
     -L"$root/usr/lib" -Wl,-rpath-link,"$root/usr/lib" -lxcb-present -lxcb -ldl \
     -o "$out/present-clock-probe.so"
-sha256sum "$archive" "$patch_file" "$repo/guest/xorg/present_clock.h" "$out/Xorg" > "$out/SHA256SUMS"
+sha256sum "$archive" "$patch_file" "$copy_patch" "$repo/guest/xorg/present_clock.h" "$out/Xorg" > "$out/SHA256SUMS"
 cat "$out/SHA256SUMS"

@@ -1,0 +1,22 @@
+--- a/present/present_scmd.c
++++ b/present/present_scmd.c
+@@ -167,10 +167,15 @@
+         screen_priv->info->get_ust_msc) {
+         ScreenPtr screen = window->drawable.pScreen;
+         PixmapPtr window_pixmap = screen->GetWindowPixmap(window);
+-        /* A software CRTC fallback disables Present flips. Apply it only
+-         * to redirected application pixmaps; preserve the compositor's
+-         * screen, current flip and pending flip paths. */
+-        if (!window_pixmap || window_pixmap == screen->GetScreenPixmap(screen) ||
++        /* A software CRTC fallback disables Present flips. Preserve the
++         * fullscreen screen pixmap and current/pending flips. A windowed
++         * copy can share the screen pixmap when composition is suspended;
++         * it still needs a clock to coalesce MAILBOX presents instead of
++         * copying every frame immediately with a zero MSC. */
++        Bool fullscreen = window->drawable.x == 0 && window->drawable.y == 0 &&
++            RegionEqual(&window->clipList, &screen->root->winSize);
++        if (!window_pixmap ||
++            (window_pixmap == screen->GetScreenPixmap(screen) && fullscreen) ||
+             window_pixmap == screen_priv->flip_pixmap ||
+             window_pixmap == present_flip_pending_pixmap(screen))
+             return crtc;

@@ -6,9 +6,12 @@ and no vblank wait. QtQuick then advances animation time faster than real time.
 
 `present-clock.patch` selects Xorg's existing software-vblank path only with
 `VIRUAISOR_X11_SOFTWARE_CLOCK=1`, exactly one active output, a valid 10–250 Hz
-mode, a failed driver clock query and a redirected application pixmap.
-The screen pixmap, active flip and pending flip pixmaps keep the driver's
-CRTC. Selecting the software path would otherwise disable Present flipping
+mode and a failed driver clock query. `present-copy-clock.patch` also covers
+windowed copies into the screen pixmap while composition is suspended. Without
+that case, MAILBOX completes every copy immediately with zero UST/MSC and cannot
+retire superseded frames before doing the GPU copy. The fullscreen screen
+pixmap, active flip and pending flip pixmaps keep the driver's CRTC. Selecting
+the software path would otherwise disable Present flipping
 for the compositor and add a full-screen copy. Its monotonic clock follows that mode's
 actual dot clock and scan totals. MSC stays continuous across 60/120 Hz changes;
 timer callbacks recheck the target after rounding waits upward. Wait-fence
@@ -26,8 +29,9 @@ source/binary hashes and the upstream license go to the ignored
 
 The build tests clock continuity, timer bounds and the actual patched CRTC
 selection function. The scope harness uses small driver/pixmap stand-ins to
-verify that ordinary redirected windows get a clock while screen/current/
-pending flip paths and the original enablement gates are preserved. Runtime
+verify that redirected and non-fullscreen screen-pixmap windows get a clock
+while fullscreen/current/pending flip paths and the original enablement gates
+are preserved. Runtime
 Present probes must additionally confirm KWin flip completions and advancing
 client UST/MSC; the harness alone cannot prove physical performance.
 
@@ -62,3 +66,18 @@ on zero Present timestamps; the patched server must return advancing timestamps
 and five animation seconds in 4.5–5.5 real seconds, excluding startup. Use a
 fresh client at each refresh rate for this clock test. Test an already open
 client across refresh changes separately. Remove `LD_PRELOAD` for all FPS tests.
+
+For the non-composited MAILBOX regression, run the following from a graphical
+session with composition already suspended, then retrieve the log:
+
+```sh
+LD_PRELOAD="$PWD/present-clock-probe.so" timeout -k 2s 15s \
+    vkmark -b clear:duration=5 >vkmark-clock.log 2>&1
+node guest/xorg/check-vkmark-clock.cjs vkmark-clock.log
+```
+
+The checker rejects zero/backward clocks, a stuck clock, a missing final score,
+and no observed superseded frame. It targets the fast windowed MAILBOX clear
+workload on the paired device, not a slow workload or FIFO/fullscreen mode.
+Pixel recordings and the full uninstrumented suite remain separate checks; see
+`docs/guest/vkmark.md` for the before/after measurements.
