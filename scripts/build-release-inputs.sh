@@ -3,7 +3,7 @@
 set -euo pipefail
 
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-inputs=${VIRUAISOR_INPUTS_DIR:?Set VIRUAISOR_INPUTS_DIR to the persistent device-debug input directory}
+inputs=${VIRUAISOR_INPUTS_DIR:?Set VIRUAISOR_INPUTS_DIR to the verified release input directory}
 crosvm_bins=${VIRUAISOR_CROSVM_BIN_DIR:?Set VIRUAISOR_CROSVM_BIN_DIR to the two reviewed crosvm executables}
 : "${ANDROID_NDK_HOME:?Set ANDROID_NDK_HOME to Android NDK r30}"
 : "${VENUS_WORK_DIR:?Set VENUS_WORK_DIR to the pinned host renderer workspace}"
@@ -27,15 +27,18 @@ printf '%s  %s\n' \
     a4a71002533174408d0acdbfe3d4980482087bc9a29d0428ac423579bce9029b \
     "$crosvm_bins/libvenus_crosvm.so" | sha256sum -c -
 printf '%s  %s\n' \
-    ccdf777ee6e2098cf92d7b51cc0d47f403714c170b568e04daf9165140708571 \
+    0358204e9e875d6870bed201514f01664f1b242143662cbec42675df3749d4b0 \
     "$crosvm_bins/libvenus_desktop_crosvm.so" | sha256sum -c -
 
 mkdir -p "$repo/.pi" "$repo/app/src/main/jniLibs/arm64-v8a"
-[[ ! -e "$repo/.pi/device-debug" ]] || {
-    echo 'The checkout must start without a .pi/device-debug path' >&2
+if [[ -L "$repo/.pi/device-debug" && $(realpath "$repo/.pi/device-debug") == "$(realpath "$inputs")" ]]; then
+    : # The hosted bootstrap shares this directory with the font preparer.
+elif [[ -e "$repo/.pi/device-debug" || -L "$repo/.pi/device-debug" ]]; then
+    echo '.pi/device-debug must be absent or link to the selected release inputs' >&2
     exit 1
-}
-ln -s "$inputs" "$repo/.pi/device-debug"
+else
+    ln -s "$inputs" "$repo/.pi/device-debug"
+fi
 for name in libvenus_crosvm.so libvenus_desktop_crosvm.so; do
     install -m0755 "$crosvm_bins/$name" "$repo/app/src/main/jniLibs/arm64-v8a/$name"
 done

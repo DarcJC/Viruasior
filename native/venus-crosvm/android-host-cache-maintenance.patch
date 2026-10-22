@@ -1,0 +1,129 @@
+diff --git a/src/venus/vkr_device_memory.c b/src/venus/vkr_device_memory.c
+--- a/src/venus/vkr_device_memory.c
++++ b/src/venus/vkr_device_memory.c
+@@ -37,6 +37,15 @@
+    viruaisor_ahb_registry[VIRUAISOR_AHB_REGISTRY_CAPACITY];
+ static pthread_mutex_t viruaisor_ahb_registry_mutex = PTHREAD_MUTEX_INITIALIZER;
+ static struct venus_uncached_entry uncached_entries[VENUS_UNCACHED_MAX_LEASES];
++
++bool
++vkr_android_uncached_cache_maintain(struct vkr_context *owner, bool completed)
++{
++   pthread_mutex_lock(&viruaisor_ahb_registry_mutex);
++   const bool okay = venus_uncached_cache_maintain(uncached_entries, owner, completed);
++   pthread_mutex_unlock(&viruaisor_ahb_registry_mutex);
++   return okay;
++}
+ 
+ static void
+ vkr_android_uncached_release(int fd)
+diff --git a/src/venus/vkr_device_memory.h b/src/venus/vkr_device_memory.h
+--- a/src/venus/vkr_device_memory.h
++++ b/src/venus/vkr_device_memory.h
+@@ -47,6 +47,10 @@
+ void
+ vkr_context_init_device_memory_dispatch(struct vkr_context *ctx);
+ 
++#ifdef __ANDROID__
++bool vkr_android_uncached_cache_maintain(struct vkr_context *owner, bool completed);
++#endif
++
+ void
+ vkr_device_memory_release(struct vkr_device_memory *mem);
+ 
+diff --git a/src/venus/vkr_queue.c b/src/venus/vkr_queue.c
+--- a/src/venus/vkr_queue.c
++++ b/src/venus/vkr_queue.c
+@@ -9,6 +9,9 @@
+ 
+ #include "vkr_context.h"
+ #include "vkr_physical_device.h"
++#ifdef __ANDROID__
++#include "vkr_device_memory.h"
++#endif
+ #include "vkr_queue_gen.h"
+ 
+ static struct vkr_queue_sync *
+@@ -71,6 +74,10 @@
+ vkr_queue_sync_retire(struct vkr_queue *queue, struct vkr_queue_sync *sync)
+ {
+    TRACE_FUNC();
++#ifdef __ANDROID__
++   if (!vkr_android_uncached_cache_maintain(queue->context, true))
++      vkr_context_set_fatal(queue->context);
++#endif
+    queue->context->retire_fence(queue->context->ctx_id, sync->ring_idx, sync->fence_id);
+    vkr_device_free_queue_sync(queue->device, sync);
+ }
+@@ -427,6 +434,13 @@
+    vn_replace_vkQueueSubmit_args_handle(args);
+ 
+    mtx_lock(&queue->vk_mutex);
++#ifdef __ANDROID__
++   if (!vkr_android_uncached_cache_maintain(queue->context, false)) {
++      args->ret = VK_ERROR_DEVICE_LOST;
++      mtx_unlock(&queue->vk_mutex);
++      return;
++   }
++#endif
+    args->ret =
+       vk->QueueSubmit(args->queue, args->submitCount, args->pSubmits, args->fence);
+    mtx_unlock(&queue->vk_mutex);
+@@ -468,6 +482,13 @@
+    vn_replace_vkQueueSubmit2_args_handle(args);
+ 
+    mtx_lock(&queue->vk_mutex);
++#ifdef __ANDROID__
++   if (!vkr_android_uncached_cache_maintain(queue->context, false)) {
++      args->ret = VK_ERROR_DEVICE_LOST;
++      mtx_unlock(&queue->vk_mutex);
++      return;
++   }
++#endif
+    args->ret =
+       vk->QueueSubmit2(args->queue, args->submitCount, args->pSubmits, args->fence);
+    mtx_unlock(&queue->vk_mutex);
+@@ -508,6 +529,10 @@
+ 
+    vn_replace_vkGetFenceStatus_args_handle(args);
+    args->ret = vk->GetFenceStatus(args->device, args->fence);
++#ifdef __ANDROID__
++   if (args->ret == VK_SUCCESS && !vkr_android_uncached_cache_maintain(dispatch->data, true))
++      args->ret = VK_ERROR_DEVICE_LOST;
++#endif
+ }
+ 
+ static void
+@@ -521,6 +546,10 @@
+    vn_replace_vkWaitForFences_args_handle(args);
+    args->ret = vk->WaitForFences(args->device, args->fenceCount, args->pFences,
+                                  args->waitAll, args->timeout);
++#ifdef __ANDROID__
++   if (args->ret == VK_SUCCESS && !vkr_android_uncached_cache_maintain(dispatch->data, true))
++      args->ret = VK_ERROR_DEVICE_LOST;
++#endif
+ }
+ 
+ static void
+@@ -573,6 +602,10 @@
+ 
+    vn_replace_vkGetSemaphoreCounterValue_args_handle(args);
+    args->ret = vk->GetSemaphoreCounterValue(args->device, args->semaphore, args->pValue);
++#ifdef __ANDROID__
++   if (args->ret == VK_SUCCESS && !vkr_android_uncached_cache_maintain(dispatch->data, true))
++      args->ret = VK_ERROR_DEVICE_LOST;
++#endif
+ }
+ 
+ static void
+@@ -585,6 +618,10 @@
+ 
+    vn_replace_vkWaitSemaphores_args_handle(args);
+    args->ret = vk->WaitSemaphores(args->device, args->pWaitInfo, args->timeout);
++#ifdef __ANDROID__
++   if (args->ret == VK_SUCCESS && !vkr_android_uncached_cache_maintain(dispatch->data, true))
++      args->ret = VK_ERROR_DEVICE_LOST;
++#endif
+ }
+ 
+ static void

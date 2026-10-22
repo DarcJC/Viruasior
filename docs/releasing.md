@@ -16,37 +16,56 @@ the two crosvm hashes and lengths from `RootOverlayArtifactPolicy.kt`, and
 the required third-party notices. GitHub allows each Release asset to be
 smaller than 2 GiB; the validator rejects an oversized bundle before upload.
 
-## Runner setup
+## GitHub-hosted runner setup
 
-Use a persistent Linux x64 runner with labels `self-hosted`, `linux`, `x64`,
-and `viruaisor-release`. It needs passwordless `sudo` for the guest image
-build, Android SDK API 37 and build tools, NDK r30, JDK 25, Gradle's network
-dependencies, `gh`, Python 3, Rust with the Android arm64 target, the
-arm64 GNU cross compiler, Meson, Ninja, glslangValidator, QEMU binfmt,
-e2fsprogs, and the other tools used by the existing `scripts/build-*` scripts.
-Do not make the runner available to untrusted pull requests. The build job
-receives a token with `contents: write` only for tag releases.
+The job uses `ubuntu-latest`. It installs JDK 25, Android SDK API 37.0,
+build tools 37.0.0, NDK 30.0.16248370, the arm64 cross compiler, QEMU and
+the native/guest build dependencies. Each run downloads the pinned Manjaro
+base rootfs, prepares Plasma and its development headers, fetches the pinned
+Mesa and virglrenderer sources, and rebuilds the native helpers and VM image.
+The guest builders check the paired Qt 5.15.12, KWin 5.27.10 and Xorg 21.1.11
+versions; a distro package change requires reviewing those compatibility checks.
+No self-hosted runner registration or persistent build workspace is needed.
 
-Create these GitHub Actions **repository variables** with absolute Linux paths:
+The September kernel/initrd and two reviewed crosvm binaries still need a
+one-time export because they are not available at a pinned public download
+URL. On the existing development checkout, run this with Python 3 (or WSL):
+
+```sh
+python3 scripts/release_inputs.py pack \
+  .pi/device-debug/image app/src/main/jniLibs/arm64-v8a \
+  dist/viruaisor-release-inputs.zip
+```
+
+The exporter checks all four pinned hashes and includes only those four
+files. It never exports the surrounding `.pi` workspace, device logs,
+keystores, or user directories. It prints the ZIP's SHA-256 and writes
+`dist/viruaisor-release-inputs.zip.sha256`. For the validated context-scoped
+renderer, the current archive digest is
+`ebcbfcd840d6254c83ea2ec68bb3fbaa995ad5aeb546a6ff9b6ff5cc21e25c7d`.
+Regenerate it and update the repository variable when any reviewed input
+changes. Upload the ZIP once as a public
+GitHub Release asset under a non-version tag such as `release-inputs-20261022`
+(this tag does not trigger the release workflow), or to another HTTPS host.
+Mark the input Release as a pre-release so it is not presented as the latest app release.
+Retain that asset for future builds. Use its direct download URL, not the
+Release page URL.
+
+Create these GitHub Actions **repository variables**:
 
 | Variable | Contents |
 | --- | --- |
-| `VIRUAISOR_INPUTS_DIR` | Persistent `device-debug` input directory containing `image/vmlinuz`, `image/initrd.img`, and `venus-crosvm-build/mesa-guest-reference` plus the existing pinned guest build sources. |
-| `VIRUAISOR_CROSVM_BIN_DIR` | Directory containing the two reviewed `libvenus_crosvm.so` and `libvenus_desktop_crosvm.so` executables. |
-| `VIRUAISOR_VENUS_WORK_DIR` | Pinned Android host renderer build workspace used by `build-venus-host.sh`. |
-| `VIRUAISOR_ANDROID_NDK_HOME` | Linux Android NDK r30 directory. |
-| `VIRUAISOR_ANDROID_SDK_HOME` | Linux Android SDK directory containing API 37 and build tools. |
+| `VIRUAISOR_RELEASE_INPUTS_URL` | Public HTTPS download URL for `viruaisor-release-inputs.zip`. |
+| `VIRUAISOR_RELEASE_INPUTS_SHA256` | The 64-character lowercase SHA-256 printed by the exporter. |
 
-The runner also needs the prepared Manjaro workspace under
-`/tmp/viruaisor-manjaro`: `rootfs.tar.gz`, an extracted and configured `root/`,
-and the guest Mesa build directories. The build checks the official Manjaro
-rootfs archive SHA-256 before use, recompiles the source-built Android
-helpers and guest Mesa/desktop pieces, creates a new ext4 image, runs Android
-unit tests, and assembles the Release APK. The two crosvm executables remain
-reviewed binary inputs: their pinned hashes must be updated and validated
-after any crosvm source change. The current scripts still require device
-APEX linker inputs in the prepared crosvm workspace, so this is a
-preprovisioned runner build rather than a fresh GitHub-hosted rebuild.
+The download is verified against this digest and every member is checked
+against the reviewed pins in `scripts/release_inputs.py` before extraction.
+The crosvm executables remain binary inputs: the build does not need device
+APEX linker files, but a crosvm source change still requires rebuilding,
+device validation, and updating its pins before exporting a replacement ZIP.
+The validated desktop crosvm SHA-256 is
+`0358204e9e875d6870bed201514f01664f1b242143662cbec42675df3749d4b0`.
+The previous five variables containing local Linux paths are no longer used.
 
 Create these **repository secrets** for an existing, stable Android release
 signing key: `ANDROID_SIGNING_KEYSTORE_BASE64`, `ANDROID_SIGNING_KEY_ALIAS`,
@@ -84,10 +103,19 @@ normal guest use. See [the bundle format](vm-bundle.md) for import details.
 
 ## Before creating a tag
 
-1. Ensure the GitHub repository contains the workflow and the runner has all
-   reviewed inputs. The existing `origin` remote may still point to a
+1. Ensure the GitHub repository contains the workflow and the reviewed input
+   ZIP has a reachable download URL. The existing `origin` remote may still point to a
    different Git service; push the tag to the intended GitHub remote.
-2. Verify the signing secrets and runner variables are configured.
+2. Verify the signing secrets and the two input variables are configured.
 3. After pushing the tag, inspect the workflow result and Release asset
    hashes. Test the signed APK and imported image on the target device before
    treating the release as device validated.
+
+## Replacing a queued self-hosted run
+
+A run created from the previous workflow waits for a runner with all of
+`self-hosted`, `linux`, `x64`, and `viruaisor-release`. Without a registered,
+online runner matching those labels, it cannot start. Cancel that queued
+run, push the updated workflow, and create a new version tag pointing at
+the updated commit. Re-running the old run uses its original commit and
+will still request the old self-hosted labels.

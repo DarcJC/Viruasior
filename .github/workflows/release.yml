@@ -14,17 +14,13 @@ concurrency:
 
 jobs:
   release:
-    # See docs/releasing.md for the pinned workspaces and signing setup.
-    runs-on: [self-hosted, linux, x64, viruaisor-release]
+    runs-on: ubuntu-latest
     timeout-minutes: 360
     permissions:
       contents: write
     env:
-      VIRUAISOR_INPUTS_DIR: ${{ vars.VIRUAISOR_INPUTS_DIR }}
-      VIRUAISOR_CROSVM_BIN_DIR: ${{ vars.VIRUAISOR_CROSVM_BIN_DIR }}
-      VENUS_WORK_DIR: ${{ vars.VIRUAISOR_VENUS_WORK_DIR }}
-      ANDROID_NDK_HOME: ${{ vars.VIRUAISOR_ANDROID_NDK_HOME }}
-      ANDROID_HOME: ${{ vars.VIRUAISOR_ANDROID_SDK_HOME }}
+      VIRUAISOR_RELEASE_INPUTS_URL: ${{ vars.VIRUAISOR_RELEASE_INPUTS_URL }}
+      VIRUAISOR_RELEASE_INPUTS_SHA256: ${{ vars.VIRUAISOR_RELEASE_INPUTS_SHA256 }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -35,9 +31,50 @@ jobs:
         shell: bash
         run: python3 scripts/release_tools.py version "$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
 
+      - name: Check release configuration
+        env:
+          ANDROID_SIGNING_KEYSTORE_BASE64: ${{ secrets.ANDROID_SIGNING_KEYSTORE_BASE64 }}
+          ANDROID_SIGNING_KEY_ALIAS: ${{ secrets.ANDROID_SIGNING_KEY_ALIAS }}
+          ANDROID_SIGNING_STORE_PASSWORD: ${{ secrets.ANDROID_SIGNING_STORE_PASSWORD }}
+          ANDROID_SIGNING_KEY_PASSWORD: ${{ secrets.ANDROID_SIGNING_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          : "${VIRUAISOR_RELEASE_INPUTS_URL:?Configure the input ZIP URL; see docs/releasing.md}"
+          : "${VIRUAISOR_RELEASE_INPUTS_SHA256:?Configure the input ZIP SHA-256}"
+          : "${ANDROID_SIGNING_KEYSTORE_BASE64:?Missing release keystore secret}"
+          : "${ANDROID_SIGNING_KEY_ALIAS:?Missing signing alias secret}"
+          : "${ANDROID_SIGNING_STORE_PASSWORD:?Missing keystore password secret}"
+          : "${ANDROID_SIGNING_KEY_PASSWORD:?Missing key password secret}"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - name: Install build toolchains
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
+            meson ninja-build pkg-config python3-mako python3-yaml python3-ply \
+            python3-packaging glslang-tools bison flex gettext autoconf automake \
+            libtool qemu-user-static binfmt-support e2fsprogs cpio xxd \
+            libexpat1-dev libwayland-dev wayland-protocols libdrm-dev \
+            libxcb-randr0-dev libxcb-xfixes0-dev libx11-xcb-dev \
+            libxcb-present-dev libxshmfence-dev libxrandr-dev
+          sdkmanager 'platforms;android-37.0' 'build-tools;37.0.0' 'ndk;30.0.16248370'
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/30.0.16248370" >> "$GITHUB_ENV"
+
+      - name: Download verified inputs and prepare guest build root
+        run: bash scripts/prepare-hosted-release.sh
+
       - name: Build native helpers and VM image
         shell: bash
-        run: bash scripts/build-release-inputs.sh
+        run: |
+          bash scripts/build-release-inputs.sh
+          # The release uses the ZIP; free the raw scratch image before Gradle.
+          rm -f /tmp/viruaisor-manjaro/bundle/root_part
 
       - name: Test and assemble unsigned release APK
         shell: bash
@@ -45,7 +82,7 @@ jobs:
           RELEASE_VERSION_NAME: ${{ steps.version.outputs.versionName }}
           RELEASE_VERSION_CODE: ${{ steps.version.outputs.versionCode }}
         run: |
-          ./gradlew :app:testDebugUnitTest :app:assembleRelease \
+          ./gradlew :app:testDebugUnitTest :app:assembleDebug :app:assembleRelease \
             "-Pviruaisor.versionName=$RELEASE_VERSION_NAME" \
             "-Pviruaisor.versionCode=$RELEASE_VERSION_CODE"
 
@@ -62,7 +99,7 @@ jobs:
           : "${ANDROID_SIGNING_KEY_ALIAS:?Missing signing alias secret}"
           : "${ANDROID_SIGNING_STORE_PASSWORD:?Missing keystore password secret}"
           : "${ANDROID_SIGNING_KEY_PASSWORD:?Missing key password secret}"
-          build_tools=$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -1)
+          build_tools="$ANDROID_HOME/build-tools/37.0.0"
           test -x "$build_tools/zipalign"
           test -x "$build_tools/apksigner"
           keystore="$RUNNER_TEMP/viruaisor-release.jks"

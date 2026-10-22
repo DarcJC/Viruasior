@@ -16,8 +16,11 @@ cleanup() {
     for mountpoint in dev proc sys; do
         mountpoint -q "$root/$mountpoint" && umount -R "$root/$mountpoint" || true
     done
+    umount "$root" || true
 }
 trap cleanup EXIT
+# libalpm's CheckSpace needs a root mount visible from inside the chroot.
+mount --bind "$root" "$root"
 mkdir -p "$root/dev/pts" "$root/proc" "$root/sys"
 mount --rbind /dev "$root/dev"
 mount --make-rslave "$root/dev"
@@ -30,7 +33,7 @@ chroot "$root" /usr/bin/pacman -Syu --noconfirm
 chroot "$root" /usr/bin/pacman -S --needed --noconfirm plasma-desktop plasma-workspace kwin \
     konsole dolphin xorg-server xorg-xinit xorg-xrandr mesa vulkan-virtio vulkan-tools mesa-utils \
     dbus systemd systemd-sysvcompat sudo sed networkmanager pipewire wireplumber qt6-wayland xorg-xwayland \
-    vkmark weston
+    vkmark weston xtrans libbsd
 bash "$repo/scripts/install-cjk-fonts.sh" "$root"
 chroot "$root" /usr/bin/pacman -Q > "$work/packages.txt"
 chroot "$root" /usr/bin/pacman -Qkk plasma-workspace kwin mesa vulkan-virtio > "$work/package-integrity.txt"

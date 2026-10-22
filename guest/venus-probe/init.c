@@ -12,31 +12,42 @@
 #include "cache_policy.h"
 #include "shader.h"
 
-/* Disposable initramfs PID 1. No block disks, network, shell, or host access. */
+/* Default: disposable initramfs PID 1. Explicit modes also run in a desktop
+ * guest and return an exit status, using the same shader and readback checks. */
 static const char *stage = "boot";
 #define VK_CHECK(call) do { stage = #call; printf("VENUS_GUEST_STAGE=%s\n", stage); VkResult result = (call); if (result != VK_SUCCESS) { printf("VENUS_GUEST_VK_ERROR=%d\n", result); goto fail; } } while (0)
 #define REQUIRE(value) do { if (!(value)) { printf("VENUS_GUEST_CHECK_FAILED=%s errno=%d\n", #value, errno); goto fail; } } while (0)
 
-int main(void) {
+int main(int argc, char **argv) {
+    const int desktop = argc == 2;
+    const int coherent = desktop && !strcmp(argv[1], "--coherent");
+    if (argc > 2 || (desktop && !coherent && strcmp(argv[1], "--cached") &&
+                    strcmp(argv[1], "--cached-no-sync"))) {
+        fprintf(stderr, "Usage: %s [--coherent|--cached|--cached-no-sync]\n", argv[0]);
+        return 2;
+    }
     setvbuf(stdout, NULL, _IOLBF, 0);
     setvbuf(stderr, NULL, _IOLBF, 0);
-    mkdir("/dev", 0755); mkdir("/proc", 0755); mkdir("/sys", 0755); mkdir("/tmp", 0700);
-    REQUIRE(!mount("devtmpfs", "/dev", "devtmpfs", 0, NULL));
-    REQUIRE(!mount("proc", "/proc", "proc", 0, NULL));
-    REQUIRE(!mount("sysfs", "/sys", "sysfs", 0, NULL));
-    setenv("VK_DRIVER_FILES", "/etc/venus_icd.json", 1);
-    REQUIRE(!setenv("VN_PERF", venus_guest_perf_options(), 1));
-    printf("VENUS_GUEST_PERF=%s\n", venus_guest_perf_options());
-    setenv("XDG_RUNTIME_DIR", "/tmp", 1);
-    char command_line[4096] = {0};
-    FILE *command_file = fopen("/proc/cmdline", "re");
-    REQUIRE(command_file != NULL);
-    REQUIRE(fgets(command_line, sizeof(command_line), command_file) != NULL);
-    fclose(command_file);
-    const int skip_sync = strstr(command_line, "venus_probe.skip_cache_sync=1") != NULL;
-    printf("VENUS_GUEST_CACHE_POLICY=explicit-noncoherent\n");
+    int skip_sync = coherent || (desktop && !strcmp(argv[1], "--cached-no-sync"));
+    if (!desktop) {
+        mkdir("/dev", 0755); mkdir("/proc", 0755); mkdir("/sys", 0755); mkdir("/tmp", 0700);
+        REQUIRE(!mount("devtmpfs", "/dev", "devtmpfs", 0, NULL));
+        REQUIRE(!mount("proc", "/proc", "proc", 0, NULL));
+        REQUIRE(!mount("sysfs", "/sys", "sysfs", 0, NULL));
+        setenv("VK_DRIVER_FILES", "/etc/venus_icd.json", 1);
+        REQUIRE(!setenv("VN_PERF", venus_guest_perf_options(), 1));
+        printf("VENUS_GUEST_PERF=%s\n", venus_guest_perf_options());
+        setenv("XDG_RUNTIME_DIR", "/tmp", 1);
+        char command_line[4096] = {0};
+        FILE *command_file = fopen("/proc/cmdline", "re");
+        REQUIRE(command_file != NULL);
+        REQUIRE(fgets(command_line, sizeof(command_line), command_file) != NULL);
+        fclose(command_file);
+        skip_sync = strstr(command_line, "venus_probe.skip_cache_sync=1") != NULL;
+    }
+    printf("VENUS_GUEST_CACHE_POLICY=%s\n", coherent ? "coherent-no-cache-operations" : "explicit-noncoherent");
     if (skip_sync) puts("VENUS_GUEST_SYNC_SKIPPED=true");
-    printf("VENUS_GUEST_BEGIN pid=%d disks=none\n", getpid());
+    printf("VENUS_GUEST_BEGIN pid=%d mode=%s\n", getpid(), desktop ? "desktop" : "initramfs");
     VkApplicationInfo app = {.sType=VK_STRUCTURE_TYPE_APPLICATION_INFO,.pApplicationName="Viruaisor guest compute",.apiVersion=VK_API_VERSION_1_2};
     VkInstanceCreateInfo ic = {.sType=VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,.pApplicationInfo=&app};
     VkInstance instance;
@@ -71,15 +82,21 @@ int main(void) {
     VkPhysicalDeviceMemoryProperties memory; vkGetPhysicalDeviceMemoryProperties(physical[0], &memory);
     uint32_t type = UINT32_MAX;
     for (uint32_t i = 0; i < memory.memoryTypeCount; ++i) {
-        if ((requirements.memoryTypeBits & (1u << i)) && (memory.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)) {
+        const uint32_t flags = memory.memoryTypes[i].propertyFlags;
+        if ((requirements.memoryTypeBits & (1u << i)) && (flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) &&
+            !!(flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) == coherent) {
             type = i;
-            if (!(memory.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) break;
+            break;
         }
     }
     REQUIRE(type != UINT32_MAX);
     printf("VENUS_GUEST_MEMORY type=%u flags=%x size=%llu\n", type, memory.memoryTypes[type].propertyFlags, (unsigned long long)requirements.size);
-    REQUIRE((memory.memoryTypes[type].propertyFlags & (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_CACHED_BIT)) == (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_CACHED_BIT));
-    REQUIRE(!(memory.memoryTypes[type].propertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT));
+    if (coherent) {
+        REQUIRE(memory.memoryTypes[type].propertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    } else {
+        REQUIRE(memory.memoryTypes[type].propertyFlags & VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
+        REQUIRE(!(memory.memoryTypes[type].propertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT));
+    }
     VkMemoryAllocateInfo ma = {.sType=VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,.allocationSize=requirements.size,.memoryTypeIndex=type};
     VkDeviceMemory allocation;
     VK_CHECK(vkAllocateMemory(device, &ma, NULL, &allocation));
@@ -144,7 +161,7 @@ int main(void) {
             unsigned mismatch = 0;
             for (uint32_t i=0; i<256; ++i) if (words[i] != venus_expected(seeds[pass], i)) ++mismatch;
             printf("VENUS_GUEST_READBACK_MISMATCH pass=%u words=256 incorrect=%u observed0=%x expected0=%x\n", pass, mismatch, words[0], venus_expected(seeds[pass], 0));
-            if (skip_sync) { puts("VENUS_GUEST_NEGATIVE_CONTROL=EXPECTED_STALE_READBACK gpuFenceCompleted=true"); stage="negative-cache-readback"; }
+            if (skip_sync && !coherent) { puts("VENUS_GUEST_NEGATIVE_CONTROL=EXPECTED_STALE_READBACK gpuFenceCompleted=true"); stage="negative-cache-readback"; }
             goto fail;
         }
         printf("VENUS_GUEST_READBACK pass=%u seed=%x words=256 correct=256\n", pass, seeds[pass]);
@@ -158,8 +175,10 @@ int main(void) {
     vkDestroyDescriptorSetLayout(device, layout, NULL); vkDestroyBuffer(device, buffer, NULL);
     vkFreeMemory(device, allocation, NULL); vkDestroyDevice(device, NULL); vkDestroyInstance(instance, NULL);
     puts("VENUS_GUEST_RESULT=PASS physicalGpu=true passes=3 wordsPerPass=256");
+    if (desktop) return 0;
     for (;;) pause();
 fail:
     printf("VENUS_GUEST_RESULT=FAIL stage=%s\n", stage);
+    if (desktop) return 1;
     for (;;) pause();
 }

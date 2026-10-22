@@ -4,6 +4,7 @@
 #include "overlay_mount_policy.h"
 #include "overlay_wait.h"
 #include "desktop_lease.h"
+#include "../venus-memory/uncached_server.h"
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -247,6 +248,8 @@ int main(int argc, char **argv) {
     if (!overlay_files_dir_valid(uid, package, files_path)) return 64;
     int result = 1, mounted = 0, files = -1, dir = -1, target = -1, snapshot = -1, nsfd = -1, pidfd = -1;
     struct stock_children children = { .virtmgr_fd = -1, .crosvm_fd = -1 };
+    struct venus_uncached_server allocator;
+    bool allocator_started = false;
     struct stat original_image = {0}, virtmgr_image = {0}, copied_image = {0};
     bool stock_seen = false;
     char path[256], target_name[64], control_name[64], snapshot_name[64], anchored[128];
@@ -341,6 +344,10 @@ int main(int argc, char **argv) {
         !(mounted_fs.f_flag & ST_NOEXEC) && !!(mounted_fs.f_flag & ST_NOSUID) == !stock, "actual-mount-profile");
     printf("MOUNT_PROFILE kind=%s flags=%lu ro=1 nodev=1 nosuid=%d noexec=0 mode=%04o filecaps=none\n",
         stock ? "stock-copy" : "sentinel", mounted_fs.f_flag, !stock, copied_image.st_mode & 07777);
+    if (candidate) {
+        REQUIRE(!venus_uncached_server_start(&allocator, uid), "uncached-allocator-start");
+        allocator_started = true;
+    }
     printf("MOUNT_READY token=%s ns=%" PRIu64 " kind=%s snapshot_dev=%ju snapshot_ino=%ju\n", argv[3], target_ns,
         candidate ? "venus-candidate-byte-identical" : stock ? "stock-copy-byte-identical" : "sentinel", (uintmax_t)copied_image.st_dev, (uintmax_t)copied_image.st_ino);
     if (!strcmp(mode, "helper-death")) _exit(23); /* Dedicated app's independent watchdog destroys the namespace. */
@@ -350,7 +357,9 @@ int main(int argc, char **argv) {
     for (;;) {
         if (stock && !stock_seen) stock_seen = observe_stock(pid, uid, target_ns, &copied_image, &virtmgr_image, &children, desktop);
         struct pollfd owner = { .fd = pidfd, .events = POLLIN };
-        int status = poll(&owner, 1, 50);
+        int status = allocator_started ?
+            venus_uncached_server_poll(&allocator, &owner, children.crosvm_pid,
+                children.crosvm_fd, 50, venus_uncached_heap_allocate) : poll(&owner, 1, 50);
         if (status > 0 && owner.revents) {
             printf("OWNER_DIED\n");
             if (stock) terminate_stock_lease(pidfd, &children);
@@ -401,6 +410,7 @@ cleanup:
         }
     }
     if (stock && !stock_seen) { printf("STOCK_EXEC_NOT_OBSERVED\n"); if (!result) result = 4; }
+    if (allocator_started) venus_uncached_server_close(&allocator);
     if (children.crosvm_fd >= 0) close(children.crosvm_fd);
     if (children.virtmgr_fd >= 0) close(children.virtmgr_fd);
     if (snapshot >= 0) { close(snapshot); unlinkat(dir, snapshot_name, 0); }

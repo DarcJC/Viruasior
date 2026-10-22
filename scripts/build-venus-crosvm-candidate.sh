@@ -187,6 +187,8 @@ if [[ ${VENUS_CROSVM_IMPORT_FILTER:-0} == 1 ]]; then
     [[ ${VENUS_CROSVM_DISPLAY:-0} == 1 ]] # Experimental desktop comparison only.
     cp "$repo/native/venus-crosvm/venus_import_memory_policy.h" \
         "$repo/native/venus-crosvm/venus_android_memory_properties.h" "$renderer_work/virglrenderer/src/venus/"
+    cp "$repo/native/venus-memory/uncached_"{client,protocol,types,registry}.h \
+        "$renderer_work/virglrenderer/src/venus/"
     apply_renderer_patch android-import-memory-properties venus_android_memory_properties.h src/venus/vkr_physical_device.c
     apply_renderer_patch android-import-buffer-requirements VIRUAISOR_BUFFER_IMPORT_TYPES src/venus/vkr_buffer.c
     apply_renderer_patch android-dmabuf-lifetime-trace VIRUAISOR_DMA_BUF_FD src/venus/vkr_device_memory.c
@@ -219,6 +221,13 @@ if [[ ${VENUS_CROSVM_IMPORT_FILTER:-0} == 1 ]]; then
     apply_renderer_patch android-ahb-layout-requirements VIRUAISOR_AHB_LAYOUT_REQUIREMENTS src/venus/vkr_image.c
     apply_renderer_patch android-ahb-resource-lifetime VIRUAISOR_AHB_RESOURCE_LIFETIME src/venus/vkr_device_memory.c
     apply_renderer_patch android-display-batch-sync virgl_renderer_context_wait_idle_begin src/virglrenderer.c
+    apply_renderer_patch android-uncached-memory VIRUAISOR_UNCACHED_IMPORT src/venus/vkr_device_memory.c
+    apply_renderer_patch android-host-cache-maintenance vkr_android_uncached_cache_maintain src/venus/vkr_device_memory.c
+    for test in protocol types registry; do
+        gcc -Wall -Wextra -Werror -fsanitize=undefined \
+            "$repo/native/venus-memory/uncached_${test}_test.c" -o "/tmp/viruaisor-uncached-${test}-test"
+        "/tmp/viruaisor-uncached-${test}-test"
+    done
     gcc -Wall -Wextra -Werror "$repo/native/venus-crosvm/venus_import_memory_policy_test.c" -o /tmp/viruaisor-venus-import-policy-test
     /tmp/viruaisor-venus-import-policy-test
 elif git -C "$renderer_work/virglrenderer" apply --reverse --check \

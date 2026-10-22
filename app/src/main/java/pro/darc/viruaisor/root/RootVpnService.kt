@@ -306,6 +306,15 @@ private class VpnKernel(private val context: RootVpnService, private val uid: In
 
     private fun remove(args: List<String>) {
         if (args[0] in listOf("iptables", "ip6tables")) {
+            // A jump to an already removed owned chain makes iptables -C exit
+            // with a parser error rather than its usual "rule absent" code.
+            // Verify the exact owned target is absent before treating it as gone.
+            val target = args.indexOf("-j").takeIf { it >= 0 }?.let { args.getOrNull(it + 1) }
+            if (target in setOf(rules.forward, rules.input, rules.dnsChain)) {
+                val chain = exec(listOf(args[0], "-w", "5", "-t", args[4], "-S", target!!))
+                if (chain.code == 1) return
+                check(chain.code == 0) { "Cannot inspect an owned VPN chain" }
+            }
             val check = args.toMutableList()
             check[5] = if (args[5] == "-D") "-C" else "-S"
             val exists = exec(check)

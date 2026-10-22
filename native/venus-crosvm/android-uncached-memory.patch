@@ -1,0 +1,298 @@
+--- a/src/venus/vkr_physical_device.h
++++ b/src/venus/vkr_physical_device.h
+@@ -7,6 +7,9 @@
+ #define VKR_PHYSICAL_DEVICE_H
+ 
+ #include "vkr_common.h"
++#ifdef __ANDROID__
++#include "uncached_types.h"
++#endif
+ 
+ #include "vn_protocol_renderer_util.h"
+ 
+@@ -36,6 +39,11 @@
+ 
+    VkPhysicalDeviceMemoryProperties memory_properties;
+    uint32_t android_import_type_bits;
++#ifdef __ANDROID__
++   uint32_t android_native_type_count;
++   uint32_t android_logical_type_count;
++   uint32_t android_native_types[VK_MAX_MEMORY_TYPES];
++#endif
+    bool mem_type_spoof;
+    VkPhysicalDeviceIDProperties id_properties;
+    bool is_dma_buf_fd_export_supported;
+@@ -65,4 +73,18 @@
+       *mem_type_bits = (*mem_type_bits << 1) | 1u;
+ }
+ 
++/* Only buffer requirements gain uncached aliases. AHB image and foreign FD
++ * requirements retain their original native memory types. */
++static inline void
++vkr_physical_device_buffer_type_spoof(const struct vkr_physical_device *physical,
++                                    uint32_t *bits)
++{
++#ifdef __ANDROID__
++   *bits = venus_uncached_expand_types(*bits, physical->android_native_type_count,
++                                      physical->android_logical_type_count,
++                                      physical->android_native_types);
++#endif
++   vkr_physical_device_mem_type_spoof(physical, bits);
++}
++
+ #endif /* VKR_PHYSICAL_DEVICE_H */
+--- a/src/venus/vkr_buffer.c
++++ b/src/venus/vkr_buffer.c
+@@ -89,7 +89,7 @@
+       args->pMemoryRequirements->memoryTypeBits &= dev->physical_device->android_import_type_bits;
+    }
+ #endif
+-   vkr_physical_device_mem_type_spoof(dev->physical_device,
++   vkr_physical_device_buffer_type_spoof(dev->physical_device,
+                                       &args->pMemoryRequirements->memoryTypeBits);
+ }
+ 
+@@ -109,7 +109,7 @@
+       args->pMemoryRequirements->memoryRequirements.memoryTypeBits &= dev->physical_device->android_import_type_bits;
+    }
+ #endif
+-   vkr_physical_device_mem_type_spoof(
++   vkr_physical_device_buffer_type_spoof(
+       dev->physical_device,
+       &args->pMemoryRequirements->memoryRequirements.memoryTypeBits);
+ }
+@@ -191,7 +191,7 @@
+       args->pMemoryRequirements->memoryRequirements.memoryTypeBits &= dev->physical_device->android_import_type_bits;
+    }
+ #endif
+-   vkr_physical_device_mem_type_spoof(
++   vkr_physical_device_buffer_type_spoof(
+       dev->physical_device,
+       &args->pMemoryRequirements->memoryRequirements.memoryTypeBits);
+ }
+--- a/src/venus/vkr_device_memory.c
++++ b/src/venus/vkr_device_memory.c
+@@ -22,6 +22,8 @@
+ #include "venus_dma_buf_size_policy.h"
+ #include "venus_import_type_policy.h"
+ #include "venus_ahb_registry.h"
++#include "uncached_client.h"
++#include "uncached_registry.h"
+ #include <vulkan/vulkan_android.h>
+ #include <inttypes.h>
+ #include <fcntl.h>
+@@ -34,6 +36,15 @@
+ static struct venus_ahb_registry_entry
+    viruaisor_ahb_registry[VIRUAISOR_AHB_REGISTRY_CAPACITY];
+ static pthread_mutex_t viruaisor_ahb_registry_mutex = PTHREAD_MUTEX_INITIALIZER;
++static struct venus_uncached_entry uncached_entries[VENUS_UNCACHED_MAX_LEASES];
++
++static void
++vkr_android_uncached_release(int fd)
++{
++   pthread_mutex_lock(&viruaisor_ahb_registry_mutex);
++   venus_uncached_release(uncached_entries, fd);
++   pthread_mutex_unlock(&viruaisor_ahb_registry_mutex);
++}
+ void *viruaisor_ahb_acquire_from_fd(int fd);
+ 
+ static bool
+@@ -93,7 +104,7 @@
+    AHardwareBuffer *buffer = venus_ahb_registry_find(
+       viruaisor_ahb_registry, VIRUAISOR_AHB_REGISTRY_CAPACITY,
+       (uint64_t)st.st_dev, (uint64_t)st.st_ino);
+-   bool retained = true;
++   bool retained = venus_uncached_retain(uncached_entries, fd);
+    if (buffer) {
+       retained = venus_ahb_registry_add(
+          viruaisor_ahb_registry, VIRUAISOR_AHB_REGISTRY_CAPACITY,
+@@ -110,6 +121,7 @@
+ void
+ viruaisor_ahb_resource_release(int fd, void *buffer)
+ {
++   vkr_android_uncached_release(fd);
+    if (!buffer)
+       return;
+    viruaisor_ahb_unregister(fd, buffer);
+@@ -656,6 +668,49 @@
+ 
+ #endif /* ENABLE_GBM_ALLOCATION */
+ 
++#ifdef __ANDROID__
++static VkResult
++vkr_android_import_uncached(struct vkr_context *ctx, struct vkr_device *dev, VkMemoryAllocateInfo *info,
++                            int *retained, VkImportMemoryFdInfoKHR *import)
++{
++   const uint64_t bytes = venus_dma_buf_export_allocation_size(info->allocationSize, 65536);
++   int lease = -1;
++   int fd = venus_uncached_allocate(bytes, &lease);
++   if (fd < 0)
++      return VK_ERROR_OUT_OF_DEVICE_MEMORY;
++   VkMemoryFdPropertiesKHR properties = {.sType = VK_STRUCTURE_TYPE_MEMORY_FD_PROPERTIES_KHR};
++   VkResult result = dev->proc_table.GetMemoryFdPropertiesKHR(
++      dev->base.handle.device, VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
++      fd, &properties);
++   if (result != VK_SUCCESS || info->memoryTypeIndex >= 32 ||
++       !(properties.memoryTypeBits & (UINT32_C(1) << info->memoryTypeIndex))) {
++      close(fd); close(lease);
++      return VK_ERROR_INVALID_EXTERNAL_HANDLE;
++   }
++   const int imported = os_dupfd_cloexec(fd);
++   if (imported < 0) {
++      close(fd); close(lease);
++      return VK_ERROR_TOO_MANY_OBJECTS;
++   }
++   pthread_mutex_lock(&viruaisor_ahb_registry_mutex);
++   const bool registered = venus_uncached_register(uncached_entries, ctx, fd, lease, bytes);
++   pthread_mutex_unlock(&viruaisor_ahb_registry_mutex);
++   if (!registered) {
++      close(imported); close(fd); close(lease);
++      return VK_ERROR_TOO_MANY_OBJECTS;
++   }
++   info->allocationSize = bytes;
++   *retained = fd;
++   *import = (VkImportMemoryFdInfoKHR){
++      .sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR,
++      .pNext = info->pNext, .fd = imported,
++      .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
++   };
++   vkr_log("VIRUAISOR_UNCACHED_IMPORT bytes=%" PRIu64 " native=%u", bytes, info->memoryTypeIndex);
++   return VK_SUCCESS;
++}
++#endif
++
+ static void
+ vkr_dispatch_vkAllocateMemory(struct vn_dispatch_context *dispatch,
+                               struct vn_command_vkAllocateMemory *args)
+@@ -681,6 +736,20 @@
+    if (physical_dev->mem_type_spoof && driver_mem_type_index > 0)
+       driver_mem_type_index--;
+ 
++#ifdef __ANDROID__
++   const bool uncached = physical_dev->android_native_type_count &&
++      driver_mem_type_index >= physical_dev->android_native_type_count;
++   if (physical_dev->android_native_type_count) {
++      driver_mem_type_index = venus_uncached_native_index(
++         driver_mem_type_index, physical_dev->android_native_type_count,
++         physical_dev->android_logical_type_count, physical_dev->android_native_types);
++      if (driver_mem_type_index == UINT32_MAX) {
++         args->ret = VK_ERROR_UNKNOWN;
++         return;
++      }
++   }
++#endif
++
+    /* translate VkImportMemoryResourceInfoMESA into VkImportMemoryFdInfoKHR in place */
+    VkImportMemoryFdInfoKHR local_import_info = { .fd = -1 };
+ #ifdef __ANDROID__
+@@ -692,6 +761,13 @@
+    void *prev_of_res_info = vkr_find_prev_struct(
+       alloc_info, VK_STRUCTURE_TYPE_IMPORT_MEMORY_RESOURCE_INFO_MESA);
+    if (prev_of_res_info) {
++#ifdef __ANDROID__
++      /* Foreign DMA-BUF memory does not promise an uncached CPU mapping. */
++      if (uncached) {
++         args->ret = VK_ERROR_INVALID_EXTERNAL_HANDLE;
++         return;
++      }
++#endif
+       res_info = (VkImportMemoryResourceInfoMESA *)vkr_pnext_get_next(prev_of_res_info);
+ #ifdef __ANDROID__
+       vkr_log("VIRUAISOR_MEMORY_IMPORT_BEGIN object=%" PRIu64
+@@ -916,6 +992,12 @@
+    const bool force_gralloc_export = false;
+ #endif
+ 
++#ifdef __ANDROID__
++   if (uncached && dedicated_ahb_image) {
++      args->ret = VK_ERROR_INVALID_EXTERNAL_HANDLE;
++      return;
++   }
++#endif
+    if (((property_flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) ||
+         force_gralloc_export) && !res_info) {
+       /* An implementation can support dma_buf import along with opaque fd export/import.
+@@ -926,7 +1008,11 @@
+       const bool no_dma_buf_export =
+          !export_info ||
+          !(export_info->handleTypes & VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT);
+-      if (!(force_gralloc_export || force_gbm_import || force_udmabuf_import) &&
++      if (
++#ifdef __ANDROID__
++          !uncached &&
++#endif
++          !(force_gralloc_export || force_gbm_import || force_udmabuf_import) &&
+           (physical_dev->is_dma_buf_fd_export_supported ||
+            (physical_dev->is_opaque_fd_export_supported && no_dma_buf_export))) {
+          const VkExternalMemoryHandleTypeFlagBits handle_type =
+@@ -991,6 +1077,12 @@
+             export_info = NULL;
+          }
+ 
++#ifdef __ANDROID__
++         if (uncached) {
++            args->ret = vkr_android_import_uncached(ctx, dev, alloc_info, &udmabuf_fd,
++                                                     &local_import_info);
++         } else
++#endif
+          if (force_udmabuf_import) {
+             /* To be noted, there are 2 limits for udmabuf:
+              * - list_limit: udmabuf_create_list->count limit. Default is 1024.
+@@ -1039,7 +1131,29 @@
+       vkr_trace_dma_buf_fd("vk-allocate-before", viruaisor_memory_id,
+                            res_info ? res_info->resourceId : 0, local_import_info.fd);
+ #endif
++#ifdef __ANDROID__
++   /* Imported allocations also keep the allocator lease while the imported
++    * VkDeviceMemory exists, even after the original resource is destroyed. */
++   bool lease_retained = true;
++   if (res_info && local_import_info.fd >= 0) {
++      pthread_mutex_lock(&viruaisor_ahb_registry_mutex);
++      if (venus_uncached_find(uncached_entries, local_import_info.fd)) {
++         udmabuf_fd = os_dupfd_cloexec(local_import_info.fd);
++         lease_retained = udmabuf_fd >= 0 &&
++            venus_uncached_retain(uncached_entries, udmabuf_fd);
++         if (!lease_retained && udmabuf_fd >= 0) {
++            close(udmabuf_fd);
++            udmabuf_fd = -1;
++         }
++      }
++      pthread_mutex_unlock(&viruaisor_ahb_registry_mutex);
++   }
++   if (!lease_retained)
++      args->ret = VK_ERROR_TOO_MANY_OBJECTS;
++   struct vkr_device_memory *mem = lease_retained ? vkr_device_memory_create(ctx, args) : NULL;
++#else
+    struct vkr_device_memory *mem = vkr_device_memory_create(ctx, args);
++#endif
+    if (!mem) {
+ #ifdef __ANDROID__
+       if (res_info)
+@@ -1050,8 +1164,12 @@
+ #endif
+       if (local_import_info.fd >= 0)
+          close(local_import_info.fd);
+-      if (udmabuf_fd >= 0)
++      if (udmabuf_fd >= 0) {
++#ifdef __ANDROID__
++         vkr_android_uncached_release(udmabuf_fd);
++#endif
+          close(udmabuf_fd);
++      }
+ #ifdef __ANDROID__
+       if (android_buffer) venus_ahb_release(android_buffer);
+ #endif
+@@ -1247,8 +1365,12 @@
+    vkr_mtl_shm_free(mem->mtl_shm);
+    if (mem->gbm_bo)
+       vkr_gbm_bo_destroy(mem->gbm_bo);
+-   if (mem->udmabuf_fd >= 0)
++   if (mem->udmabuf_fd >= 0) {
++#ifdef __ANDROID__
++      vkr_android_uncached_release(mem->udmabuf_fd);
++#endif
+       close(mem->udmabuf_fd);
++   }
+ }
+ 
+ bool

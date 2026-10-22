@@ -1,5 +1,28 @@
 # vkmark in the Manjaro Venus guest
 
+## Acceptance target
+
+Use the unmodified distribution package at `/usr/bin/vkmark`. Image builds no
+longer compile a private vkmark or install a `/usr/local/bin/vkmark` override;
+they remove those old artifacts when reusing a build root. The memory-type
+workaround formerly applied to vkmark is not a driver compatibility fix.
+
+On 2026-10-22 the unmodified `vkmark 20220318-1` package (57 files, zero altered)
+reproduced `Couldn't find matching memory type` in the cube scene. The program
+still returned exit code zero and score zero. Acceptance checks every requested
+scene in addition to process status. On 2026-10-23 the repaired renderer passed
+coherent and cached compute checks after a fresh VM restart, displayed live
+frames, and completed all 13 unmodified vkmark scenes: XCB score 1027 and
+nested Weston/Wayland score 1092. A separate two-second cube test scored 1197.
+The 298-point global cache-maintenance regression is fixed by scoping cache
+operations to the allocation's Venus context. See [the KVM and renderer
+investigation](coherent-memory.md) for the measured limits.
+
+The older results below used the modified benchmark. They document the earlier
+investigations and must not be cited as unmodified vkmark compatibility results.
+
+## Historical modified benchmark investigations
+
 The paired Android renderer can import BGRA8 UNORM `AHardwareBuffer` images for
 presentation. When vkmark chose BGRA8 sRGB, its swapchain image fell back to a
 BLOB allocation. Xorg then failed to import that BLOB as an image and the
@@ -7,16 +30,17 @@ desktop stopped updating. The guest Mesa WSI patch advertises BGRA8 UNORM for
 X11 and Wayland when `VIRUAISOR_AHB_UNORM_WSI` is set. The Manjaro session sets
 this flag in `/etc/viruaisor/venus.env`.
 
-The Mali device exposes host-visible memory without `HOST_COHERENT`. The stock
-vkmark scenes require coherent memory and silently skip most benchmarks when
-none matches. `scripts/build-manjaro-vkmark.sh` builds the pinned upstream
-snapshot with `vkmark-noncoherent-memory.patch`: mapped writes are explicitly
-flushed before GPU use. The binary and its X11/Wayland plugins are built
-together under `/opt/viruaisor/vkmark`.
+The former AHB import path exposed no usable `HOST_COHERENT` memory. Native
+Mali does provide coherent memory for ordinary buffers; the limitation is in
+the virtualized sharing path. The stock vkmark scenes require coherent memory
+and skip benchmarks when none matches. The former private build removed this
+requirement and explicitly flushed mapped writes before GPU use. Its binary
+and X11/Wayland plugins were installed under `/opt/viruaisor/vkmark`.
 
-The desktop session is X11. `/usr/local/bin/vkmark` starts a nested Weston X11
-compositor for an explicit `--winsys wayland` run, waits for its socket, and
-stops it when vkmark exits. Other vkmark invocations use the X11 plugin.
+The desktop session is X11. The former `/usr/local/bin/vkmark` wrapper started a
+nested Weston X11 compositor for `--winsys wayland`, waited for its socket, and
+stopped it when vkmark exited. This wrapper is no longer shipped. Wayland tests
+must start their compositor explicitly and invoke `/usr/bin/vkmark`.
 
 During the initial crash fix, `vkmark` completed all 13 default scenes with exit code 0
 and score 185 using the first patched vkmark build. The final build then passed

@@ -6,6 +6,7 @@ work=/tmp/viruaisor-manjaro/venus-build
 source="$repo/.pi/device-debug/venus-crosvm-build/mesa-guest-reference"
 [[ $(git -C "$source" rev-parse HEAD) == 742a20f48c59e8649533c84c4d49dd95b403f5da ]]
 git -C "$source" apply --reverse --check "$repo/native/venus-crosvm/guest-mesa-cache-sync.patch"
+cp "$repo/guest/venus-probe/cache_policy.h" "$source/src/virtio/vulkan/viruaisor_cache_policy.h"
 node_patch="$repo/native/venus-crosvm/guest-wsi-drm-node-match.patch"
 if git -C "$source" apply --check "$node_patch" 2>/dev/null; then
     git -C "$source" apply "$node_patch"

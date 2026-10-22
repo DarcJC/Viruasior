@@ -1,13 +1,19 @@
 #pragma once
 #include "venus_gralloc.h"
 #include "venus_import_memory_policy.h"
+#include "uncached_client.h"
+#include "uncached_types.h"
 
 /* Called with native memory indices, before upstream's optional index spoof.
  * A short-lived ordinary-UID Vulkan device queries the real AHB FD compatibility.
- * No command submission, system changes, index remapping or capability inflation. */
+ * Uncached aliases describe the DMA-BUF CPU mapping and map back to compatible
+ * native types at allocation. Original cached types remain non-coherent. */
 static void vkr_android_limit_memory_properties(struct vkr_physical_device *physical) {
     if (physical->properties.vendorID != 0x13b5) return;
-    uint32_t masks[2] = {0, 0};
+    uint32_t masks[2] = {0, 0}, uncached_mask = 0;
+    physical->android_native_type_count = physical->memory_properties.memoryTypeCount;
+    physical->android_logical_type_count = physical->android_native_type_count;
+    for (uint32_t i=0; i<VK_MAX_MEMORY_TYPES; i++) physical->android_native_types[i]=i;
     struct vn_physical_device_proc_table *vk = &physical->proc_table;
     VkPhysicalDevice handle = physical->base.handle.physical_device;
     VkQueueFamilyProperties families[64];
@@ -46,6 +52,14 @@ static void vkr_android_limit_memory_properties(struct vkr_physical_device *phys
     /* Both are required by the successfully enabled Vulkan device/extension. */
     if (!destroy) abort(); /* broken Vulkan loader: let process exit reclaim the device */
     if (get_properties) {
+        int lease=-1;
+        int fd=venus_uncached_allocate(65536,&lease);
+        if(fd>=0) {
+            VkMemoryFdPropertiesKHR properties={.sType=VK_STRUCTURE_TYPE_MEMORY_FD_PROPERTIES_KHR};
+            result=get_properties(device,VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,fd,&properties);
+            if(result==VK_SUCCESS)uncached_mask=properties.memoryTypeBits;
+            close(fd);close(lease);
+        }
         for (unsigned cached = 0; cached < 2; ++cached) {
             AHardwareBuffer *buffer = NULL;
             int fd = venus_gralloc_allocate(65536, cached != 0, &buffer);
@@ -70,4 +84,16 @@ filter:
         if (type->propertyFlags != original)
             vkr_log("VIRUAISOR_MEMORY_IMPORT_FILTER type=%u before=%x after=%x", i, original, type->propertyFlags);
     }
+    for(uint32_t i=0; i<physical->android_native_type_count; ++i) {
+        if(!(uncached_mask&(UINT32_C(1)<<i)))continue;
+        VkPhysicalDeviceMemoryProperties *memory=&physical->memory_properties;
+        const uint32_t flags=venus_uncached_alias_flags(memory->memoryTypes[i].propertyFlags);
+        if(!flags || memory->memoryTypeCount>=VK_MAX_MEMORY_TYPES-1)continue;
+        uint32_t alias=memory->memoryTypeCount++;
+        physical->android_native_types[alias]=i;
+        memory->memoryTypes[alias]=memory->memoryTypes[i];
+        memory->memoryTypes[alias].propertyFlags=flags;
+        vkr_log("VIRUAISOR_UNCACHED_MEMORY_TYPE guest=%u native=%u flags=%x",alias,i,flags);
+    }
+    physical->android_logical_type_count=physical->memory_properties.memoryTypeCount;
 }

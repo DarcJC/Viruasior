@@ -132,9 +132,9 @@ included in this repository; see [the bundle format and installation requirement
 An exact `v<major>.<minor>.<patch>` tag triggers the
 [release workflow](.github/workflows/release.yml). It publishes a signed arm64
 APK and a separate Manjaro VM import ZIP with SHA-256 checksums. The reviewed
-crosvm executables are packaged inside the APK. The build uses a configured
-Linux release runner because the current native and guest build pipelines
-require prepared, pinned workspaces. See [runner setup and input provenance](docs/releasing.md)
+crosvm executables are packaged inside the APK. The build uses a
+GitHub-hosted `ubuntu-latest` runner, with a one-time pinned kernel/crosvm
+input ZIP. See [runner setup and input provenance](docs/releasing.md)
 before creating a tag.
 
 ### Guest agent
