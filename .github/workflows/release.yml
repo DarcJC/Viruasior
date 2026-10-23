@@ -67,7 +67,7 @@ jobs:
             build-essential gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
             meson ninja-build pkg-config python3-mako python3-yaml python3-ply \
             python3-packaging glslang-tools bison flex gettext autoconf automake \
-            libtool qemu-user-static binfmt-support e2fsprogs cpio xxd \
+            libtool qemu-user qemu-user-static binfmt-support e2fsprogs cpio xxd \
             libexpat1-dev libwayland-dev wayland-protocols libdrm-dev \
             libxcb-randr0-dev libxcb-xfixes0-dev libx11-xcb-dev \
             libxcb-present-dev libxshmfence-dev libxrandr-dev
@@ -75,6 +75,11 @@ jobs:
           test -x "$sdkmanager"
           "$sdkmanager" 'platforms;android-37.0' 'build-tools;37.0.0' 'ndk;30.0.16248370'
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/30.0.16248370" >> "$GITHUB_ENV"
+
+      - name: Compile and test guest control agent
+        run: |
+          make -C guest/avf-agent arm64-static
+          make -C guest/avf-agent test
 
       - name: Download verified inputs and prepare guest build root
         run: bash scripts/prepare-hosted-release.sh
