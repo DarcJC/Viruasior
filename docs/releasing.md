@@ -7,6 +7,13 @@ must be below 1000, and the result must fit the Android version code range.
 Invalid tags can match GitHub's broad tag glob, but fail before any build or
 publication.
 
+For an end-to-end build check without creating a version tag, run **Build and
+publish release → Run workflow** on the desired branch and supply a valid
+`version_tag` such as `v0.0.2`. This follows the same input, compilation,
+signing and asset validation steps, then uploads the signed APK, VM ZIP and
+checksums as a seven-day Actions artifact. Only a pushed version tag publishes
+a GitHub Release. Manual verification still requires the signing secrets.
+
 The workflow publishes a signed APK, a separate VM import ZIP, and `SHA256SUMS`.
 The ZIP has four root entries: `vm.json`, `vmlinuz`, `initrd.img`, and
 `root_part`. The two reviewed crosvm PIE executables are packaged inside the
@@ -51,6 +58,10 @@ Mark the input Release as a pre-release so it is not presented as the latest app
 Retain that asset for future builds. Use its direct download URL, not the
 Release page URL.
 
+The reviewed 2026-10-23 input archive is available from
+[the build-input Release](https://github.com/DarcJC/Viruasior/releases/tag/release-inputs-20261023).
+Its uploaded asset digest matches the archive digest above.
+
 Create these GitHub Actions **repository variables**:
 
 | Variable | Contents |
@@ -81,6 +92,12 @@ The first secret is the base64 encoding of the keystore file. The workflow
 keeps the decoded keystore under the runner's temporary directory, signs with
 `apksigner`, verifies the result, and removes the temporary keystore.
 Keep the original keystore safe: Android updates must use the same signer.
+
+The release signer created for this application on 2026-10-23 uses RSA-4096
+and has certificate SHA-256
+`07b67627ef1734198d7bd9134ee250ccb090b5a86e7e0a24eaab2ff4bd955a34`.
+The keystore and passwords are kept outside the source tree. Back up both
+securely; GitHub Secrets cannot be used to recover them later.
 
 ## Kernel and guest source
 
