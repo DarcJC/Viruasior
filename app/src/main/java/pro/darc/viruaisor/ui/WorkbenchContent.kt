@@ -2,6 +2,7 @@ package pro.darc.viruaisor.ui
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -15,6 +16,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.semantics.contentDescription
@@ -23,6 +25,7 @@ import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.unit.dp
 import pro.darc.viruaisor.vm.*
+import pro.darc.viruaisor.R
 
 @Composable
 internal fun WorkbenchContent(
@@ -54,9 +57,10 @@ internal fun WorkbenchContent(
             Row(Modifier.fillMaxSize().padding(padding)) {
                 if(!fullscreen && rail) NavigationRail(containerColor = MaterialTheme.colorScheme.surface,
                     modifier = Modifier.fillMaxHeight().width(88.dp), header = {
-                        Surface(color = MaterialTheme.colorScheme.primary, shape = RoundedCornerShape(14.dp),
+                        Surface(color = Color(0xFF101C36), shape = RoundedCornerShape(14.dp),
                             modifier = Modifier.padding(top = 20.dp, bottom = 36.dp).size(44.dp)) {
-                            Box(contentAlignment = Alignment.Center) { Text("V", style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onPrimary) }
+                            Image(painterResource(R.drawable.viruaisor_mark), contentDescription = "Viruaisor",
+                                modifier = Modifier.padding(2.dp))
                         }
                     }) {
                     NavigationRailItem(selected = route == "workbench", onClick = { route = "workbench" },
