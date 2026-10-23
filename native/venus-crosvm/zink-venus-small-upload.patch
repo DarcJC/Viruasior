@@ -15,15 +15,15 @@ index 7ec0c5f..f9e3ceb 100644
     unsigned max_slab_entry_size = 1 << (last_slab->min_order + last_slab->num_orders - 1);
  
 +   /* The paired DMA-BUF cache command synchronizes its entire allocation.
-+    * Keep non-coherent upload BOs independently cacheable rather than placing
-+    * tiny uploads in a 2 MiB slab. GPU-local/coherent/external BOs are unchanged.
++    * Keep host-visible upload BOs independently cacheable rather than placing
++    * tiny uploads in a 2 MiB slab. GPU-local/external BOs are unchanged.
 +    */
 +   const VkMemoryPropertyFlags properties = screen->info.mem_props.memoryTypes[mem_type_idx].propertyFlags;
 +   const bool private_upload =
 +      zink_venus_private_upload(screen->info.driver_props.driverID == VK_DRIVER_ID_MESA_VENUS,
 +                                screen->info.props.vendorID,
 +                                properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
-+                                properties & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, pNext != NULL,
++                                pNext != NULL,
 +                                getenv("VIRUAISOR_ZINK_SMALL_UPLOAD_ALLOCATIONS"));
     /* Sub-allocate small buffers from slabs. */
 -   if (!(flags & (ZINK_ALLOC_NO_SUBALLOC | ZINK_ALLOC_SPARSE)) &&
@@ -51,8 +51,8 @@ index d264c0f..8df0b94 100644
 -   ctx->base.const_uploader = u_upload_create_default(&ctx->base);
 +   const bool private_upload =
 +      zink_venus_private_upload(screen->info.driver_props.driverID == VK_DRIVER_ID_MESA_VENUS,
-+                                screen->info.props.vendorID, true,
-+                                screen->base.caps.buffer_map_persistent_coherent, false,
++                                screen->info.props.vendorID,
++                                true, false,
 +                                getenv("VIRUAISOR_ZINK_SMALL_UPLOAD_ALLOCATIONS"));
 +   const unsigned upload_size = private_upload ? 64 * 1024 : 1024 * 1024;
 +   const unsigned upload_bind = PIPE_BIND_VERTEX_BUFFER | PIPE_BIND_INDEX_BUFFER | PIPE_BIND_CONSTANT_BUFFER;

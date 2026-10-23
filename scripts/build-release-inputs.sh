@@ -27,7 +27,7 @@ printf '%s  %s\n' \
     a4a71002533174408d0acdbfe3d4980482087bc9a29d0428ac423579bce9029b \
     "$crosvm_bins/libvenus_crosvm.so" | sha256sum -c -
 printf '%s  %s\n' \
-    0358204e9e875d6870bed201514f01664f1b242143662cbec42675df3749d4b0 \
+    7232890999d06ab07784f9f3a68b06a2ea6a47ec1e8ae98e44fc011379296ff2 \
     "$crosvm_bins/libvenus_desktop_crosvm.so" | sha256sum -c -
 
 mkdir -p "$repo/.pi" "$repo/app/src/main/jniLibs/arm64-v8a"

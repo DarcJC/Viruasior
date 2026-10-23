@@ -40,12 +40,12 @@ python3 scripts/release_inputs.py pack \
 The exporter checks all four pinned hashes and includes only those four
 files. It never exports the surrounding `.pi` workspace, device logs,
 keystores, or user directories. It prints the ZIP's SHA-256 and writes
-`dist/viruaisor-release-inputs.zip.sha256`. For the validated context-scoped
+`dist/viruaisor-release-inputs.zip.sha256`. For the validated snapshot
 renderer, the current archive digest is
-`ebcbfcd840d6254c83ea2ec68bb3fbaa995ad5aeb546a6ff9b6ff5cc21e25c7d`.
+`d3dd520c097d6f8c563978dcb559158c6afdb3c8f0942fe4ccd84d5c0e4de950`.
 Regenerate it and update the repository variable when any reviewed input
 changes. Upload the ZIP once as a public
-GitHub Release asset under a non-version tag such as `release-inputs-20261022`
+GitHub Release asset under a non-version tag such as `release-inputs-20261023`
 (this tag does not trigger the release workflow), or to another HTTPS host.
 Mark the input Release as a pre-release so it is not presented as the latest app release.
 Retain that asset for future builds. Use its direct download URL, not the
@@ -64,8 +64,15 @@ The crosvm executables remain binary inputs: the build does not need device
 APEX linker files, but a crosvm source change still requires rebuilding,
 device validation, and updating its pins before exporting a replacement ZIP.
 The validated desktop crosvm SHA-256 is
-`0358204e9e875d6870bed201514f01664f1b242143662cbec42675df3749d4b0`.
+`7232890999d06ab07784f9f3a68b06a2ea6a47ec1e8ae98e44fc011379296ff2`.
 The previous five variables containing local Linux paths are no longer used.
+
+The guest Mesa and Zink drivers are rebuilt from their pinned sources and
+repository patches, including the paired WSI completion-fd handoff. The
+distribution's unmodified vkmark remains the default; no custom benchmark
+is built or installed. On the validated tablet, all 13 default scenes score
+1838 on XCB and 2764 on nested Wayland; see
+[the cache and synchronization validation](guest/coherent-memory.md).
 
 Create these **repository secrets** for an existing, stable Android release
 signing key: `ANDROID_SIGNING_KEYSTORE_BASE64`, `ANDROID_SIGNING_KEY_ALIAS`,

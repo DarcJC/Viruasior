@@ -15,7 +15,7 @@ PINS = {
     "vmlinuz": "1008c4aa740113c3bccd1aa72376bcd23602a2f94aa170d51617b7089c647343",
     "initrd.img": "39b4de660fc6d7a965265164bfc4ca71662032d97a7d43ef25a905ead7c2c475",
     "libvenus_crosvm.so": "a4a71002533174408d0acdbfe3d4980482087bc9a29d0428ac423579bce9029b",
-    "libvenus_desktop_crosvm.so": "0358204e9e875d6870bed201514f01664f1b242143662cbec42675df3749d4b0",
+    "libvenus_desktop_crosvm.so": "7232890999d06ab07784f9f3a68b06a2ea6a47ec1e8ae98e44fc011379296ff2",
 }
 
 

@@ -1,0 +1,102 @@
+--- a/src/virtio/vulkan/vn_queue.c
++++ b/src/virtio/vulkan/vn_queue.c
+@@ -2326,11 +2326,14 @@
+ }
+ #endif
+ 
+-VkResult
+-vn_GetSemaphoreFdKHR(VkDevice device,
+-                     const VkSemaphoreGetFdInfoKHR *pGetFdInfo,
+-                     int *pFd)
+-{
++static VkResult
++vn_get_semaphore_fd(VkDevice device,
++                    const VkSemaphoreGetFdInfoKHR *pGetFdInfo,
++                    int *pFd, bool wait_for_completion)
++{
++#ifndef VN_USE_WSI_PLATFORM
++   (void)wait_for_completion;
++#endif
+    VN_TRACE_FUNC();
+    struct vn_device *dev = vn_device_from_handle(device);
+    struct vn_semaphore *sem = vn_semaphore_from_handle(pGetFdInfo->semaphore);
+@@ -2349,7 +2352,7 @@
+          return vn_error(dev->instance, result);
+ 
+ #ifdef VN_USE_WSI_PLATFORM
+-      if (!dev->renderer->info.has_implicit_fencing &&
++      if (wait_for_completion && !dev->renderer->info.has_implicit_fencing &&
+           !vn_desktop_async_sync_fd(dev))
+          sync_wait(fd, -1);
+ #endif
+@@ -2389,6 +2392,27 @@
+    return VK_SUCCESS;
+ }
+ 
++VkResult
++vn_GetSemaphoreFdKHR(VkDevice device,
++                     const VkSemaphoreGetFdInfoKHR *pGetFdInfo,
++                     int *pFd)
++{
++   return vn_get_semaphore_fd(device, pGetFdInfo, pFd, true);
++}
++
++#ifdef VN_USE_WSI_PLATFORM
++VkResult
++vn_wsi_GetSemaphoreFdKHR(VkDevice device,
++                         const VkSemaphoreGetFdInfoKHR *pGetFdInfo,
++                         int *pFd)
++{
++   /* WSI attaches this real completion fd to the image's DMA-BUF reservation.
++    * Its consumer waits on that dependency. Do not replace it with fd -1 or
++    * change the public external-semaphore export policy. */
++   return vn_get_semaphore_fd(device, pGetFdInfo, pFd, false);
++}
++#endif
++
+ /* event commands */
+ 
+ static VkResult
+--- a/src/virtio/vulkan/vn_queue.h
++++ b/src/virtio/vulkan/vn_queue.h
+@@ -155,4 +155,11 @@
+ void
+ vn_semaphore_signal_wsi(struct vn_device *dev, struct vn_semaphore *sem);
+ 
++#ifdef VN_USE_WSI_PLATFORM
++VkResult
++vn_wsi_GetSemaphoreFdKHR(VkDevice device,
++                         const VkSemaphoreGetFdInfoKHR *pGetFdInfo,
++                         int *pFd);
++#endif
++
+ #endif /* VN_QUEUE_H */
+--- a/src/virtio/vulkan/vn_wsi.c
++++ b/src/virtio/vulkan/vn_wsi.c
+@@ -94,15 +94,17 @@
+     * Other advertised formats fall back to BLOB allocations on this device. */
+    physical_dev->wsi_device.viruaisor_ahb_unorm_wsi =
+       getenv("VIRUAISOR_AHB_UNORM_WSI") != NULL;
+-   /* This transport already waits on the CPU before returning a WSI sync fd:
+-    * virtio-gpu implicit fencing cannot carry the renderer completion fence.
+-    * Use Venus' completed-present fallback instead of exporting a fence,
+-    * submitting a guest sync object, and waiting for its round trip each frame.
+-    * vn_queue_wsi_present still waits for the rendering queue to finish before
+-    * handing the image to the window system. Keep external semaphore support
+-    * available to applications and limit this policy to the paired AHB WSI. */
+-   if (physical_dev->wsi_device.viruaisor_ahb_unorm_wsi)
+-      physical_dev->wsi_device.semaphore_export_handle_types = 0;
++   /* The paired Zink consumers import DMA-BUF reservation fences explicitly.
++    * WSI probes both sync-file ioctls before selecting this route, attaches a
++    * real completion fd, and falls back to completed-present if unsupported.
++    * Keep the conservative route unless this paired image opts in. */
++   if (physical_dev->wsi_device.viruaisor_ahb_unorm_wsi) {
++      const char *dma_buf_sync = getenv("VIRUAISOR_WSI_DMA_BUF_SYNC");
++      if (dma_buf_sync && !strcmp(dma_buf_sync, "1"))
++         physical_dev->wsi_device.GetSemaphoreFdKHR = vn_wsi_GetSemaphoreFdKHR;
++      else
++         physical_dev->wsi_device.semaphore_export_handle_types = 0;
++   }
+    physical_dev->base.base.wsi_device = &physical_dev->wsi_device;
+ 
+    return VK_SUCCESS;

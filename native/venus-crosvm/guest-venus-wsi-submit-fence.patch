@@ -1,0 +1,65 @@
+--- a/src/virtio/vulkan/vn_queue.c
++++ b/src/virtio/vulkan/vn_queue.c
+@@ -983,14 +983,14 @@
+    return VK_SUCCESS;
+ }
+ 
+-static void
++static VkResult
+ vn_queue_wsi_present(struct vn_queue_submission *submit)
+ {
+    struct vk_queue *queue_vk = vk_queue_from_handle(submit->queue_handle);
+    struct vn_device *dev = (void *)queue_vk->base.device;
+ 
+    if (!submit->wsi_mem)
+-      return;
++      return VK_SUCCESS;
+ 
+    if (dev->renderer->info.has_implicit_fencing) {
+       struct vn_renderer_submit_batch batch = {
+@@ -1014,17 +1014,26 @@
+          .batches = &batch,
+          .batch_count = 1,
+       };
+-      vn_renderer_submit(dev->renderer, &renderer_submit);
++      return vn_renderer_submit(dev->renderer, &renderer_submit);
+    } else {
+       if (VN_DEBUG(WSI)) {
+          static uint32_t num_rate_limit_warning = 0;
+ 
+          if (num_rate_limit_warning++ < 10)
+             vn_log(dev->instance,
+-                   "forcing vkQueueWaitIdle before presenting");
+-      }
+-
+-      vn_QueueWaitIdle(submit->queue_handle);
++                   "waiting for rendering completion before presenting");
++      }
++
++      /* The WSI submit already signals a fence after its render/blit work.
++       * Waiting on that fence preserves completed-present semantics without
++       * another empty submission, cache sweep and private queue-idle fence.
++       * Keep QueueWaitIdle for callers that supply no completion fence. */
++      if (submit->fence_handle != VK_NULL_HANDLE) {
++         VkDevice device = vk_device_to_handle(queue_vk->base.device);
++         return vn_WaitForFences(device, 1, &submit->fence_handle, true,
++                                 UINT64_MAX);
++      }
++      return vn_QueueWaitIdle(submit->queue_handle);
+    }
+ }
+ 
+@@ -1113,11 +1122,11 @@
+       }
+    }
+ 
+-   vn_queue_wsi_present(submit);
++   result = vn_queue_wsi_present(submit);
+ 
+    vn_queue_submission_cleanup(submit);
+ 
+-   return VK_SUCCESS;
++   return vn_result(instance, result);
+ }
+ 
+ VkResult

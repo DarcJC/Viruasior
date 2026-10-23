@@ -1,7 +1,7 @@
 diff --git a/src/venus/vkr_device_memory.c b/src/venus/vkr_device_memory.c
 --- a/src/venus/vkr_device_memory.c
 +++ b/src/venus/vkr_device_memory.c
-@@ -37,6 +37,15 @@
+@@ -37,6 +37,27 @@
     viruaisor_ahb_registry[VIRUAISOR_AHB_REGISTRY_CAPACITY];
  static pthread_mutex_t viruaisor_ahb_registry_mutex = PTHREAD_MUTEX_INITIALIZER;
  static struct venus_uncached_entry uncached_entries[VENUS_UNCACHED_MAX_LEASES];
@@ -9,9 +9,21 @@ diff --git a/src/venus/vkr_device_memory.c b/src/venus/vkr_device_memory.c
 +bool
 +vkr_android_uncached_cache_maintain(struct vkr_context *owner, bool completed)
 +{
++   struct venus_uncached_snapshot snapshot;
++   snapshot.count = 0;
++   /* Preserve ordering within a context without blocking unrelated contexts
++    * during the cache-line sweep. Pins keep mappings and helper leases alive. */
++   mtx_lock(&owner->android_cache_mutex);
 +   pthread_mutex_lock(&viruaisor_ahb_registry_mutex);
-+   const bool okay = venus_uncached_cache_maintain(uncached_entries, owner, completed);
++   bool okay = venus_uncached_snapshot_take(uncached_entries, owner->ctx_id, &snapshot);
 +   pthread_mutex_unlock(&viruaisor_ahb_registry_mutex);
++   if (okay) {
++      okay = venus_uncached_cache_maintain(&snapshot, completed);
++      pthread_mutex_lock(&viruaisor_ahb_registry_mutex);
++      venus_uncached_snapshot_drop(&snapshot);
++      pthread_mutex_unlock(&viruaisor_ahb_registry_mutex);
++   }
++   mtx_unlock(&owner->android_cache_mutex);
 +   return okay;
 +}
  
@@ -127,3 +139,49 @@ diff --git a/src/venus/vkr_queue.c b/src/venus/vkr_queue.c
  }
  
  static void
+diff --git a/src/venus/vkr_context.c b/src/venus/vkr_context.c
+--- a/src/venus/vkr_context.c
++++ b/src/venus/vkr_context.c
+@@ -785,6 +785,9 @@
+ 
+    _mesa_hash_table_destroy(ctx->object_table, vkr_context_free_object);
+    mtx_destroy(&ctx->object_mutex);
++#ifdef __ANDROID__
++   mtx_destroy(&ctx->android_cache_mutex);
++#endif
+ 
+    vkr_cs_encoder_fini(&ctx->encoder);
+    vkr_cs_decoder_fini(&ctx->decoder);
+@@ -880,10 +883,19 @@
+    if (mtx_init(&ctx->ring_mutex, mtx_plain) != thrd_success)
+       goto err_ctx_ring_mutex;
+ 
++#ifdef __ANDROID__
++   if (mtx_init(&ctx->android_cache_mutex, mtx_plain) != thrd_success)
++      goto err_ctx_android_cache_mutex;
++#endif
++
+    list_inithead(&ctx->rings);
+ 
+    return ctx;
+ 
++#ifdef __ANDROID__
++err_ctx_android_cache_mutex:
++   mtx_destroy(&ctx->ring_mutex);
++#endif
+ err_ctx_ring_mutex:
+    vkr_cs_encoder_fini(&ctx->encoder);
+ err_cs_encoder_init:
+diff --git a/src/venus/vkr_context.h b/src/venus/vkr_context.h
+--- a/src/venus/vkr_context.h
++++ b/src/venus/vkr_context.h
+@@ -57,6 +57,9 @@
+    /* true if ENABLE_RENDER_SERVER_WORKER_THREAD is defined */
+    bool on_worker_thread;
+ 
++#ifdef __ANDROID__
++   mtx_t android_cache_mutex;
++#endif
+    mtx_t ring_mutex;
+    struct list_head rings;
+ 

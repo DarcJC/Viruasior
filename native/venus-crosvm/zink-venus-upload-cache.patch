@@ -14,7 +14,7 @@
 +      zink_venus_private_upload(screen->info.driver_props.driverID == VK_DRIVER_ID_MESA_VENUS,
 +                                screen->info.props.vendorID,
 +                                properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
-+                                properties & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, pNext != NULL,
++                                pNext != NULL,
 +                                getenv("VIRUAISOR_ZINK_SMALL_UPLOAD_ALLOCATIONS"));
  
     alignment = get_optimal_alignment(screen, size, alignment);

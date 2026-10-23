@@ -68,7 +68,7 @@ int main(void) {
  assert(!eligible(&screen, &screen, 0)); // imported/exported/dedicated caller chain
  assert(!eligible(&screen, NULL, ZINK_ALLOC_NO_SUBALLOC));
  screen.info.mem_props.memoryTypes[0].propertyFlags |= VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
- assert(!eligible(&screen, NULL, 0));
+ assert(eligible(&screen, NULL, 0)); // emulated coherent heaps also use whole-buffer maintenance
  screen.info.mem_props.memoryTypes[0].propertyFlags = 0;
  assert(!eligible(&screen, NULL, 0));
  screen.info.mem_props.memoryTypes[0].propertyFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;

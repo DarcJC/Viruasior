@@ -6,6 +6,10 @@ work=${VENUS_GUEST_MESA_WORK_DIR:-/tmp/viruaisor-venus-guest-mesa}
 guest_lib=${VENUS_GUEST_LIB_DIR:-/tmp/viruaisor-venus-guest-build/root/lib}
 bash "$repo/scripts/prepare-venus-guest-sysroot.sh"
 [[ $(git -C "$source" rev-parse HEAD) == 742a20f48c59e8649533c84c4d49dd95b403f5da ]]
+wsi_sync_patch="$repo/native/venus-crosvm/guest-venus-wsi-sync-fd.patch"
+if git -C "$source" apply --reverse --check "$wsi_sync_patch" 2>/dev/null; then
+    git -C "$source" apply --reverse "$wsi_sync_patch"
+fi
 patch="$repo/native/venus-crosvm/guest-mesa-cache-sync.patch"
 if git -C "$source" apply --check "$patch" 2>/dev/null; then git -C "$source" apply "$patch";
 else git -C "$source" apply --reverse --check "$patch"; fi
@@ -26,6 +30,16 @@ patch="$repo/native/venus-crosvm/guest-wsi-ahb-completed-present.patch"
 if git -C "$source" apply --check "$patch" 2>/dev/null; then git -C "$source" apply "$patch";
 else git -C "$source" apply --reverse --check "$patch"; fi
 cp "$repo/guest/venus-probe/cache_policy.h" "$source/src/virtio/vulkan/viruaisor_cache_policy.h"
+patch="$repo/native/venus-crosvm/guest-venus-wsi-submit-fence.patch"
+if git -C "$source" apply --check "$patch" 2>/dev/null; then git -C "$source" apply "$patch";
+else git -C "$source" apply --reverse --check "$patch"; fi
+python3 "$repo/scripts/test-venus-present-wait.py" "$source"
+patch="$repo/native/venus-crosvm/guest-venus-desktop-sync-fd.patch"
+if git -C "$source" apply --check "$patch" 2>/dev/null; then git -C "$source" apply "$patch";
+else git -C "$source" apply --reverse --check "$patch"; fi
+git -C "$source" apply --check "$wsi_sync_patch"
+git -C "$source" apply "$wsi_sync_patch"
+python3 "$repo/scripts/test-venus-wsi-sync-fd.py" "$source"
 gcc -Wall -Wextra -Werror "$repo/guest/venus-probe/cache_policy_test.c" -o /tmp/viruaisor-venus-guest-cache-test
 /tmp/viruaisor-venus-guest-cache-test
 mkdir -p "$work/pkgconfig"
