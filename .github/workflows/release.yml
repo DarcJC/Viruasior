@@ -84,7 +84,7 @@ jobs:
         run: |
           bash scripts/build-release-inputs.sh
           # The release uses the ZIP; free the raw scratch image before Gradle.
-          rm -f /tmp/viruaisor-manjaro/bundle/root_part
+          sudo rm -f /tmp/viruaisor-manjaro/bundle/root_part
 
       - name: Test and assemble unsigned release APK
         shell: bash
